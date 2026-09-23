@@ -36,6 +36,13 @@ def xdo(*args: str) -> None:
     subprocess.run(["xdotool", *args], env=ENV, check=True)
 
 
+def crashed() -> bool:
+    """Wine's crash dialog: the IDE died (e.g. while building a large project)."""
+    r = subprocess.run(["xdotool", "search", "--name", "Wine Debugger|Program Error"],
+                       env=ENV, capture_output=True, text=True)
+    return bool(r.stdout.strip())
+
+
 def compile_mak(mak: Path, load_wait: float = 8, build_wait: float = 10) -> bool:
     exe = mak.with_suffix(".exe")
     exe.unlink(missing_ok=True)
@@ -52,6 +59,8 @@ def compile_mak(mak: Path, load_wait: float = 8, build_wait: float = 10) -> bool
     xdo("mousemove", "--sync", "696", "221", "click", "1")    # OK (default name)
     for _ in range(int(build_wait)):
         time.sleep(1)
+        if crashed():
+            return False
         new = [p for p in mak.parent.glob("*.[eE][xX][eE]") if before.get(p) != p.stat().st_mtime]
         if new:
             # VB writes the EXE progressively (resources last): wait until
@@ -59,6 +68,9 @@ def compile_mak(mak: Path, load_wait: float = 8, build_wait: float = 10) -> bool
             size, stable = -1, 0
             while stable < 4:
                 time.sleep(1)
+                if crashed():  # IDE died mid-write: the EXE is truncated
+                    new[0].unlink(missing_ok=True)
+                    return False
                 cur = new[0].stat().st_size
                 stable = stable + 1 if cur == size else 0
                 size = cur

@@ -8,8 +8,9 @@ Mapping rules (see ../OPCODES.md):
   - code segments: modules (.bas/.gbl) first, then forms, each group in
     .mak order; files without code get no segment (checked by counts);
   - within a segment, records in table order = the file's non-empty
-    procedures in order of first mention of their name (definition or
-    call); code layout order differs;
+    procedures in order of first appearance as a definition or a
+    statement-form call (not calls inside expressions); code layout
+    order differs;
   - each statement starts with a statement marker (Runtime.is_stmt).
 
 Usage:
@@ -81,12 +82,19 @@ def source_procs(path: Path) -> list[dict]:
             if PROC_END.match(s):
                 procs.append(cur)
                 cur = None
-    # Records are created in order of the name's first mention (definition
-    # or call), not definition order.
-    text = "\n".join(strip_comment(l) for l in lines[code_start:])
+    # Records are created in order of the procedure's first appearance as a
+    # definition or a statement-form call (`Name args` / `Call Name`);
+    # function calls inside expressions don't count.
+    stmts = []  # (line index, statement text)
+    for n in range(code_start, len(lines)):
+        for st in split_statements(lines[n]):
+            for part in re.split(r"(?i)\bthen\b|\belse\b", st):
+                stmts.append((n, part.strip()))
+
     def first_mention(p):
-        m = re.search(r"(?<![\w.])" + re.escape(p["name"]) + r"\b", text, re.I)
-        return m.start() if m else 1 << 30
+        pat = re.compile(r"(?i)^(?:call\s+)?" + re.escape(p["name"]) + r"\b(?!\s*=)")
+        calls = [n for n, t in stmts if pat.match(t)]
+        return min([p["line"] - 1] + calls)
     return sorted(procs, key=first_mention)
 
 

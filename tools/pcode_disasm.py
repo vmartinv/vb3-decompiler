@@ -439,8 +439,9 @@ RECORD_FORM: dict[int, str] = {}  # procedure record -> form (from event tables)
 
 # Class byte in a form blob's control record (confirmed values only).
 CLASS_BY_BLOB = {0x00: "PictureBox", 0x01: "Label", 0x02: "TextBox", 0x04: "CommandButton",
-                 0x05: "CheckBox", 0x06: "OptionButton", 0x08: "ListBox", 0x09: "HScrollBar",
-                 0x0B: "Timer", 0x13: "Menu", 0x18: "Image"}
+                 0x05: "CheckBox", 0x06: "OptionButton", 0x07: "ComboBox", 0x08: "ListBox", 0x09: "HScrollBar",
+                 0x0B: "Timer", 0x10: "DriveListBox", 0x11: "DirListBox", 0x12: "FileListBox",
+                 0x13: "Menu", 0x18: "Image"}  # 0xFF: VBX custom control
 _CTL_RECORD = re.compile(rb"[\x01\x03](..)\x00\x00(.)\x00(.)\xff", re.S)
 
 
@@ -603,11 +604,11 @@ def proc_names(segs: list[Segment], rt: "Runtime", res: dict[int, bytes]) -> dic
                 cb = d[hdr + 9] if flags & 0x8000 else d[hdr + 7]  # array element: + u8 elem, u16
                 ctl = names[idx] if idx < len(names) and names[idx] else f"ctl#{idx}"
                 cls = CLASS_BY_BLOB.get(cb)
-            else:
-                ctl, cls = "Form", "Form"
-            evs = events.get(cls) or next((v for v in events.values() if len(v) == n), [])
-            if len(evs) != n:
-                evs = next((v for v in events.values() if len(v) == n), [])
+            else:  # the form's own table: Form or MDIForm, by event count
+                ctl = cls = "MDIForm" if len(events.get("MDIForm", [])) == n != len(events.get("Form", [])) else "Form"
+            evs = events.get(cls, [])
+            if len(evs) != n:  # unknown class (e.g. a VBX control): don't guess names
+                evs = []
             for k, e in enumerate(ents):
                 if e:
                     out.setdefault(e & ~1, f"{ctl}_{evs[k] if k < len(evs) else f'Event{k}'}")
