@@ -223,6 +223,40 @@ STORE:
 Not yet tested: literal-operand provenance (whether comparisons have a
 "both-literal" alternate form the way `ADD` did with `D3 38` vs `DF 40`).
 
+## Statement markers and `If`/`Then`/`Else` control flow
+
+**`4B 49` marks the start of every source statement**, not just the
+procedure prologue as first thought — confirmed by compiling `If`/`Then`
+and `If`/`Then`/`Else` blocks and finding a `4B 49` before each line's
+bytecode (the condition, the `Then` body, the `Else` body, and even an
+implicit marker for the `End If` line itself). The "epilogue" is just this
+same per-statement marker preceding the real `Sub`-exit sequence
+(`D9 65 5E 0E 5B 0E`).
+
+Jump targets are **absolute byte offsets from the start of the procedure
+segment** (not relative/PC-relative) — confirmed by checking that a
+branch's operand always lands exactly on a `4B 49` statement-start marker.
+
+Decoded via `If x = 1 Then \n y = 2 \n End If`, a variant with a longer
+`Then` body, and `If x = 1 Then \n y = 2 \n Else \n z = 3 \n End If`:
+
+- **`B7 34 <u16 LE target>`**: conditional branch. Pops the Boolean left by
+  a comparison (see above); jumps to `target` if false, falls through if
+  true. Used right after the condition to skip the `Then` body (or jump
+  straight to `Else`, if present).
+- **`FE 35 <u16 LE target>`**: unconditional jump. Emitted at the end of a
+  `Then` body when an `Else` exists, to skip over the `Else` body.
+- **`EC 35`** (no operand): a fixed marker that appears once, immediately
+  after the last statement of an `If`/`Else` construct, right before the
+  real procedure epilogue. Structurally it's the same family as `FE 35`
+  (suffix `35` = unconditional/structural jump family, vs `34` =
+  conditional) but takes no operand — best guess is a compiler-emitted
+  placeholder for the `End If` line itself (VB3 tracks per-line info for
+  the IDE's step debugger), not yet confirmed against a non-`If` construct.
+
+Not yet tested: `ElseIf`, loops (`For`/`Do`/`While`), and whether `EC 35`
+appears in other block-closing contexts (e.g. loop ends) or is `If`-specific.
+
 ## Reproducing this / extending it further
 
 - `tools/vb3ide/kwaj_extract.py <disk-files-dir> <out-dir>` — decompress a
@@ -243,9 +277,9 @@ for full environment setup (Xvfb, window manager, Wine prefix).
 
 - Decode `Print`'s call sequence and the floating-point arithmetic family
   in the same way arithmetic-on-integers was decoded.
-- Extend to `If`/loop constructs (the actual branch/jump opcode, now that
-  comparisons producing a Boolean are decoded) and calling other
-  procedures/built-in functions — none attempted yet.
+- Extend control flow to `ElseIf` and loops (`For`/`Do`/`While`) — only
+  `If`/`Then`/`Else` is decoded so far.
+- Calling other procedures/built-in functions — not attempted yet.
 - Once enough of the opcode set is decoded, it should generalize
   directly to any VB3 p-code binary, not just small test programs —
   [Quibble Race](https://github.com/vmartinv/qrace) is being used as the
