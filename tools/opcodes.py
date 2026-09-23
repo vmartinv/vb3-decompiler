@@ -40,14 +40,22 @@ NAMES: dict[int, str] = {
     0x396A: "CASE_VAL.I", 0x440D: "CASE_VAL.V", 0x3C14: "CASE_VAL.R8", 0x3DC0: "CASE_VAL.T",
     0x0D4D: "CASE_EQ.I", 0x0D2F: "CASE_EQ.V", 0x0D39: "CASE_EQ.R8", 0x0D57: "CASE_EQ.T",  # u16 next Case, u16 body
     0x0D83: "END_SELECT", 0x0D76: "CASE_ELSE",
-    0x1B37: "FOR", 0x1B3E: "FOR_STEP", 0x1A7E: "FOR.I",
-    0x1E08: "NEXT", 0x1C8A: "NEXT.I", 0x1C87: "NEXT_NOVAR", 0x1E0B: "NEXT_NOVAR", 0x35E9: "DO", 0x0D73: "END_SELECT",
+    0x1B37: "FOR", 0x1B3E: "FOR_STEP", 0x1A7E: "FOR.I", 0x1AA6: "FOR.L",
+    0x1E08: "NEXT", 0x1C8A: "NEXT.I", 0x1D08: "NEXT.L", 0x1C87: "NEXT_NOVAR", 0x1E0B: "NEXT_NOVAR", 0x35E9: "DO", 0x0D73: "END_SELECT",
     0x7EB6: "ON_ERROR_GOTO", 0x7E63: "RESUME", 0x7E44: "RESUME_LABEL", 0x7E5D: "RESUME_NEXT",
     0x3761: "LOCAL",                          # `On Local Error`
     0x1D9F: "EXIT_DO", 0x1DA2: "EXIT_FOR", 0x3512: "LOOP_WHILE_JT", 0x35B8: "DO_UNTIL_JT",
     0x079D: "DIM_BOUND", 0x077A: "ARRAY_REF",  # u16 2*values (0x8000: whole array), u16 slot
     0x0768: "ARRAY_REF_LB",                     # `lower To upper` per dimension: u16 2*dims, u16 slot
     0x0816: "REDIM", 0x0813: "REDIM_PRESERVE", 0x0AEF: "UBOUND",
+    # graphics / Print methods: `obj GFX pieces... END`; value methods: `obj GFX_FN args FN`
+    0x2137: "GFX", 0x2130: "GFX_FN",
+    0x22F6: "PT", 0x22E9: "PT", 0x231E: "PT_TO", 0x2328: "PT_STEP_TO", 0x2332: "PT_STEP_TO",
+    0x26C7: "LINE", 0x26C1: "LINE_C",            # operand: 0 / 1 B / 2 BF
+    0x23DA: "CIRCLE_C", 0x23E3: "CIRCLE", 0x27BE: "PSET_C", 0x27E8: "SCALE",
+    0x296C: "TEXTWIDTH", 0x28FF: "TEXTHEIGHT", 0x2A69: "POINT",
+    0x3764: "DEBUG", 0x2124: "PRINT_BEGIN",
+    0x6132: "PRINT_NL", 0x60A4: "PRINT_NL", 0x60DE: "PRINT_NL", 0x6012: "PRINT_COMMA",
     0x0DEA: "RET_SLOT",                        # reserves a call's return value (method used as a value)
     0x4A08: "PUSH_NOTHING", 0x4F3A: "IS", 0x4A3A: "TYPEOF_IS",
     # --- calls ---------------------------------------------------------
@@ -67,13 +75,13 @@ NAMES: dict[int, str] = {
     0x4A63: "SUBOBJ", 0x4A57: "SUBOBJ", 0x4CA8: "CTLARRAY", 0x4EB0: "CTLARRAY_OF", 0x4EA9: "CTLARRAY_OF",
     0x4EC7: "PGET_IDX", 0x4EDD: "PSET_IDX",   # indexed property: u16 index count, u16 0xC0nn
     0x4A23: "UNLOAD", 0x4A2A: "LOAD",
-    0x316D: "ADDR.GLB", 0x4F69: "SET_OBJ",
+    0x316D: "ADDR.GLB", 0x4F69: "SET_OBJ", 0x33BE: "SET_OBJ",
     # --- literals ------------------------------------------------------
     **{a: f"PUSH.I {n}" for n, a in enumerate(
         [0x37E5, 0x37ED, 0x37F8, 0x37FE, 0x3804, 0x380A, 0x3810, 0x3816, 0x381C, 0x3822, 0x3828])},
-    0x3834: "PUSH.I", 0x3831: "PUSH.I", 0x388A: "PUSH.L",
+    0x3834: "PUSH.I", 0x3831: "PUSH.I", 0x388A: "PUSH.L", 0x388D: "PUSH.L",
     0x3788: "PUSH.R8 0", 0x3791: "PUSH.R8 1", 0x379A: "PUSH.R8 2", 0x37A7: "PUSH.R8 3",
-    0x37AE: "PUSH.R8 4", 0x37B5: "PUSH.R8 5", 0x37D8: "PUSH.R8 10",
+    0x37AE: "PUSH.R8 4", 0x37B5: "PUSH.R8 5", 0x37BC: "PUSH.R8 6", 0x37D8: "PUSH.R8 10",
     0x387A: "PUSH.R8", 0x389A: "PUSH.T",
     0x37E2: "PUSH.B False", 0x383D: "PUSH.B True",
     # --- conversions ---------------------------------------------------
@@ -89,7 +97,8 @@ NAMES: dict[int, str] = {
     0x4241: "DIV.V", 0x3B89: "DIV.R8",
     0x390B: "NEG",
     0x4468: "EQ.V", 0x396D: "EQ.I", 0x3DF6: "EQ.T", 0x3C17: "EQ.R8", 0x3B51: "EQ.L",
-    0x447A: "NE.V", 0x3980: "NE.I", 0x3DFF: "NE.T", 0x3C2A: "NE.R8",
+    0x447A: "NE.V", 0x3980: "NE.I", 0x3DFF: "NE.T", 0x3C2A: "NE.R8", 0x3CC4: "NE.C", 0x3B61: "NE.L",
+    0x7805: "LIKE",
     0x448C: "LE.V", 0x3993: "LE.I", 0x3C63: "LE.R8",
     0x449E: "LT.V", 0x39CC: "LT.I", 0x3C76: "LT.R8",
     0x44B0: "GE.V", 0x39A6: "GE.I", 0x3C50: "GE.R8",
@@ -116,9 +125,10 @@ NAMES: dict[int, str] = {
     0x7594: "Len.T",
     # --- file I/O ------------------------------------------------------
     0x376D: "FILENUM", 0x373B: "OPEN",        # operand: 1 Input, 2 Output
-    0x3631: "CLOSE", 0x375B: "PRINT#", 0x6132: "PRINT#_ITEM",
+    0x3631: "CLOSE", 0x375B: "PRINT#", 0x3740: "OPEN_LEN",   # Open ... Len = n
     0x3692: "INPUT#", 0x3698: "INPUT_ITEM.I", 0x36C2: "INPUT_ITEM.V", 0x36B6: "INPUT_ITEM.T",
     0x368C: "INPUT_END", 0x36DF: "INPUT_ITEM_FIELD?",
+    0x3662: "GET#", 0x367E: "PUT#",                 # operand: record length
     # --- user-defined types -------------------------------------------
     0x0709: "AADDR.GLB",                     # address of an array element
     0x6CE6: "FIELD_ADDR", 0x6FB6: "FIELD_ADDR.T",  # operand: field offset
@@ -173,7 +183,9 @@ SEM: dict[int, tuple[str, str, int]] = {
     0x1043: ("fn", "CDbl", 1), 0x7535: ("fn", "InStr", 3),
     0x3625: ("fn", "LOF", 1), 0x361F: ("fn", "Loc", 1), 0x3619: ("fn", "Input$", 2),
     0x1A18: ("fn", "DateValue", 1), 0x105D: ("fn", "CLng", 1), 0x10D4: ("fn", "CCur", 1),
-    0x100F: ("fn", "CDbl", 1), 0x75AE: ("fn", "LTrim$", 1),
+    0x100F: ("fn", "CDbl", 1), 0x75AE: ("fn", "LTrim$", 1), 0x75FE: ("fn", "RTrim$", 1),
+    0x3302: ("fn", "CreateObject", 1), 0x53D7: ("kw", "FileCopy", 2),
+    0x0E9A: ("fn", "CCur", 1), 0x67A2: ("pass", "", 0), 0x6895: ("pass", "", 0), 0x6942: ("pass", "", 0),
     0x1156: ("pass", "", 0), 0x0ED9: ("pass", "", 0),
     0x1094: ("pass", "", 0), 0x1060: ("pass", "", 0), 0x0EC5: ("pass", "", 0),
     0x34A8: ("kw", "While", 1), 0x35F5: ("kw", "Wend", 0), 0x53FB: ("kw", "Kill", 1),

@@ -153,6 +153,7 @@ _RESUME_CORE = 0x7E63
 # whole-program check (every procedure decodes to exactly its end offset).
 _MANUAL = {
     0x36DF: 2,  # builtin on one path, dispatch on the other
+    0x28FF: 2,  # TextHeight: same layout as TextWidth (0x296C, derived: 2)
 }
 
 
@@ -172,6 +173,11 @@ class Runtime:
         self._len: dict[int, object] = {}
         self._stmt: dict[int, bool] = {}
         self.solved: dict[int, set] = {}  # op -> lengths found by constraint
+
+    def plausible(self, op: int) -> bool:
+        """Could `op` be a handler address? (Handlers start at 0x60 or above,
+        at a decodable instruction.)"""
+        return 0x60 <= op < len(self.code) and self.insn(op) is not None
 
     def opcode_id(self, op: int) -> int | None:
         if 2 <= op < len(self.code):
@@ -200,20 +206,28 @@ class Runtime:
 
     def _explore(self, start: int, maxsteps=4000, depth=0, helper=False) -> set:
         results: set = set()
-        work, seen, steps, regtab = [(start, 0)], set(), 0, {}
+        # sv: 0 normal; 1 SI pushed; 2 SI pushed and reused for other data
+        # (`push si` ... `mov si, x` ... `pop si`): ignore SI changes meanwhile.
+        work, seen, steps, regtab = [(start, 0, 0)], set(), 0, {}
         while work:
-            a, delta = work.pop()
+            a, delta, sv = work.pop()
             while True:
                 steps += 1
-                if steps > maxsteps or (a, delta) in seen:
+                if steps > maxsteps or (a, delta, sv) in seen:
                     break
-                seen.add((a, delta))
+                seen.add((a, delta, sv))
                 if a in (_CALL_CORE, _RESUME_CORE) and a != start and not helper:
                     results.add(delta); break
                 i = self.insn(a)
                 if i is None:
                     break
                 m, o, nxt = i.mnemonic, i.op_str, a + i.size
+                if m == "push" and o == "si":
+                    sv = max(sv, 1); a = nxt; continue
+                if m == "pop" and o == "si" and sv:
+                    sv = 0; a = nxt; continue
+                if sv == 2 and ("si" in o.split(",")[0] or m.startswith("lods")):
+                    a = nxt; continue  # SI holds foreign data here
                 if m == "lodsw" and "es:[si]" in o:
                     j = self.insn(nxt)
                     if j and j.mnemonic == "jmp" and j.op_str == "ax":
@@ -226,6 +240,8 @@ class Runtime:
                     results.add(("jump", delta + 2)); break
                 if m == "add" and o == "si, ax" and delta == 2 and not helper:
                     results.add(("varlen", 2)); break
+                if (o.startswith("si,") or o == "si") and sv == 1 and m in ("mov", "xchg", "lea"):
+                    sv = 2; a = nxt; continue
                 if o.startswith("si,") or o == "si":
                     if m in ("add", "sub"):
                         try:
@@ -248,9 +264,9 @@ class Runtime:
                 if m == "mov" and o.startswith("di, ") and is_imm_op(i, 1):
                     regtab["cs:[di]"] = i.operands[1].imm  # table base; index added later
                 if m == "jmp" and o == "word ptr cs:[di]" and "cs:[di]" in regtab:
-                    work.extend((e, delta) for e in self._table_targets(regtab["cs:[di]"], 24)); break
+                    work.extend((e, delta, sv) for e in self._table_targets(regtab["cs:[di]"], 24)); break
                 if m == "jmp" and o in regtab:
-                    work.extend((e, delta) for e in self._table_targets(regtab[o])); break
+                    work.extend((e, delta, sv) for e in self._table_targets(regtab[o])); break
                 if m == "call":
                     if is_imm and depth < 4:
                         delta += self._helper_delta(i.operands[0].imm, depth)
@@ -262,7 +278,7 @@ class Runtime:
                         a = i.operands[0].imm; continue
                     mm = _TABLE.fullmatch(o)
                     if mm:
-                        work.extend((e, delta) for e in self._table_targets(int(mm.group(1), 16)))
+                        work.extend((e, delta, sv) for e in self._table_targets(int(mm.group(1), 16)))
                     elif helper and o in ("ax", "bx", "cx", "dx", "di"):
                         results.add(("ret", delta))  # returns via popped address
                     break
@@ -271,7 +287,7 @@ class Runtime:
                         results.add(("builtin", delta))
                     break
                 if m.startswith("j") or m in ("loop", "jcxz", "loope", "loopne"):
-                    work.append((i.operands[0].imm, delta)); a = nxt; continue
+                    work.append((i.operands[0].imm, delta, sv)); a = nxt; continue
                 a = nxt
         return results
 
@@ -644,6 +660,8 @@ def decode(rt: Runtime, data: bytes, p: Proc) -> tuple[list[Insn], str | None]:
         out = []
         while pc < p.end:
             (op,) = struct.unpack_from("<H", data, pc)
+            if depth and not rt.plausible(op):
+                return None  # a candidate length that exposes a non-handler word is wrong
             n = rt.operand_len(op)
             if n is None and op in rt.solved and len(rt.solved[op]) == 1:
                 n = next(iter(rt.solved[op]))

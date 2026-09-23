@@ -26,7 +26,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from opcodes import METHODS, NAMES, SEM  # noqa: E402
 
 BINOPS = {  # family -> (text, precedence; higher binds tighter)
-    "IS": ("Is", 3),
+    "IS": ("Is", 3), "LIKE": ("Like", 3),
     "POW": ("^", 10), "MUL": ("*", 8), "DIV": ("/", 8), "IDIV": ("\\", 7), "MOD": ("Mod", 6),
     "ADD": ("+", 5), "SUB": ("-", 5), "CONCAT": ("&", 4),
     "EQ": ("=", 3), "NE": ("<>", 3), "LT": ("<", 3), "LE": ("<=", 3), "GT": (">", 3), "GE": (">=", 3),
@@ -77,6 +77,8 @@ def lift(code: list[tuple[int, bytes]], ids: dict[int, int] | None = None,
     local = ""
     obj_at: list[int] = []  # stack depth just after a method's object was pushed
     ret_value: list[int] = []  # a pending method call is used as a value
+    gfx: list[tuple[str, int]] = []  # (object prefix, stack mark) for graphics/Print methods
+    print_items: list[str] = []
 
     def pop() -> E:
         return st.pop() if st else E("?")
@@ -156,8 +158,72 @@ def lift(code: list[tuple[int, bytes]], ids: dict[int, int] | None = None,
             st.append(E(f"{o.text}.p{sub & 0xFF:x}" if sub & 0xC000 == 0xC000 else f"{o.text}!c{sub & 0x3FFF:x}"))
         elif name == "ARG_MISSING":
             st.append(E(MISSING_TEXT))
+        elif name in ("GFX", "GFX_FN", "PRINT_BEGIN"):
+            if name == "PRINT_BEGIN" and gfx:
+                continue  # Debug/file target already opened the method
+            o = pop().text if st else ""
+            gfx.append(((o + ".") if o else "", len(st)))
+        elif name == "DEBUG":
+            st.append(E("Debug"))
+        elif name == "PRINT#":
+            num = pop().text
+            gfx.append((f"\0file{num}", len(st)))
+        elif name in ("PT", "PT_TO", "PT_STEP_TO"):
+            y, x = pop(), pop()
+            pre = {"PT": "", "PT_TO": "-", "PT_STEP_TO": "-Step"}[name]
+            st.append(E(f"{pre}({x.text}, {y.text})"))
+        elif name == "CIRCLE_C":
+            st.append(E("\0color"))
+        elif name in ("LINE", "LINE_C", "CIRCLE", "PSET_C", "SCALE"):
+            o, mark = gfx.pop() if gfx else ("", len(st))
+            parts = [e.text for e in st[mark:]]
+            del st[mark:]
+            if name.startswith("LINE"):
+                pts = "".join(t for t in parts if t.startswith(("(", "-")))
+                rest = [t for t in parts if not t.startswith(("(", "-"))]
+                flag = {1: "B", 2: "BF"}.get(slot_of(operand), "")
+                args = [pts] + (rest if name == "LINE_C" else ([""] if flag else [])) + ([flag] if flag else [])
+                out.append(f"{o}Line " + ", ".join(args))
+            elif name == "CIRCLE":
+                out.append(f"{o}Circle " + ", ".join(t for t in parts if t != "\0color"))
+            elif name == "PSET_C":
+                out.append(f"{o}PSet " + ", ".join(parts))
+            else:
+                out.append(f"{o}Scale")
+        elif name in ("PRINT_NL", "PRINT_COMMA"):
+            print_items.append(pop().text)
+            if name == "PRINT_COMMA":
+                continue
+            o, mark = gfx.pop() if gfx else ("", len(st))
+            del st[mark:]
+            if o.startswith("\0file"):
+                out.append(f"Print {o[5:]}, " + ", ".join(print_items))
+            else:
+                out.append(f"{o}Print " + ", ".join(print_items))
+            print_items.clear()
+        elif name in ("TEXTWIDTH", "TEXTHEIGHT", "POINT"):
+            o, mark = gfx.pop() if gfx else ("", len(st))
+            args = [e.text for e in st[mark:]]
+            del st[mark:]
+            fn = {"TEXTWIDTH": "TextWidth", "TEXTHEIGHT": "TextHeight", "POINT": "Point"}[name]
+            st.append(E(f"{o}{fn}({', '.join(args)})"))
+        elif name == "INPUT#":
+            gfx.append((pop().text, len(st)))
+        elif name.startswith("INPUT_ITEM"):
+            print_items.append(pop().text)
+        elif name == "INPUT_END":
+            num, mark = gfx.pop() if gfx else ("#?", len(st))
+            out.append(f"Input {num}, " + ", ".join(print_items))
+            print_items.clear()
+        elif name in ("GET#", "PUT#"):
+            var, rec, num = pop(), pop(), pop()
+            out.append(f"{'Get' if name == 'GET#' else 'Put'} {num.text}, {rec.text}, {var.text}")
         elif name == "FILENUM":
             st.append(E("#" + pop().text))
+        elif name == "OPEN_LEN":
+            ln, num, fname = pop(), pop(), pop()
+            mode = {1: "Input", 2: "Output", 4: "Random", 8: "Append", 0x20: "Binary"}.get(slot_of(operand) & 0xFF, "?")
+            out.append(f"Open {fname.text} For {mode} As {num.text} Len = {ln.text}")
         elif name == "OPEN":
             m = slot_of(operand)
             mode = {1: "Input", 2: "Output", 4: "Random", 8: "Append", 0x20: "Binary"}.get(m & 0xFF, f"Mode{m:x}")
@@ -324,7 +390,10 @@ def lift(code: list[tuple[int, bytes]], ids: dict[int, int] | None = None,
             n = FUNCS[fn]
             fn = fn.split(".")[0]
             args = [pop() for _ in range(n)][::-1]
-            st.append(E(fn + (f"({', '.join(a.text for a in args)})" if n else "")))
+            while args and args[-1].text == MISSING_TEXT:
+                args.pop()
+            text = ", ".join("" if a.text == MISSING_TEXT else a.text for a in args)
+            st.append(E(fn + (f"({text})" if n else "")))
         elif False:
             n = FUNCS[fn]
             args = [pop() for _ in range(n)][::-1]
@@ -357,11 +426,11 @@ def lift(code: list[tuple[int, bytes]], ids: dict[int, int] | None = None,
             out.append("End If")
         elif name in ("END_SELECT",):
             out.append("End Select")
-        elif name in ("FOR", "FOR_STEP", "FOR.I"):
+        elif name in ("FOR", "FOR_STEP", "FOR.I", "FOR.L"):
             step = pop().text if name == "FOR_STEP" else None
             b, a, v = pop(), pop(), pop()
             out.append(f"For {v.text} = {a.text} To {b.text}" + (f" Step {step}" if step else ""))
-        elif name in ("NEXT", "NEXT.I"):
+        elif name in ("NEXT", "NEXT.I", "NEXT.L"):
             out.append(f"Next {pop().text}")
         elif name == "EXIT":
             out.append("Exit Sub")
@@ -391,6 +460,8 @@ KEYWORDS = {"and", "or", "not", "mod", "xor", "eqv", "imp", "if", "then", "else"
             "do", "loop", "while", "until", "wend", "redim", "preserve", "set", "is", "nothing", "typeof",
             "local", "ubound", "to", "open", "input", "output", "append", "random", "binary", "as", "close",
             "gosub", "return", "randomize", "loadpicture", "access", "read", "write",
+            "line", "circle", "pset", "scale", "print", "step", "debug", "textwidth", "textheight", "point",
+            "get", "put", "like", "len",
             "for", "to", "step", "next", "end", "exit", "sub", "function", "on", "error", "goto", "resume",
             "unload", "load", "select", "case"}
 
