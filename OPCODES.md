@@ -204,9 +204,36 @@ Confirmed two independent ways: (1) empirically, by checking that the 2
 bytes immediately preceding several different known UI strings in a real
 VB3 binary always exactly equal that string's byte length; (2) by
 compiling `Print "hi"` through the real IDE and finding the exact same
-`<u16 length><ASCII>` pattern (`02 00 68 69`) in the output. `Print`'s own
-call sequence (`15 4A 37 21 9A 38 08 00 0C 00` before the string, `00 00
-32 61` after it) is not yet decoded.
+`<u16 length><ASCII>` pattern (`02 00 68 69`) in the output.
+
+## `Print`
+
+Tested `Print "hi"`, `Print "bye!"` (different string length), `Print 5`,
+`Print 7`, `Print 0` (numeric literals), and `Print x` (a variable) to
+isolate `Print`'s call shape from its argument:
+
+- **`15 4A 37 21`** (4 bytes) is a fixed prefix before every `Print`
+  argument, identical regardless of argument type — this is `Print`'s own
+  opcode.
+- **Variable argument**: prefix + the already-decoded `LOAD` opcode
+  (`21 2D <slot>`) + a 2-byte finisher `A4 60`.
+- **Small-integer-literal argument** (tested N=0, 5, 7 — within the
+  existing 0-10 small-int table): prefix + a push whose first byte matches
+  the standalone small-int table (`E5`/`0A`/`16` for 0/5/7) + a finisher
+  `DE 60`. The push's *second* byte is inconsistent across samples — `37`
+  (matching the standalone table exactly) for N=0, but `38` for N=5 and
+  N=7 — not understood; possibly N=0 is compiler-special-cased, or there's
+  a real distinction this 3-sample test doesn't capture. Flagged open.
+- **String-literal argument**: prefix + `9A 38 <u16 A> <u16 0x000C>` +
+  the inline length-prefixed string (see above) + trailer `00 00 32 61`.
+  `<u16 A>` = `6 + <string char length>`, confirmed exactly with both a
+  2-char and a 4-char string. The `0x000C` field's meaning is unresolved
+  (constant in both samples). Structurally distinct from the
+  numeric/variable cases — no `X 60`-style finisher, ends in `32 61`
+  instead.
+
+Not yet tested: multiple `Print` arguments (`;`/`,` separated), floating-
+point literal arguments, `Print` with no trailing newline (`;`-terminated).
 
 ## Comparison operators
 
@@ -313,8 +340,9 @@ for full environment setup (Xvfb, window manager, Wine prefix).
 
 ## Open questions / next steps
 
-- Decode `Print`'s call sequence and the floating-point arithmetic family
-  in the same way arithmetic-on-integers was decoded.
+- Decode the floating-point arithmetic family in the same way
+  arithmetic-on-integers was decoded (`Print`'s call sequence is now
+  decoded, see above).
 - Extend control flow to `ElseIf` and loops (`For`/`Do`/`While`) — only
   `If`/`Then`/`Else` is decoded so far; `For`/`Next` structure is sketched
   but not confirmed (see above).
