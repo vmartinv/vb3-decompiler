@@ -543,7 +543,8 @@ def _slot_refs(segs: list[Segment], rt: "Runtime") -> dict[int, dict[int, str]]:
 def objvar_kind(kind: str, w0: int, w1: int, w2: int) -> int | None:
     """Declared class kind of an object variable's data-image record, or None.
     Module-level `kind, 0, 0`; local `kind, frame offset, frame offset`
-    (negative); parameter `1, kind`. Kind 1 = Form, else a control kind."""
+    (negative); parameter `kind, bp offset` (positive). Kind 1 = Form,
+    4 = Control (generic, late-bound), else a control class kind."""
     ok = lambda k: k == 1 or k in CLASS_BY_KIND
     if kind not in ("objvar", "control"):
         return None
@@ -551,8 +552,8 @@ def objvar_kind(kind: str, w0: int, w1: int, w2: int) -> int | None:
         return w0
     if kind == "objvar" and w1 >= 0xFF00 and w2 >= 0xFF00 and ok(w0):
         return w0
-    if kind == "objvar" and w0 == 1 and w1 and ok(w1):
-        return w1
+    if kind == "objvar" and 6 <= w1 < 0x100 and not w1 & 1 and ok(w0):
+        return w0
     return None
 
 
