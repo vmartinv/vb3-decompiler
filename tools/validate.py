@@ -32,7 +32,8 @@ def project(mak: Path, exe: Path, rt: P.Runtime, verbose: bool) -> Counter:
     segs = P.parse_ne(exe)
     res = P.rcdata(exe)
     names = P.proc_names(segs, rt, res)
-    syms = P.resolve_symbols(segs, rt, res)
+    symbols = P.Symbols(rt, segs, res)
+    syms = symbols.controls
     by_seg: dict[int, list] = {}
     for r in P.find_procs(segs):
         by_seg.setdefault(r.segment, []).append(r)
@@ -74,7 +75,23 @@ def project(mak: Path, exe: Path, rt: P.Runtime, verbose: bool) -> Counter:
             if len(groups) != len(lines):
                 continue
             sym = syms.get(seg, {})
+            notes = dict(zip((i.pc for i in insns), symbols.annotate(seg, insns)))
             for g, src in zip(groups, lines):
+                members = {t.lower() for t in re.findall(r"[.!]\s*([A-Za-z_]\w*)", A.strip_comment(src))}
+                for i in g:
+                    if P.NAMES.get(i.op) in ("PGET", "PSET", "PGET_IDX", "PSET_IDX"):
+                        c["props_total"] += 1
+                        note = notes.get(i.pc, "")
+                        if not note:
+                            c["props_missing"] += 1
+                            if verbose:
+                                print(f"   noprop {f.name}: {src!r}")
+                        elif note.split(".")[-1].lower() in members:
+                            c["props_ok"] += 1
+                        else:
+                            c["props_wrong"] += 1
+                            if verbose:
+                                print(f"   prop {f.name}:{want}: {note} not in {src!r}")
                 idents = {t.lower() for t in re.findall(r"[A-Za-z_]\w*", A.strip_comment(src))}
                 for i in g:
                     if P.NAMES.get(i.op) in ("CONTROL", "CTLARRAY", "FORM") and i.operand:
@@ -120,7 +137,8 @@ def main():
         print(f"{mak.stem:10s} procs {c['procs_ok']}/{c['procs_total']} (wrong {c['procs_wrong']}, false {c['procs_false']})"
               f"  refs {c['refs_ok']}/{c['refs_total'] - c['refs_objvar']} (missing {c['refs_missing']}, wrong {c['refs_wrong']}; +{c['refs_objvar']} object vars)")
     print(f"TOTAL      procs {total['procs_ok']}/{total['procs_total']} (wrong {total['procs_wrong']}, false {total['procs_false']})"
-          f"  refs {total['refs_ok']}/{total['refs_total'] - total['refs_objvar']} (missing {total['refs_missing']}, wrong {total['refs_wrong']}; +{total['refs_objvar']} object vars)")
+          f"  refs {total['refs_ok']}/{total['refs_total'] - total['refs_objvar']} (missing {total['refs_missing']}, wrong {total['refs_wrong']}; +{total['refs_objvar']} object vars)"
+          f"  props {total['props_ok']}/{total['props_total']} (missing {total['props_missing']}, wrong {total['props_wrong']})")
 
 
 if __name__ == "__main__":

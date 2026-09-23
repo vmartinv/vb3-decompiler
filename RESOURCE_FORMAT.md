@@ -9,8 +9,9 @@ using its own formats inside them. Worked example: `qrace.exe`.
 - `RT_RCDATA`: everything else. There are no `RT_STRING`, `RT_BITMAP` or
   `RT_DIALOG` resources. Code strings are inline in p-code (`OPCODES.md`).
 - The smallest unpaired `RT_RCDATA` (id 1) is the project directory: the
-  project name plus the list of `.FRM` files. Standard modules get no
-  resource.
+  project name, the `.FRM` files, VBX files and their control classes, and
+  the late-bound property table (see `OPCODES.md` → Properties). Standard
+  modules get no resource.
 - `RT_RCDATA` 2: initial data images (global segment, then each module's
   data as `u16 length, 00 00, 1E 00, …` chunks, plus slot fix-up lists
   `09 <u16 slot>`). Control and form slot records are documented in
