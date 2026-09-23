@@ -64,9 +64,9 @@ end offset. All non-`FOR` branch targets land on instruction boundaries.
 
 ## Handler names
 
-`tools/opcodes.py` names every handler `qrace.exe` uses except one
-(`472C`), from the scope × type test project and the sample corpus.
-Names ending in `?` are inferred from context only.
+`tools/opcodes.py` names every handler `qrace.exe` uses, from targeted
+test projects (scope × type, operators/builtins/file I/O) and the sample
+corpus. Names ending in `?` (2 in `qrace.exe`) are inferred from context.
 
 - **Opcode IDs group operations**; handler variants within an ID carry the
   operand type/storage. For example ID `0x0B` load, `0x0C` store, `0x0E`/`0x0F`
@@ -97,7 +97,6 @@ Handlers are named from those pairs.
 
 ## Next steps
 
-- Confirm the `?` names and name `472C` with a targeted test compile.
 - Control slot → control mapping (needed to name controls and their
   properties).
 - Procedure record → event name (record +4 looks like a control/event id).

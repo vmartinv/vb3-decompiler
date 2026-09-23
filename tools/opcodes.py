@@ -55,13 +55,13 @@ NAMES: dict[int, str] = {
     0x4C09: "PGET", 0x4C72: "PSET",          # operand 0xC0nn: class property nn
     0x4A63: "SUBOBJ", 0x4CA8: "CTLARRAY", 0x4EB0: "CTLARRAY_OF",
     0x4A23: "UNLOAD", 0x4A2A: "LOAD",
-    0x316D: "SET", 0x4F69: "SET_END?",
+    0x316D: "ADDR.GLB", 0x4F69: "SET_OBJ?",
     # --- literals ------------------------------------------------------
     **{a: f"PUSH.I {n}" for n, a in enumerate(
         [0x37E5, 0x37ED, 0x37F8, 0x37FE, 0x3804, 0x380A, 0x3810, 0x3816, 0x381C, 0x3822, 0x3828])},
     0x3834: "PUSH.I", 0x3831: "PUSH.I",
     0x3788: "PUSH.R8 0", 0x3791: "PUSH.R8 1", 0x379A: "PUSH.R8 2", 0x37A7: "PUSH.R8 3",
-    0x37AE: "PUSH.R8 4", 0x37B5: "PUSH.R8 5?", 0x37D8: "PUSH.R8 10",
+    0x37AE: "PUSH.R8 4", 0x37B5: "PUSH.R8 5", 0x37D8: "PUSH.R8 10",
     0x387A: "PUSH.R8", 0x389A: "PUSH.T",
     0x37E2: "PUSH.B False", 0x383D: "PUSH.B True",
     # --- conversions ---------------------------------------------------
@@ -84,9 +84,13 @@ NAMES: dict[int, str] = {
     0x42FD: "AND.V", 0x39E7: "AND.I",
     0x4312: "OR.V", 0x39F2: "OR.I",
     0x42D1: "NOT.V", 0x39DC: "NOT.I",
+    0x42B1: "MOD.V", 0x3918: "MOD.I", 0x4276: "IDIV.V", 0x38FF: "IDIV.I",
+    0x4255: "POW.V", 0x3B92: "POW.R8", 0x77B8: "CONCAT",
+    0x4290: "XOR.V", 0x39FE: "XOR.I", 0x42A3: "EQV.V", 0x3A0A: "EQV.I", 0x42E7: "IMP.V", 0x3A17: "IMP.I",
     # --- builtins ------------------------------------------------------
     0x19F5: "Rnd", 0x743A: "Randomize",
-    0x3BCA: "Int.R8", 0x4738: "Int.V",
+    0x3BCA: "Int.R8", 0x4738: "Int.V", 0x3A24: "Int.I", 0x4744: "Fix.V", 0x472C: "Abs.V", 0x104D: "CInt",
+    0x7582: "Len", 0x756A: "Left$", 0x74C9: "Chr$", 0x74C3: "Asc", 0x769C: "UCase$", 0x775F: "Format$",
     0x7677: "Str$", 0x760A: "Str$.I", 0x76A2: "Val",
     0x52BA: "Shell", 0x2A0D: "QBColor", 0x7EC5: "Error$", 0x19CE: "Err",
     0x52AF: "Timer", 0x1A78: "Now", 0x750A: "InStr", 0x75BC: "Mid$",
@@ -95,9 +99,12 @@ NAMES: dict[int, str] = {
     # --- file I/O ------------------------------------------------------
     0x376D: "FILENUM", 0x373B: "OPEN",        # operand: 1 Input, 2 Output
     0x3631: "CLOSE", 0x375B: "PRINT#", 0x6132: "PRINT#_ITEM",
-    0x3692: "INPUT#?", 0x36DF: "INPUT#_FIELD?",
+    0x3692: "INPUT#", 0x3698: "INPUT_ITEM.I", 0x36C2: "INPUT_ITEM.V", 0x36B6: "INPUT_ITEM.T",
+    0x368C: "INPUT_END", 0x36DF: "INPUT_ITEM_FIELD?",
     # --- user-defined types -------------------------------------------
-    0x0709: "ARRAY_ELEM_ADDR.UDT", 0x6D00: "FIELD_SET?", 0x6BD2: "FIELD_GET?",
+    0x0709: "AADDR.GLB",                     # address of an array element
+    0x6CE6: "FIELD_ADDR", 0x6FB6: "FIELD_ADDR.T",  # operand: field offset
+    0x6D00: "FIELD_SET.I", 0x6BD2: "FIELD_GET.I", 0x6D9B: "FIELD_SET.V", 0x6C6C: "FIELD_GET.V",
 }
 
 # Variables: load (id 0x0B) / store (id 0x0C) by storage x type.
