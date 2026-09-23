@@ -1,0 +1,14 @@
+# Local VB3 IDE/compiler and everything derived from it -- never commit,
+# regenerate locally from your own legally-obtained copy of VB3.
+work/
+*.7z
+
+# Any executables you analyze with these tools.
+*.exe
+*.EXE
+*.dll
+*.DLL
+
+# Python
+__pycache__/
+*.pyc
