@@ -67,10 +67,14 @@ project:
   **byte-identical across every VB3 p-code executable tested**, regardless
   of what the program does (confirmed across a dozen+ test programs plus a
   real full-sized game binary, [Quibble Race](https://github.com/vmartinv/qrace)).
-- Each `Sub`/`Function`/event procedure with at least one statement gets
-  its own small CODE segment holding just that procedure's compiled
-  instructions. An **empty** procedure (e.g. an unused `Form_Load`)
-  contributes no segment at all.
+- Each `Sub`/`Function`/event procedure with at least one statement
+  contributes code to a CODE segment. An **empty** procedure (e.g. an
+  unused `Form_Load`) contributes nothing. **Correction**: earlier testing
+  (single-procedure programs only) suggested one segment per procedure;
+  compiling a form with a `Form_Load` that `Call`s two extra `Sub`s showed
+  all three procedures' code concatenated into the *same* CODE segment —
+  so it's one segment per module (or some larger unit), not strictly one
+  per procedure. Not yet clear what the real grouping boundary is.
 - A form/module's own segment (which also carries a fixed-format header —
   see `RESOURCE_FORMAT.md` — plus embedded picture data if any) acts as a
   **procedure descriptor table**: one entry per procedure, tracking at
@@ -95,11 +99,17 @@ arithmetic, variable assignment, `Print`, and multi-statement procedures.
 
 Variable **identity is positional, not name-based** — `x = 1` and `y = 1`
 compile to byte-for-byte identical procedure segments. The first local
-variable referenced in a procedure (by any name) gets slot `0x001A`; each
-subsequently-referenced distinct variable gets the next slot, **+4** from
-the last (`0x001E`, `0x0022`, ...) — assigned in first-*use* order during
-compilation, not textual declaration order. Confirmed with up to 3
-variables in one procedure.
+variable referenced gets slot `0x001A`; each subsequently-referenced
+distinct variable gets the next slot, **+4** from the last (`0x001E`,
+`0x0022`, ...) — assigned in first-*use* order during compilation, not
+textual declaration order. Confirmed with up to 3 variables in one
+procedure. **Caveat**: this was only tested with a single procedure per
+segment. With multiple `Sub`s sharing a segment (see above), slot
+numbering was observed to continue *across* procedures rather than
+resetting at `0x001A` for each one — e.g. a second `Sub`'s only variable
+got slot `0x001E`, not `0x001A`. Whether slots are truly segment-wide
+(shared storage) or this is a compile-time-only bookkeeping artifact
+(with real per-procedure stack frames at runtime) is not determined.
 
 Example (`y = x`, a pure variable-to-variable copy):
 
@@ -322,6 +332,31 @@ to see if the "opcode" bytes are actually a relative offset/count, and
 check `Do`/`While` for a simpler (non-FOR-specific) loop encoding to
 cross-reference against.
 
+## `Call`ing another `Sub`
+
+`Call DoThing` (a no-argument `Sub` in the same module) compiles to
+`E0 62 <4-byte operand>` — a 6-byte instruction, wider than any other
+opcode decoded so far (2-byte opcode + 4-byte operand vs. the usual 2-byte
+operand). Tested with one and then two callees (`Call DoThing` /
+`Call DoOther`):
+
+- First call's operand was `00 00 00 01` in *both* tests (whether DoThing
+  was the only callee or one of two) — stable, doesn't look like a simple
+  "how many procedures exist" counter.
+- Second call's operand (`Call DoOther`) was `00 00 38 01` — `0x0138`,
+  not `0x0002`, ruling out a simple sequential procedure-index theory.
+  `0x0138` matches the *total size of segment 3* in the single-callee
+  test — plausibly a reference (offset or otherwise) into segment 3, the
+  form's procedure-descriptor table (see `RESOURCE_FORMAT.md`), rather
+  than a plain index or code offset.
+
+Segment 3's actual layout (dumped for both test cases) is a dense,
+structured binary block that clearly encodes per-procedure info but wasn't
+decoded here — cracking `Call`'s addressing fully means reverse-engineering
+that table, which is a bigger job than the opcode-stream work above and
+overlaps with the still-unresolved parts of `RESOURCE_FORMAT.md`. Not
+pursued further this round; flagged as the next real task if resumed.
+
 ## Reproducing this / extending it further
 
 - `tools/vb3ide/kwaj_extract.py <disk-files-dir> <out-dir>` — decompress a
@@ -346,7 +381,10 @@ for full environment setup (Xvfb, window manager, Wine prefix).
 - Extend control flow to `ElseIf` and loops (`For`/`Do`/`While`) — only
   `If`/`Then`/`Else` is decoded so far; `For`/`Next` structure is sketched
   but not confirmed (see above).
-- Calling other procedures/built-in functions — not attempted yet.
+- Decode segment 3's procedure-descriptor table to fully resolve `Call`'s
+  operand (see above) — needed before `Call` is truly useful for reading
+  real disassembly. `Function` calls (with a return value) and built-in
+  function calls not attempted yet either.
 - Once enough of the opcode set is decoded, it should generalize
   directly to any VB3 p-code binary, not just small test programs —
   [Quibble Race](https://github.com/vmartinv/qrace) is being used as the
