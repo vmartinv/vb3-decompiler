@@ -9,9 +9,9 @@ compiling known-source test programs with a real VB3 compiler.
 - **Segment 1**: fixed 25-byte bootstrap stub, identical in every VB3 exe.
 - **Segment 2**: data.
 - **Segment 3**: procedure table (records, below).
-- **Segments 4+**: code. One segment per form/module that has code, in
-  project-directory order (`qrace.exe`: segment = 4 + form index).
-  Procedures of the same unit are concatenated in one segment.
+- **Segments 4+**: code. One segment per module/form that has code:
+  standard modules first, then forms, each in project order. A unit's
+  non-empty procedures are concatenated in source order, one record each.
 
 ### Procedure records (segment 3)
 
@@ -39,13 +39,18 @@ Handlers read operands with `es:lodsw`/`es:lodsb` and end with
   handler's x86 paths and count the SI advance before dispatch. Branches
   load SI with `mov si, es:[si]`. Inline blobs are `lodsw; add si, ax`.
   Near helpers are summarized recursively, and `jmp [reg+table]`
-  type-dispatch is followed. Four handlers have manual lengths (listed in
-  the tool).
+  type-dispatch is followed (including `mov di, imm` … `jmp cs:[di]`).
+  All call-family handlers converge on the call core at `0x62E4`, where
+  their operands have been read.
+- **Constraint solving** covers the rest: every procedure must decode to
+  exactly its end offset, so an underivable length is the unique candidate
+  that makes that work (ties: the shortest followed by a statement
+  marker). One manual length remains (`0x36DF`).
 - **Opcode ID**: the u16 immediately before each handler. It is shared by
   type-specialized variants of the same operation. For example, variable
   access handlers `2D21 2B15 4BA3 4BCC 4A6E 316D` all have ID `0x0B`.
-- **Builtins**: handlers that `call 0x793F`/`0x7944`/`0x7958`/`0x795D`/
-  `0x796C` (followed by a 1-byte index), or far-jump via
+- **Builtins**: handlers that `call` one of the trampolines
+  `0x792B`…`0x796C` (followed by a 1-byte index), or far-jump via
   `0x79A1`/`0x79A6`/`0x79B0`, dispatch into the runtime library. They
   return to the dispatcher without touching SI.
 - **Call operand**: `& 6` selects one of 4 table-segment selectors
@@ -62,7 +67,8 @@ offset within the code segment.
 
 | handler | name | operands | notes |
 |---|---|---|---|
-| `494B` | STMT | — | before every source line; decrements a yield counter (DoEvents) |
+| `494B`, `4935`, `491F`, `4906`, … | STMT | — | one per statement (`a: b` is two); entry points into the yield countdown `dec ss:[0x278]`. The entry used varies with the line's layout, not its meaning |
+| `4965` | LABEL | u32 | label definition; emitted as its own statement or folded into the previous one |
 | `65D9` | RET | — | procedure exit |
 | `0E5E`, `0E5B` | TRAP | — | runtime-error stubs emitted after `RET` |
 | `37E5 37ED 37F8 37FE 3804 380A 3810 3816 381C 3822 3828` | PUSH_I2 0..10 | — | |
@@ -83,8 +89,16 @@ offset within the code segment.
 | `35EC` | ENDIF | — | |
 | `1B37` / `1B3E` | FOR / FOR_STEP | slot, tgt | tgt = the matching NEXT's operand word; handler skips it |
 | `1E08` | NEXT | slot, tgt | back-edge to first body statement |
-| `62E0` | CALL | u16 0, u16 record | |
+| `62E0` | CALL | u16 0, u16 record | `62DD`, `62A7` are variants (e.g. `Declare`d DLL calls) |
+| `7E63` | RESUME | — | |
 | `4A15` | PRINT | — | followed by argument push + finisher |
+
+## Source-aligned corpus
+
+`tools/align_source.py` pairs each statement of a compiled project with
+its source line. Compiling VB3's own sample projects gives thousands of
+aligned lines (see README: `restore_install.py`, `compile_project.py`).
+Handlers are named from those pairs.
 
 ## Next steps
 
@@ -94,5 +108,4 @@ offset within the code segment.
 - Decode operands: the `0xC0xx` property operands (`4C09` family, likely
   `0xC000 | property index`), the variable-scope variants (ID `0x0B`), and
   `PUSH_STR`'s second field.
-- Replace the 4 manual operand lengths with derived ones.
 - Emit pseudo-BASIC from the listing.

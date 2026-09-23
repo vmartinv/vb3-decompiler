@@ -140,17 +140,21 @@ _TABLE = re.compile(r"word ptr (?:cs:)?\[(?:bx|di|si|bp) \+ (0x[0-9a-f]+)\]")
 # Near-call trampolines into the out-of-segment builtin library: `call X`
 # followed by a 1-byte builtin index; control comes back to dispatch with SI
 # untouched. The far jumps are the same thing reached by `jmp` instead.
-_BUILTIN_CALLS = {0x793F, 0x7944, 0x7958, 0x795D, 0x796C}
+_BUILTIN_CALLS = {0x792B, 0x7930, 0x7935, 0x793A, 0x793F, 0x7944, 0x7958, 0x795D, 0x7962, 0x796C}
 _BUILTIN_FARJMPS = {0x79A1, 0x79A6, 0x79B0}
+# Shared procedure-call core: every call-family handler has read all of its
+# operands (u16 0 + u16 record, or u16 record) by the time it gets here.
+_CALL_CORE = 0x62E4
 # Handlers whose operand reads happen in ways the static explorer can't
 # follow (frame setup / peeking ahead). Each value was confirmed by the
 # whole-program check (every procedure decodes to exactly its end offset).
 _MANUAL = {
-    0x62E0: 4,  # Call: 2 reserved + u16 proc-record offset; builds a frame
-    0x62DD: 4,  # Call variant (falls into 0x62E0)
-    0x4EB0: 4,  # helper peeks es:[si+2]
     0x36DF: 2,  # builtin on one path, dispatch on the other
 }
+
+
+def is_imm_op(i, k: int) -> bool:
+    return len(i.operands) > k and i.operands[k].type == X86_OP_IMM
 
 
 class Runtime:
@@ -162,6 +166,8 @@ class Runtime:
         self._insn: dict[int, object] = {}
         self._helper: dict[int, int] = {}
         self._len: dict[int, object] = {}
+        self._stmt: dict[int, bool] = {}
+        self.solved: dict[int, set] = {}  # op -> lengths found by constraint
 
     def opcode_id(self, op: int) -> int | None:
         if 2 <= op < len(self.code):
@@ -174,8 +180,8 @@ class Runtime:
             self._insn[a] = next(self.md.disasm(self.code[a:a + 16], a), None) if ok else None
         return self._insn[a]
 
-    def _table_targets(self, t: int):
-        for k in range(12):
+    def _table_targets(self, t: int, n: int = 12):
+        for k in range(n):
             e = int.from_bytes(self.code[t + 2 * k:t + 2 * k + 2], "little")
             if abs(e - t) < 0x600 and self.insn(e):
                 yield e
@@ -198,6 +204,8 @@ class Runtime:
                 if steps > maxsteps or (a, delta) in seen:
                     break
                 seen.add((a, delta))
+                if a == _CALL_CORE and not helper:
+                    results.add(delta); break
                 i = self.insn(a)
                 if i is None:
                     break
@@ -233,6 +241,10 @@ class Runtime:
                     results.add(("builtin", delta)); break
                 if m == "mov" and _TABLE.search(o) and o.split(",")[0] in ("dx", "ax", "bx", "di", "cx"):
                     regtab[o.split(",")[0]] = int(_TABLE.search(o).group(1), 16)
+                if m == "mov" and o.startswith("di, ") and is_imm_op(i, 1):
+                    regtab["cs:[di]"] = i.operands[1].imm  # table base; index added later
+                if m == "jmp" and o == "word ptr cs:[di]" and "cs:[di]" in regtab:
+                    work.extend((e, delta) for e in self._table_targets(regtab["cs:[di]"], 24)); break
                 if m == "jmp" and o in regtab:
                     work.extend((e, delta) for e in self._table_targets(regtab[o])); break
                 if m == "call":
@@ -247,6 +259,8 @@ class Runtime:
                     mm = _TABLE.fullmatch(o)
                     if mm:
                         work.extend((e, delta) for e in self._table_targets(int(mm.group(1), 16)))
+                    elif helper and o in ("ax", "bx", "cx", "dx", "di"):
+                        results.add(("ret", delta))  # returns via popped address
                     break
                 if m == "ljmp":
                     if a in _BUILTIN_FARJMPS:
@@ -272,6 +286,25 @@ class Runtime:
                 vals = {max(disp | jumps)} if jumps else (disp or {x[1] for x in r})
                 self._len[op] = vals.pop() if len(vals) == 1 else None
         return self._len[op]
+
+    def is_stmt(self, op: int) -> bool:
+        """Statement markers: `mov ax, imm` stubs (possibly none) falling
+        into `dec ss:[0x278]; js yield`. Several such entry points exist;
+        the IDE tells source-line kinds apart by the entry address."""
+        if op not in self._stmt:
+            a, ok = op, False
+            while 0 <= a < len(self.code):
+                i = self.insn(a)
+                if i is None:
+                    break
+                if i.mnemonic == "dec" and i.op_str == "word ptr ss:[0x278]":
+                    ok = True
+                    break
+                if i.mnemonic != "mov" or not i.op_str.startswith("ax, "):
+                    break
+                a += i.size
+            self._stmt[op] = ok
+        return self._stmt[op]
 
     def is_branch(self, op: int) -> bool:
         self.operand_len(op)
@@ -308,7 +341,49 @@ class Insn:
     length: int | None
 
 
+_CANDIDATES = (0, 2, 4, 6, 8, 1, 3, 5, 10, 12)
+
+
 def decode(rt: Runtime, data: bytes, p: Proc) -> tuple[list[Insn], str | None]:
+    """Decode [p.start, p.end). Opcodes whose length can't be derived
+    statically are solved by constraint: the only candidate length that lets
+    the rest of the procedure decode to exactly p.end (ties: the shortest
+    one followed by a statement marker; recorded in
+    rt.solved, so conflicting solutions across procedures are visible)."""
+    def run(pc: int, depth: int):
+        out = []
+        while pc < p.end:
+            (op,) = struct.unpack_from("<H", data, pc)
+            n = rt.operand_len(op)
+            if n is None and op in rt.solved and len(rt.solved[op]) == 1:
+                n = next(iter(rt.solved[op]))
+            if n == "var":
+                n = 2 + struct.unpack_from("<H", data, pc + 2)[0]
+            if n is None:
+                if depth >= 3:
+                    return None
+                fits = []
+                for c in _CANDIDATES:
+                    rest = run(pc + 2 + c, depth + 1)
+                    if rest is not None:
+                        fits.append((c, rest))
+                if len(fits) > 1:
+                    # Tie-break: an operand-less statement end is followed by
+                    # the next line's statement marker.
+                    fits = [f for f in fits if f[1] and rt.is_stmt(f[1][0].op)][:1] or fits
+                if len(fits) != 1:
+                    return None
+                c, rest = fits[0]
+                rt.solved.setdefault(op, set()).add(c)
+                return out + [Insn(pc, op, data[pc + 2:pc + 2 + c], c)] + rest
+            out.append(Insn(pc, op, data[pc + 2:pc + 2 + n], n))
+            pc += 2 + n
+        return out if pc == p.end else None
+
+    res = run(p.start, 0)
+    if res is not None:
+        return res, None
+    # Report where plain decoding stops.
     out, pc = [], p.start
     while pc < p.end:
         (op,) = struct.unpack_from("<H", data, pc)
@@ -319,7 +394,7 @@ def decode(rt: Runtime, data: bytes, p: Proc) -> tuple[list[Insn], str | None]:
         if n is None:
             return out, f"unknown operand length for {op:#06x} at {pc}"
         pc += 2 + n
-    return out, None if pc == p.end else f"overran end ({pc} > {p.end})"
+    return out, f"overran end ({pc} > {p.end})"
 
 
 def fmt(rt: Runtime, ins: Insn) -> str:

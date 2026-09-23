@@ -19,9 +19,12 @@ tools/
   segment_parser.py      NE segment table parser, p-code string scanner
   pcode_disasm.py        full p-code disassembler (needs your VBRUN300.DLL
                          + `pip install capstone`)
+  align_source.py        aligns a compiled project with its source, per statement
   vb3ide/
     kwaj_extract.py      decompresses VB3 setup-disk files (libmspack via ctypes)
+    restore_install.py   rebuilds the install tree (incl. sample projects)
     compile_snippet.py   drives the real VB3 IDE to compile test programs
+    compile_project.py   compiles whole .mak projects through the IDE
 ```
 
 All Python, standard library only except `vb3ide/kwaj_extract.py` (needs
@@ -62,6 +65,10 @@ cp expanded/VB.EX work/ide/VB.EXE
 cp <somewhere>/VBRUN300.DLL work/ide/
 ```
 
+Also copy the custom controls (`*.VBX`, from `windows/system/` after
+`restore_install.py`) next to `VB.EXE`: the IDE doesn't find them in the
+Wine prefix's system directory.
+
 Run it under Wine (its built-in win16 shim handles this transparently, no
 `WINEARCH=win32` or extra packages needed on a modern Wine build):
 
@@ -100,6 +107,15 @@ python3 tools/vb3ide/compile_snippet.py --name my_test --code-file snippets/my_t
 
 Output lands in `work/sweep/`. Disassemble results with
 `tools/pcode_disasm.py`.
+
+### Sample-project corpus
+
+```sh
+python3 tools/vb3ide/restore_install.py merged/PACKING.LST expanded/ work/root
+python3 tools/vb3ide/compile_project.py --all work/root/vb/samples
+python3 tools/align_source.py work/root/vb/samples/calc/calc.mak \
+    work/root/vb/samples/calc/calc.exe --runtime VBRUN300.DLL --json calc.json
+```
 
 ## Status
 
