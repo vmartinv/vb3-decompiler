@@ -11,22 +11,24 @@ using its own formats inside them. Worked example: `qrace.exe`.
 - The smallest unpaired `RT_RCDATA` (id 1) is the project directory: the
   project name plus the list of `.FRM` files. Standard modules get no
   resource.
-- Deleted forms can leave an id gap and an orphaned, unreferenced data
-  blob.
 
 ## Per-form `RT_RCDATA` pair
+
+Each form is a **data blob immediately followed by its name table**
+(blob id N, name table id N+1), in project-directory order. Confirmed on
+`qrace.exe`: under this pairing every caption matches the strings in that
+form's code segment (see `OPCODES.md`: code segment = 4 + directory index).
 
 - **Name table** (small, 256 B): Pascal strings (u8 length + ASCII). The
   first is the form name, followed by each named control in declaration
   order.
-- **Data blob** (large): compiled form properties and layout, plus
-  embedded FRX pictures. Only emitted when the form has one; forms without
-  pictures may have no blob.
+- **Data blob**: compiled form properties and layout, plus embedded FRX
+  pictures.
 
 ### Data blob header
 
 ```
-+0   u16 0xFFCC            magic
++0   bytes FF CC           magic
 +2   u16 0x002C
 +4   u32                   varies, meaning unknown
 +8   u8  0x00
@@ -45,9 +47,6 @@ with a sane `bfSize`/`bfOffBits` extracts them.
 
 ## Open questions
 
-- Caption ↔ name-table pairing: in `qrace.exe` most captions read like
-  the *next* form's (e.g. `frmInfo` → "Options"). Settle it by matching a
-  name table's controls against control records inside a blob.
 - Blob layout beyond the header: control positions, sizes, properties.
 - The FRX picture wrapper header (needed to detect non-BMP pictures).
 

@@ -9,7 +9,8 @@ compiling known-source test programs with a real VB3 compiler.
 - **Segment 1**: fixed 25-byte bootstrap stub, identical in every VB3 exe.
 - **Segment 2**: data.
 - **Segment 3**: procedure table (records, below).
-- **Segments 4+**: code. One segment per form/module that has code.
+- **Segments 4+**: code. One segment per form/module that has code, in
+  project-directory order (`qrace.exe`: segment = 4 + form index).
   Procedures of the same unit are concatenated in one segment.
 
 ### Procedure records (segment 3)

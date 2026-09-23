@@ -78,30 +78,27 @@ def main():
     rcdata = [r for r in ne.iter_resources() if r.type_name == "RT_RCDATA"]
     rcdata.sort(key=lambda r: r.res_id)
 
-    # Small (<=256B) entries are name-tables; large ones are data blobs.
-    # They alternate (name, data) starting at id 5; id 1/2/4 are outside
-    # that pattern (see docs), id 35 (frmLoan) has no data-blob pair.
+    # Each form is a data blob (FF CC magic) immediately followed by its
+    # name table, in project-directory order.
     i = 0
     while i < len(rcdata):
         res = rcdata[i]
-        if res.length <= 256 and i + 1 < len(rcdata) and rcdata[i + 1].length > 256:
-            names = read_pstrings(res.data)
-            data_res = rcdata[i + 1]
-            tags, caption = decode_form_header(data_res.data)
+        is_blob = res.data[:2] == b"\xff\xcc"
+        if is_blob and i + 1 < len(rcdata) and rcdata[i + 1].length <= 256:
+            names = read_pstrings(rcdata[i + 1].data)
+            tags, caption = decode_form_header(res.data)
             form = names[0] if names else "?"
             ncontrols = len(names) - 1 if names else 0
             print(
-                f"id{res.res_id:2d}/{data_res.res_id:<2d} {form:<14s} "
+                f"id{res.res_id:2d}/{rcdata[i + 1].res_id:<2d} {form:<14s} "
                 f"caption={caption!r:<32s} tags={tags} controls={ncontrols} "
-                f"blob={len(data_res.data):,}B"
+                f"blob={len(res.data):,}B"
             )
             i += 2
         else:
-            names = read_pstrings(res.data) if res.length <= 256 else []
-            label = names[0] if names else f"({res.length}B, unrecognized)"
+            label = f"({res.length}B)"
             print(f"id{res.res_id:<2d} unpaired: {label}")
             i += 1
-
 
 if __name__ == "__main__":
     main()
