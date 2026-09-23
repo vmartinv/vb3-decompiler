@@ -257,6 +257,31 @@ Decoded via `If x = 1 Then \n y = 2 \n End If`, a variant with a longer
 Not yet tested: `ElseIf`, loops (`For`/`Do`/`While`), and whether `EC 35`
 appears in other block-closing contexts (e.g. loop ends) or is `If`-specific.
 
+### `For`/`Next`: structurally distinct, not decoded in detail
+
+`For i = 1 To 3 \n y = i \n Next i` confirms `For`/`Next` does **not** reuse
+the comparison (`44`)/branch (`34`/`35`) opcodes above — it's a separate
+opcode family. Solid findings only:
+
+- `0F 32 <u16 LE slot>` appears twice: once on the `For` line (before the
+  start/end values are pushed) and again, identically, on the `Next` line
+  — both instances reference the loop control variable's slot. Clearly
+  FOR/NEXT-specific, parameterized by the loop variable.
+- Two `B8 FF <u16 LE operand>` instructions appear (one right after the
+  start/end values are pushed, one at the very end of the `Next` line) —
+  plausibly the loop-test/branch-back mechanism, but unlike `If`'s
+  branches, the operands didn't land cleanly on statement-marker
+  boundaries when checked, so the exact target semantics are **not
+  confirmed**. Don't trust this pairing yet.
+- A handful of other bytes (`37 1B`, `08 1E`) don't match any previously
+  decoded family — likely step-related or loop-control-block setup, not
+  investigated.
+
+Needs a proper series of controlled variants (vary start/end/step
+independently, vary body length, check `Do`/`While` for comparison) before
+writing this up as a real decode — flagged as the next concrete task
+rather than guessed at here.
+
 ## Reproducing this / extending it further
 
 - `tools/vb3ide/kwaj_extract.py <disk-files-dir> <out-dir>` — decompress a
@@ -278,7 +303,8 @@ for full environment setup (Xvfb, window manager, Wine prefix).
 - Decode `Print`'s call sequence and the floating-point arithmetic family
   in the same way arithmetic-on-integers was decoded.
 - Extend control flow to `ElseIf` and loops (`For`/`Do`/`While`) — only
-  `If`/`Then`/`Else` is decoded so far.
+  `If`/`Then`/`Else` is decoded so far; `For`/`Next` structure is sketched
+  but not confirmed (see above).
 - Calling other procedures/built-in functions — not attempted yet.
 - Once enough of the opcode set is decoded, it should generalize
   directly to any VB3 p-code binary, not just small test programs —
