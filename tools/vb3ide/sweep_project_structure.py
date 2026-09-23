@@ -83,10 +83,15 @@ def write_project(extra_files: list[FileSpec]) -> list[str]:
     (Form1.frm first, then extras in the given order) for bookkeeping."""
     PROJ_DIR.mkdir(parents=True, exist_ok=True)
 
+    # Only module-level Subs can be Call()d unqualified from Form1; extra
+    # forms' Subs are left uncalled (VB3's cross-form call syntax is not
+    # straightforward -- see OPCODES.md). We only need the extra forms to
+    # exist and compile so their containers show up in segment 3.
     call_lines = []
     for f in extra_files:
-        for s in f.subs:
-            call_lines.append(f"Call {s}")
+        if f.kind == "module":
+            for s in f.subs:
+                call_lines.append(f"Call {s}")
 
     form1_lines = FORM_TEMPLATE[:1] + [FORM_TEMPLATE[1].format(name="Form1")] + \
         [l.format(name="Form1") for l in FORM_TEMPLATE[2:]] + \

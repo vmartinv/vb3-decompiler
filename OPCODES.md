@@ -507,15 +507,58 @@ chain from the fixed root at segment-3 offset 72 to count which physical
 segment (4, 5, 6, ...) owns that code range. Step 3 is a fixed, mechanical
 algorithm now, not a guess.
 
-**Still open**: this was verified for module chains only (`qrace.exe` has
-no standard modules per `RESOURCE_FORMAT.md` — all 16 units are forms). A
-multi-form test (2+ extra forms) hit a VB3 IDE/syntax snag during this
-session's sweep (`1mod_2form` failed to compile) and wasn't re-run. The
-natural hypothesis — forms chain the same way, via their own root pointer,
-after the module chain ends — is plausible given the symmetric design but
-**not yet confirmed for forms specifically**. That's the one remaining
-gap before this is fully validated for `qrace.exe`'s actual (form-only)
-structure.
+### Forms: NOT fully cracked — each new test revealed a new wrinkle, not a converging answer
+
+Since `qrace.exe` has zero standard modules (all 16 units are forms, per
+`RESOURCE_FORMAT.md`), the module-chain result above isn't directly usable
+on it — pushed further with form-only projects. This did **not** converge
+to a clean rule the way the module case did; documenting the honest state
+rather than forcing a false conclusion:
+
+- **1 module + 2 extra forms**: the module-chain (offset-30 "next")
+  continued seamlessly from the module's container straight into the
+  extra forms' containers, in file order — *skipping* the startup form
+  (`Form1`) entirely, even though `Form1` had real code in its own segment.
+  `Form1`'s segment position had to be inferred as "the implicit gap right
+  after the module count," not found via any chain.
+- **0 modules, empty startup form, 3 extra forms**: chain ran cleanly
+  through all 3 extra forms' containers with no gap — consistent with
+  "`Form1` is skipped," since here it had no code to skip *over* (it
+  contributed no segment at all).
+- **0 modules, non-empty startup form (real code), 2 extra forms**: this
+  should have been the decisive test, but it exposed a **new, different**
+  record pattern: three `26`-tagged (`Sub`-shaped) records appeared —
+  including one for `Form_Load` itself, which no earlier test ever showed
+  as `Sub`-shaped — chained to *each other* via the byte-26 field (in
+  file/declaration order: `Form_Load` → `S2` → `S3`), not via the
+  `16`-tagged container chain used in the module tests. Only 2
+  `16`-tagged containers existed for 3 code-bearing forms, not 3.
+  Whether this is the *same* underlying mechanism as the module chain
+  (with `Form_Load` newly participating because it's the *only* procedure
+  in `Form1` here) or a genuinely different code path wasn't resolved.
+- First attempt at this last test also had a methodology bug (every test
+  `Sub` used an identical `x = 1` body, making segments indistinguishable
+  by content) — caught and fixed by giving each `Sub` a distinct literal,
+  but the corrected run is what produced the new-pattern finding above,
+  not a confirmation of the module-chain hypothesis.
+
+**Honest conclusion**: the segment-3 procedure table has more internal
+structure/variation than 5-6 hand-picked test cases converge on. Continuing
+to add one-off project-shape variants was producing a new open question
+each time rather than narrowing toward an answer — a sign to stop and
+report accurately rather than keep guessing. The module-chain algorithm
+above is solid and directly useful (verified 3-for-3, programmatically).
+The general form-resolution case is **not solved**. A real fix would need
+either substantially more systematic sampling via
+`sweep_project_structure.py` (dozens of shapes, not 5), or a different
+strategy entirely for `qrace.exe` specifically: since code *content*
+reliably and uniquely identifies which segment it belongs to once you can
+see it (confirmed across every test here), a practical fallback for
+resolving `Call` targets in `qrace.exe` is to cross-reference a `Call`'s
+segment-3 descriptor (start/end + surrounding string/opcode landmarks)
+against each candidate code segment's actual content by hand or
+semi-automated matching, rather than relying on a fully general
+algorithmic resolution that isn't proven yet.
 
 ## Reproducing this / extending it further
 
@@ -541,13 +584,17 @@ for full environment setup (Xvfb, window manager, Wine prefix).
 - Extend control flow to `ElseIf` and loops (`For`/`Do`/`While`) — only
   `If`/`Then`/`Else` is decoded so far; `For`/`Next` structure is sketched
   but not confirmed (see above).
-- `Call` is fully decoded, including multi-segment resolution (the
-  module-container chain-walk algorithm — see "Multi-segment projects"
-  above). One gap remains: the chain-walk was verified for *modules*
-  only; whether multiple *forms* chain the same way (relevant to
-  `qrace.exe`, which has 16 forms and no modules) is untested — a
-  multi-form sweep case failed to compile this session and wasn't
-  retried. Confirming that is the top priority next step.
+- `Call`'s opcode shape and single-segment resolution are fully decoded.
+  Multi-segment resolution is solved for **module** chains (verified
+  3-for-3, programmatically) but **not solved for forms** — several form
+  project-shapes were tested and each revealed a new, seemingly
+  inconsistent pattern rather than confirming the module algorithm
+  generalizes. This directly matters for `qrace.exe` (16 forms, 0
+  modules) and is the top priority next step — likely needs a much larger
+  systematic sweep (`tools/vb3ide/sweep_project_structure.py` exists and
+  works; it needs dozens of samples, not the ~6 tried this session) or a
+  different strategy — see "Forms: NOT fully cracked" above for the
+  practical fallback in the meantime.
 - `Function` calls (with a return value) and built-in function calls not
   attempted yet.
 - Once enough of the opcode set is decoded, it should generalize
