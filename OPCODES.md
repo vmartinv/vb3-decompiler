@@ -332,30 +332,70 @@ to see if the "opcode" bytes are actually a relative offset/count, and
 check `Do`/`While` for a simpler (non-FOR-specific) loop encoding to
 cross-reference against.
 
-## `Call`ing another `Sub`
+## `Call`ing another `Sub` — DECODED
 
 `Call DoThing` (a no-argument `Sub` in the same module) compiles to
-`E0 62 <4-byte operand>` — a 6-byte instruction, wider than any other
-opcode decoded so far (2-byte opcode + 4-byte operand vs. the usual 2-byte
-operand). Tested with one and then two callees (`Call DoThing` /
-`Call DoOther`):
+`E0 62 <u16 LE reserved=0000> <u16 LE segment-3 offset>` — a 6-byte
+instruction. **The second u16 field is the exact byte offset, within
+segment 3 (the module's procedure-descriptor table — see below and
+`RESOURCE_FORMAT.md`), where the callee's descriptor entry begins.**
 
-- First call's operand was `00 00 00 01` in *both* tests (whether DoThing
-  was the only callee or one of two) — stable, doesn't look like a simple
-  "how many procedures exist" counter.
-- Second call's operand (`Call DoOther`) was `00 00 38 01` — `0x0138`,
-  not `0x0002`, ruling out a simple sequential procedure-index theory.
-  `0x0138` matches the *total size of segment 3* in the single-callee
-  test — plausibly a reference (offset or otherwise) into segment 3, the
-  form's procedure-descriptor table (see `RESOURCE_FORMAT.md`), rather
-  than a plain index or code offset.
+Confirmed by compiling 1, 2, then 3 extra `Sub`s and checking each new
+`Call`'s operand against segment 3's size *before* that `Sub`'s descriptor
+was appended:
 
-Segment 3's actual layout (dumped for both test cases) is a dense,
-structured binary block that clearly encodes per-procedure info but wasn't
-decoded here — cracking `Call`'s addressing fully means reverse-engineering
-that table, which is a bigger job than the opcode-stream work above and
-overlaps with the still-unresolved parts of `RESOURCE_FORMAT.md`. Not
-pursued further this round; flagged as the next real task if resumed.
+| callee added | operand's high `u16` | segment-3 size before this `Sub` |
+|---|---|---|
+| `DoThing` (1st) | `0x0100` = 256 | 256 (no-extra-`Sub` baseline) |
+| `DoOther` (2nd) | `0x0138` = 312 | 312 (with only `DoThing` added) |
+| `DoThird` (3rd) | `0x0170` = 368 | 368 (with `DoThing`+`DoOther` added) |
+
+Exact match in all 3 cases. Also confirmed: calling the same `Sub` twice
+from one caller produces the identical operand both times (stable
+reference, not a call-site value).
+
+**Each extra `Sub` grows segment 3 by exactly 56 (`0x38`) bytes** — a
+fixed-size descriptor record appended per procedure, laid out in
+declaration order (not physical code-layout order — see the segment note
+above).
+
+### The 56-byte descriptor record: code location is DECODED
+
+Found by compiling the same `Call DoThing` program three different ways
+(alone, with a second callee physically laid out *before* it in segment 4,
+and with a longer 2-statement body) and diffing the 56-byte record:
+
+- **Bytes 24-25 (`u16` LE) = the callee's code START offset within
+  segment 4.** Confirmed exactly: `0` when `DoThing` is laid out first in
+  its file, `18` (`0x12`) when a differently-ordered callee pushes it to
+  start at byte 18 instead — matches the real code position in both cases.
+- **Bytes 36-37 (`u16` LE) = the callee's code END offset within segment
+  4** (i.e. start + length, not length alone — this was the source of an
+  early false start: it looked like "code length" only because the first
+  test case happened to start at offset 0). Confirmed exactly against 3
+  independent layouts, including a body-length change (18 → 28 bytes)
+  that shifted this field by the same 10 bytes.
+- So: **`Call`'s operand → segment-3 offset of a 56-byte record → bytes
+  [24:26) and [36:38) of that record give the exact `[start, end)` byte
+  range of the callee's p-code within segment 4.** This is enough to
+  fully resolve a `Call` to real, disassemblable code.
+- Bytes 28-29 = `start + 12` in every sample (a secondary pointer into the
+  body, e.g. skipping some fixed prologue/argument-setup region — not
+  investigated further).
+- Bytes 0-3 (`26 00 00 00`), 8-21 mostly, and the `ff ff`/`fe 0f` runs
+  near the end were constant across every test — likely fixed record-type
+  tags / unused argument slots (all tests used no-argument `Sub`s), not
+  decoded.
+- Bytes 4-7, 18-19, 26-27, and 38-39 varied in ways that track *other*
+  descriptors' positions (cross-referencing neighboring records, plausibly
+  a linked-list-style chain) rather than this procedure's own code — not
+  fully mapped out, but not needed for the code-location result above.
+
+**Not tested**: whether the code-segment being indexed is always segment 4
+specifically, or a field elsewhere in the record selects *which* segment
+— every test here was a single-form, single-code-segment program. A real
+multi-form project (like `qrace.exe`) may need a segment selector too;
+check this before trusting the recipe above on real disassembly.
 
 ## Reproducing this / extending it further
 
@@ -381,10 +421,10 @@ for full environment setup (Xvfb, window manager, Wine prefix).
 - Extend control flow to `ElseIf` and loops (`For`/`Do`/`While`) — only
   `If`/`Then`/`Else` is decoded so far; `For`/`Next` structure is sketched
   but not confirmed (see above).
-- Decode segment 3's procedure-descriptor table to fully resolve `Call`'s
-  operand (see above) — needed before `Call` is truly useful for reading
-  real disassembly. `Function` calls (with a return value) and built-in
-  function calls not attempted yet either.
+- `Call`'s operand and the descriptor record's code-location fields are
+  decoded (see above). Still open: whether a multi-form project needs a
+  segment-selector field (untested — only single-segment programs tried),
+  and `Function` calls (with a return value)/built-in function calls.
 - Once enough of the opcode set is decoded, it should generalize
   directly to any VB3 p-code binary, not just small test programs —
   [Quibble Race](https://github.com/vmartinv/qrace) is being used as the
