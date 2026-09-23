@@ -23,9 +23,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import align_source as A  # noqa: E402
 import pcode_disasm as P  # noqa: E402
 
+VBX_DIRS: list[Path] = []
+
 
 def project(mak: Path, exe: Path, rt: P.Runtime, verbose: bool) -> Counter:
     c: Counter = Counter()
+    rt.vbx_dirs = [exe.parent] + VBX_DIRS
     segs = P.parse_ne(exe)
     res = P.rcdata(exe)
     names = P.proc_names(segs, rt, res)
@@ -96,8 +99,10 @@ def main():
     ap.add_argument("root", type=Path)
     ap.add_argument("--runtime", type=Path, required=True)
     ap.add_argument("-v", action="store_true")
+    ap.add_argument("--vbx-dir", type=Path, action="append", default=[])
     args = ap.parse_args()
     rt = P.Runtime(args.runtime)
+    VBX_DIRS.extend(args.vbx_dir)
     total: Counter = Counter()
     for mak in sorted(args.root.rglob("*.mak")):
         exe = mak.with_suffix(".exe")

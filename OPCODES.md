@@ -133,9 +133,11 @@ flags, u8 name index, …`, class byte at +7, or +9 for control-array
 elements); tables outside control records are the form's. Event names
 come from the class MODEL's event list in `VBRUN300.DLL` (entries `0xFFxx`
 → master event table Click, DblClick, DragDrop, …; or EVENTINFO
-pointers). General `Sub`/`Function` names are not stored (record +4 is an
+pointers). VBX controls (class byte `0xFF` followed by the class name)
+use the MODEL in their `.VBX` (same layout, standard entries via VBRUN300's
+master tables); VBX files are located by the names in `RT_RCDATA` 1. General `Sub`/`Function` names are not stored (record +4 is an
 offset into a design-time name pool that isn't in the EXE).
-Against sample source: 339/369 event procedures named correctly.
+Against sample source: 369/369 event procedures named correctly.
 
 ## Source-aligned corpus
 
@@ -158,12 +160,10 @@ are OLE Automation method calls (`3357`, method ids without names).
 
 ## Next steps
 
-- Remaining naming errors on samples (`tools/validate.py`): 15 event
-  procedures (mostly VBX controls in `loan`), `Forms` collection.
+- Remaining reference gaps (`tools/validate.py`): `Forms` collection,
+  object variables.
 - Property names for custom (VBX) controls and `PGET_ME`/`PSET_ME`
   (implicit-form properties; operand not decoded).
-- VBX controls: read their MODEL (properties/events) from the .VBX, like
-  VBRUN300's, to name their events and properties.
 - Source emitter + round-trip check: decompile each sample, recompile with
   the IDE, compare p-code per procedure.
 - Pseudo-BASIC output: expression stack + control-flow structuring.

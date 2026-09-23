@@ -158,6 +158,50 @@ _MANUAL = {
 }
 
 
+def _word(d: bytes, o: int) -> int:
+    return struct.unpack_from("<H", d, o)[0] if 0 <= o <= len(d) - 2 else 0
+
+
+def _cstr(d: bytes, o: int) -> str | None:
+    if not 0 < o < len(d):
+        return None
+    e = d.find(b"\0", o)
+    t = d[o:e]
+    return t.decode("latin-1") if 0 < len(t) < 40 and t.isascii() and t[:1].isalpha() else None
+
+
+def parse_models(ds: bytes, mprops: list, mevents: list, min_ptr: int) -> dict[str, tuple[list, list]]:
+    """Control class MODELs in a data segment (VBRUN300's or a VBX's):
+    ... default name, class name, parent class, property list, event list.
+    List entries: 0xFFxx = standard property/event ~w (master tables),
+    else a PROPINFO/EVENTINFO pointer whose first word is the name; 0 ends."""
+    w, name = (lambda o: _word(ds, o)), (lambda o: _cstr(ds, o))
+
+    def entries(lst: int, master: list) -> list:
+        out, q = [], lst
+        while w(q) and len(out) < 100:
+            v = w(q)
+            out.append((master[0xFFFF - v] if 0xFFFF - v < len(master) else None) if v >= 0xFF80 else name(w(v)))
+            q += 2
+        return out
+
+    found: dict[str, tuple[list, list]] = {}
+    for r in range(8, len(ds) - 4, 2):
+        cls, pl, el = name(w(r - 4)), w(r), w(r + 2)
+        if not (name(w(r - 6)) and cls and min_ptr <= pl < len(ds) and pl != el
+                and (el == 0 or min_ptr <= el < len(ds))):
+            continue
+        props = entries(pl, mprops)
+        if len(props) < 5 or not ("Name" in props or "Left" in props):
+            continue
+        evs = entries(el, mevents) if el else []
+        # A misaligned read of another MODEL can yield this class name with no
+        # events (e.g. DirListBox's parent "ListBox"); prefer one with events.
+        if cls not in found or (not found[cls][1] and evs):
+            found[cls] = (props, evs)
+    return found
+
+
 def is_imm_op(i, k: int) -> bool:
     return len(i.operands) > k and i.operands[k].type == X86_OP_IMM
 
@@ -174,6 +218,8 @@ class Runtime:
         self._len: dict[int, object] = {}
         self._stmt: dict[int, bool] = {}
         self.solved: dict[int, set] = {}  # op -> lengths found by constraint
+        self.vbx_dirs: list[Path] = []  # where to find VBX files (custom controls)
+        self._vbx_loaded: set[str] = set()
 
     def plausible(self, op: int) -> bool:
         """Could `op` be a handler address? (Handlers start at 0x60 or above,
@@ -329,90 +375,67 @@ class Runtime:
             self._stmt[op] = ok
         return self._stmt[op]
 
-    def property_lists(self) -> dict[str, list[str]]:
-        """Standard control classes' property lists, from VBRUN300's data
-        segment: each class MODEL has (default name, class name, parent
-        class, property list, event list); list entries are 0xFFxx (index
-        ~w into the master standard-property table) or a PROPINFO pointer
-        (first word = name), terminated by 0."""
-        if hasattr(self, "_props"):
-            return self._props
-        ds = self.data
+    def _masters(self) -> tuple[list, list]:
+        """VBRUN300's master standard-property and standard-event tables
+        (runs of PROPINFO/EVENTINFO pointers: Name, Index, hWnd, BackColor,
+        ... / Click, DblClick, DragDrop, ...). Standard entries in any class
+        list (0xFFxx = ~index) refer to these, VBX lists included."""
+        if not hasattr(self, "_mst"):
+            w, name = (lambda o: _word(self.data, o)), (lambda o: _cstr(self.data, o))
+            props, events = [], []
+            for m in range(0, len(self.data) - 40, 2):
+                if not props and name(w(w(m))) == "Name" and name(w(w(m + 2))) == "Index" \
+                        and name(w(w(m + 6))) == "BackColor":
+                    k = m
+                    while w(k) > 0x400 or (w(k) and name(w(w(k))) is None and k < m + 200):
+                        props.append(name(w(w(k))))
+                        k += 2
+                if not events and name(w(w(m))) == "Click" and name(w(w(m + 2))) == "DblClick" \
+                        and name(w(w(m + 4))) == "DragDrop":
+                    k = m
+                    while name(w(w(k))):
+                        events.append(name(w(w(k))))
+                        k += 2
+            self._mst = (props, events)
+        return self._mst
 
-        def w(o):
-            return struct.unpack_from("<H", ds, o)[0] if 0 <= o <= len(ds) - 2 else 0
+    def _models(self) -> dict[str, tuple[list, list]]:
+        if not hasattr(self, "_mdl"):
+            self._mdl = parse_models(self.data, *self._masters(), min_ptr=0x1000)
+        return self._mdl
 
-        def name(o):
-            if not 0 < o < len(ds):
-                return None
-            e = ds.find(b"\0", o)
-            t = ds[o:e]
-            return t.decode("latin-1") if 0 < len(t) < 40 and t.isascii() and t[:1].isalpha() else None
+    def load_vbx(self, path: Path) -> list[str]:
+        """Adds a VBX's control classes (from its data segment's MODELs).
+        Returns the class names found."""
+        raw = path.read_bytes()
+        (ne,) = struct.unpack_from("<H", raw, 0x3C)
+        (auto,) = struct.unpack_from("<H", raw, ne + 0x0E)
+        segs = parse_ne(path)
+        found = parse_models(segs[auto - 1].data, *self._masters(), min_ptr=2)
+        for cls, v in found.items():
+            self._models().setdefault(cls, v)
+        return list(found)
 
-        # Master table: the first run of >= 20 PROPINFO pointers starting "Name".
-        master = []
-        for m in range(0, len(ds) - 40, 2):
-            if name(w(w(m))) == "Name" and name(w(w(m + 2))) == "Index" and name(w(w(m + 6))) == "BackColor":
-                k = m
-                while w(k) > 0x400 or (w(k) and name(w(w(k))) is None and k < m + 200):
-                    master.append(name(w(w(k))))
-                    k += 2
-                break
-        self._props = {}
-        for r in range(8, len(ds) - 4, 2):
-            cls, pl, el = name(w(r - 4)), w(r), w(r + 2)
-            if not (name(w(r - 6)) and cls and 0x1000 < pl < len(ds) and pl != el
-                    and (el == 0 or 0x1000 < el < len(ds))):  # objects/Shape/Line: no events
+    def load_project_vbx(self, res: dict[int, bytes]) -> None:
+        """Loads the VBX files listed in the project directory (RT_RCDATA 1),
+        found in self.vbx_dirs (case-insensitive)."""
+        for entry in vbx_entries(res.get(1, b"")):
+            if not entry.upper().endswith(".VBX") or entry.upper() in self._vbx_loaded:
                 continue
-            props, q = [], pl
-            while w(q) and len(props) < 100:
-                v = w(q)
-                props.append((master[0xFFFF - v] if 0xFFFF - v < len(master) else None) if v >= 0xFF80
-                             else name(w(v)))
-                q += 2
-            if len(props) >= 5 and ("Name" in props or "Left" in props) and cls not in self._props:
-                self._props[cls] = props
-        return self._props
+            for d in self.vbx_dirs:
+                hits = [f for f in Path(d).glob("*") if f.name.upper() == entry.upper()]
+                if hits:
+                    self.load_vbx(hits[0])
+                    self._vbx_loaded.add(entry.upper())
+                    break
 
-    def _ds_name(self, o: int) -> str | None:
-        ds = self.data
-        if not 0 < o < len(ds):
-            return None
-        e = ds.find(b"\0", o)
-        t = ds[o:e]
-        return t.decode("latin-1") if 0 < len(t) < 40 and t.isascii() and t[:1].isalpha() else None
-
-    def _ds_word(self, o: int) -> int:
-        return struct.unpack_from("<H", self.data, o)[0] if 0 <= o <= len(self.data) - 2 else 0
+    def property_lists(self) -> dict[str, list[str]]:
+        """Class -> property names (MODEL property lists; see parse_models)."""
+        return {c: v[0] for c, v in self._models().items() if v[0]}
 
     def event_lists(self) -> dict[str, list[str]]:
-        """Class -> event names, from each MODEL's event list: entries 0xFFxx
-        (index ~w into the master standard-event table: Click, DblClick,
-        DragDrop, ...) or an EVENTINFO pointer (first word = name)."""
-        if hasattr(self, "_events"):
-            return self._events
-        w, name = self._ds_word, self._ds_name
-        master = []
-        for m in range(0, len(self.data) - 40, 2):
-            if name(w(w(m))) == "Click" and name(w(w(m + 2))) == "DblClick" and name(w(w(m + 4))) == "DragDrop":
-                k = m
-                while name(w(w(k))):
-                    master.append(name(w(w(k))))
-                    k += 2
-                break
-        self._events = {}
-        for r in range(8, len(self.data) - 4, 2):
-            cls, pl, el = name(w(r - 4)), w(r), w(r + 2)
-            if not (name(w(r - 6)) and cls and 0x1000 < pl < len(self.data) and 0x1000 < el < len(self.data)):
-                continue
-            evs, q = [], el
-            while w(q) and len(evs) < 64:
-                v = w(q)
-                evs.append((master[0xFFFF - v] if 0xFFFF - v < len(master) else None) if v >= 0xFF80 else name(w(v)))
-                q += 2
-            if evs and all(evs) and cls not in self._events:
-                self._events[cls] = evs
-        return self._events
+        """Class -> event names (MODEL event lists; see parse_models)."""
+        return {c: v[1] for c, v in self._models().items() if v[1] and all(v[1])}
 
     def is_branch(self, op: int) -> bool:
         self.operand_len(op)
@@ -601,6 +624,7 @@ def proc_names(segs: list[Segment], rt: "Runtime", res: dict[int, bytes]) -> dic
     record are the form's own. Procedures not found here are general
     Sub/Function procedures (their names aren't stored)."""
     records = {p.record for p in find_procs(segs)}
+    rt.load_project_vbx(res)
     events = rt.event_lists()
     counts = {len(v) for v in events.values()}
     out, ids = {}, sorted(res)
@@ -621,9 +645,12 @@ def proc_names(segs: list[Segment], rt: "Runtime", res: dict[int, bytes]) -> dic
             if hdr is not None:
                 flags = struct.unpack_from("<H", d, hdr + 3)[0]
                 idx = d[hdr + 5]
-                cb = d[hdr + 9] if flags & 0x8000 else d[hdr + 7]  # array element: + u8 elem, u16
+                at = hdr + (9 if flags & 0x8000 else 7)  # array element: + u8 elem, u16
+                cb = d[at]
                 ctl = names[idx] if idx < len(names) and names[idx] else f"ctl#{idx}"
                 cls = CLASS_BY_BLOB.get(cb)
+                if cb == 0xFF:  # VBX control: class name follows as a Pascal string
+                    cls = d[at + 2:at + 2 + d[at + 1]].decode("latin-1")
             else:  # the form's own table: Form or MDIForm, by event count
                 ctl = cls = "MDIForm" if len(events.get("MDIForm", [])) == n != len(events.get("Form", [])) else "Form"
             evs = events.get(cls, [])
@@ -739,11 +766,14 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("exe", type=Path)
     ap.add_argument("--runtime", type=Path, required=True, help="path to your VBRUN300.DLL")
+    ap.add_argument("--vbx-dir", type=Path, action="append", default=[],
+                    help="directory with the project's VBX files (default: next to the EXE)")
     ap.add_argument("--out", type=Path, help="write listing here instead of stdout")
     ap.add_argument("--check", action="store_true", help="only report decode coverage")
     args = ap.parse_args()
 
     rt = Runtime(args.runtime)
+    rt.vbx_dirs = [args.exe.parent] + args.vbx_dir
     segs = parse_ne(args.exe)
     procs = find_procs(segs)
     res = rcdata(args.exe)
