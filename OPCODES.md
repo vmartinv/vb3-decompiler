@@ -391,11 +391,48 @@ and with a longer 2-statement body) and diffing the 56-byte record:
   a linked-list-style chain) rather than this procedure's own code — not
   fully mapped out, but not needed for the code-location result above.
 
-**Not tested**: whether the code-segment being indexed is always segment 4
-specifically, or a field elsewhere in the record selects *which* segment
-— every test here was a single-form, single-code-segment program. A real
-multi-form project (like `qrace.exe`) may need a segment selector too;
-check this before trusting the recipe above on real disassembly.
+### Multi-segment projects: the start/end recipe alone is AMBIGUOUS — confirmed, not hypothetical
+
+Tested by adding a standard code module (`Module1.bas`, which VB3 always
+compiles into its own segment — confirmed: a 1-form-1-module project has 5
+segments, not 4, with the module's code landing in the *lower*-numbered
+segment and the form's code pushed one higher) and calling both a
+module-level `Sub` and a form-level `Sub` from `Form_Load`:
+
+- **Both callees' 56-byte descriptors show identical `start=0, end=18`**
+  — genuinely indistinguishable by code-offset alone, despite living in
+  two different physical segments (module=segment 4, form=segment 5).
+  **The start/end recipe above is necessary but not sufficient**: applying
+  it naively on a multi-segment project (like `qrace.exe`, which has 16+
+  forms) will misattribute code.
+- Found a **second record type**, tagged `16 00 00 00` (vs. the Sub
+  descriptor's `26 00 00 00`), one per module/form — plausibly a
+  "container" record. Each Sub descriptor's bytes 26-27 (previously
+  guessed as a "prev descriptor" pointer) turned out inconsistent with
+  that theory once a module was involved: sometimes it points to *another
+  Sub descriptor* (a next-in-chain link), sometimes to a `16`-tagged
+  container record directly — looks like a singly-linked chain that
+  eventually terminates at the owning container, which is what would need
+  to be resolved to get a real segment number.
+- Checked whether the resource table (the "project directory" resource,
+  `RT_RCDATA` id 1, documented in `RESOURCE_FORMAT.md`) lists the module
+  for cross-referencing — **it doesn't**: only `Form1` appears anywhere in
+  the resource table of a 1-form-1-module test project; standard modules
+  get no resource entry at all (makes sense, they have no visual layout).
+  So container→segment resolution must be self-contained within segment 3
+  (or hardcoded by a hopefully-fixed compiler convention like "modules
+  always occupy the lowest-numbered non-reserved CODE segments"), not
+  resource-assisted.
+- `RT_RCDATA` id 2 (unidentified both here and in `qrace.exe` — see
+  `RESOURCE_FORMAT.md`) is worth a closer look as a candidate for holding
+  this exact information, given both files independently have an
+  unexplained id-2 resource of similar shape.
+
+**Not cracked**: the exact container→segment-number mapping. This is the
+concrete next step if resumed — needed before the `Call` recipe above can
+be trusted on `qrace.exe` specifically (single-segment/single-form test
+programs, which is everything else on this page, don't have this
+ambiguity, so they remain valid as-is).
 
 ## Reproducing this / extending it further
 
@@ -422,9 +459,12 @@ for full environment setup (Xvfb, window manager, Wine prefix).
   `If`/`Then`/`Else` is decoded so far; `For`/`Next` structure is sketched
   but not confirmed (see above).
 - `Call`'s operand and the descriptor record's code-location fields are
-  decoded (see above). Still open: whether a multi-form project needs a
-  segment-selector field (untested — only single-segment programs tried),
-  and `Function` calls (with a return value)/built-in function calls.
+  decoded, but **confirmed insufficient for multi-segment (multi-form)
+  projects** — see "Multi-segment projects" above. Cracking the
+  container→segment-number mapping is the top priority next step, since
+  it blocks trusting `Call` resolution on `qrace.exe` itself.
+- `Function` calls (with a return value) and built-in function calls not
+  attempted yet.
 - Once enough of the opcode set is decoded, it should generalize
   directly to any VB3 p-code binary, not just small test programs —
   [Quibble Race](https://github.com/vmartinv/qrace) is being used as the
