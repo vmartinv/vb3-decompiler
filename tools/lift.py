@@ -417,6 +417,21 @@ def lift(code: list[tuple[int, bytes]], ids: dict[int, int] | None = None,
             out.append(f"Select Case {pop().text}")
         elif name.startswith("CASE_VAL."):
             pass
+        elif name.startswith("CASE_IS."):
+            op_text = {"GT": ">", "LT": "<", "GE": ">=", "LE": "<=", "NE": "<>"}[name.split(".")[1]]
+            st.append(E(f"Is {op_text} {pop().text}"))
+        elif name == "BYVAL":
+            st.append(E(f"ByVal {pop().text}"))
+        elif name == "SEEK":
+            pos, num = pop(), pop()
+            out.append(f"Seek {num.text}, {pos.text}")
+        elif name == "ERR_SET":
+            out.append(f"Err = {pop().text}")
+        elif name in ("GET#_NOREC", "PUT#_NOREC"):
+            var, num = pop(), pop()
+            out.append(f"{'Get' if name.startswith('GET') else 'Put'} {num.text}, , {var.text}")
+        elif name.startswith("FIELD_ADDR"):
+            st.append(E(f"{pop().text}.f{slot_of(operand):x}"))
         elif name.startswith("CASE_EQ."):
             if out and out[-1].startswith("Case ") and out[-1] != "Case Else":
                 out[-1] += f", {pop().text}"  # Case a, b
@@ -461,16 +476,20 @@ KEYWORDS = {"and", "or", "not", "mod", "xor", "eqv", "imp", "if", "then", "else"
             "local", "ubound", "to", "open", "input", "output", "append", "random", "binary", "as", "close",
             "gosub", "return", "randomize", "loadpicture", "access", "read", "write",
             "line", "circle", "pset", "scale", "print", "step", "debug", "textwidth", "textheight", "point",
-            "get", "put", "like", "len",
+            "get", "put", "like", "len", "seek", "err", "byval", "eof",
             "for", "to", "step", "next", "end", "exit", "sub", "function", "on", "error", "goto", "resume",
             "unload", "load", "select", "case"}
 
 
 def norm(text: str) -> list[str]:
-    text = re.sub(r"&H([0-9A-Fa-f]+)&?", lambda m: str(int(m.group(1), 16)), text)
+    def hexval(m):  # VB hex literals are signed: 16-bit, or 32-bit with & / more digits
+        v, wide = int(m.group(1), 16), m.group(2) or len(m.group(1)) > 4
+        bits = 32 if wide else 16
+        return str(v - (1 << bits) if v >= 1 << (bits - 1) else v)
+    text = re.sub(r"&H([0-9A-Fa-f]+)(&)?", hexval, text)
     text = text.replace("!", ".")  # a!b == a.b
     text = re.sub(r"(?i)\bexit\s+function\b", "Exit Sub", text)  # kind is the emitter's job
-    toks = re.findall(r'"[^"]*"|[A-Za-z_]\w*[$%&!#]?|\d*\.?\d+(?:[eE][-+]?\d+)?#?|<>|<=|>=|\S', text)
+    toks = re.findall(r'"[^"]*"|[A-Za-z_]\w*[$%&!#]?|\d*\.?\d+(?:[eE][-+]?\d+)?[&%!#@]?|<>|<=|>=|\S', text)
     out = []
     for k, t in enumerate(toks):
         if k and toks[k - 1] in (".", "!") and re.match(r"[A-Za-z_]", t):
@@ -481,8 +500,8 @@ def norm(text: str) -> list[str]:
             continue  # parentheses aren't encoded in p-code
         if t.startswith('"'):
             out.append(t)
-        elif re.fullmatch(r"\d*\.?\d+(?:[eE][-+]?\d+)?#?", t):
-            out.append(repr(float(t.rstrip("#"))))
+        elif re.fullmatch(r"\d*\.?\d+(?:[eE][-+]?\d+)?[&%!#@]?", t):
+            out.append(repr(float(t.rstrip("&%!#@"))))
         elif low in KEYWORDS or (low.rstrip("$") in {f.lower().split(".")[0].rstrip("$") for f in FUNCS}
                                    and (t.endswith("$") or toks[k + 1:k + 2] == ["("])):
             out.append(low.rstrip("$"))

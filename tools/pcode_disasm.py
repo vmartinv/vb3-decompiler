@@ -154,6 +154,7 @@ _RESUME_CORE = 0x7E63
 _MANUAL = {
     0x36DF: 2,  # builtin on one path, dispatch on the other
     0x28FF: 2,  # TextHeight: same layout as TextWidth (0x296C, derived: 2)
+    0x7582: 2,  # Len(variable): solved as 2 wherever unambiguous
 }
 
 
@@ -653,7 +654,8 @@ _CANDIDATES = (0, 2, 4, 6, 8, 1, 3, 5, 10, 12)
 def decode(rt: Runtime, data: bytes, p: Proc) -> tuple[list[Insn], str | None]:
     """Decode [p.start, p.end). Opcodes whose length can't be derived
     statically are solved by constraint: the only candidate length that lets
-    the rest of the procedure decode to exactly p.end (ties: the smallest;
+    the rest of the procedure decode to exactly p.end (ties: the smallest
+    even length;
     recorded in
     rt.solved, so conflicting solutions across procedures are visible)."""
     def run(pc: int, depth: int):
@@ -678,7 +680,7 @@ def decode(rt: Runtime, data: bytes, p: Proc) -> tuple[list[Insn], str | None]:
                 if len(fits) > 1:
                     # Tie-break: the smallest length (a too-long guess swallows
                     # real instructions; confirmed on Len and Resume).
-                    fits = fits[:1] if all(f[0] >= fits[0][0] for f in fits) else sorted(fits)[:1]
+                    fits = sorted(fits, key=lambda f: (f[0] % 2, f[0]))[:1]  # operands are word-sized
                 if len(fits) != 1:
                     return None
                 c, rest = fits[0]

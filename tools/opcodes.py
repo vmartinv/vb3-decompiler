@@ -32,14 +32,15 @@ NAMES: dict[int, str] = {
     0x34B7: "JF", 0x3500: "JF.I",           # jump if false (block If / loops)
     0x34B4: "IF1_JF", 0x3503: "IF1_JF.I",   # single-line If ... Then ...
     0x34FD: "ELSEIF_JF", 0x34B1: "ELSEIF_JF", 0x34DF: "ELSEIF_JF", 0x34E5: "JF", 0x34FA: "DO_WHILE_JF",
-    0x34AE: "DO_WHILE_JF", 0x34AB: "LOOP_UNTIL_JF", 0x35F8: "LOOP",
+    0x34AE: "DO_WHILE_JF", 0x350F: "DO_UNTIL_JT", 0x34AB: "LOOP_UNTIL_JF", 0x35F8: "LOOP",
     0x35FE: "JMP", 0x35EC: "ENDIF",
     0x1F41: "GOTO", 0x1F4A: "EXIT", 0x1FC6: "GOSUB", 0x1FE2: "RETURN",
     0x1F3E: "CASE",                          # u16: next Case / End Select
     0x0D09: "SELECT.I", 0x0CC8: "SELECT.V", 0x0CF8: "SELECT.R8", 0x0DA1: "END_SELECT", 0x0DA4: "CASE_ELSE",
     0x396A: "CASE_VAL.I", 0x440D: "CASE_VAL.V", 0x3C14: "CASE_VAL.R8", 0x3DC0: "CASE_VAL.T",
     0x0D4D: "CASE_EQ.I", 0x0D2F: "CASE_EQ.V", 0x0D39: "CASE_EQ.R8", 0x0D57: "CASE_EQ.T",  # u16 next Case, u16 body
-    0x0D83: "END_SELECT", 0x0D76: "CASE_ELSE",
+    0x0D83: "END_SELECT", 0x0D76: "CASE_ELSE", 0x0DAD: "END_SELECT", 0x0CFF: "SELECT.T",
+    0x4403: "CASE_IS.GT", 0x43F2: "CASE_IS.LT",   # `Case Is > v`
     0x1B37: "FOR", 0x1B3E: "FOR_STEP", 0x1A7E: "FOR.I", 0x1AA6: "FOR.L",
     0x1E08: "NEXT", 0x1C8A: "NEXT.I", 0x1D08: "NEXT.L", 0x1C87: "NEXT_NOVAR", 0x1E0B: "NEXT_NOVAR", 0x35E9: "DO", 0x0D73: "END_SELECT",
     0x7EB6: "ON_ERROR_GOTO", 0x7E63: "RESUME", 0x7E44: "RESUME_LABEL", 0x7E5D: "RESUME_NEXT",
@@ -56,7 +57,7 @@ NAMES: dict[int, str] = {
     0x296C: "TEXTWIDTH", 0x28FF: "TEXTHEIGHT", 0x2A69: "POINT",
     0x3764: "DEBUG", 0x2124: "PRINT_BEGIN",
     0x6132: "PRINT_NL", 0x60A4: "PRINT_NL", 0x60DE: "PRINT_NL", 0x6012: "PRINT_COMMA",
-    0x0DEA: "RET_SLOT",                        # reserves a call's return value (method used as a value)
+    0x0DEA: "RET_SLOT", 0x67A2: "BYVAL",                        # reserves a call's return value (method used as a value)
     0x4A08: "PUSH_NOTHING", 0x4F3A: "IS", 0x4A3A: "TYPEOF_IS",
     # --- calls ---------------------------------------------------------
     0x62E0: "CALL", 0x62DD: "CALL", 0x62A7: "CALL_FN",
@@ -81,7 +82,7 @@ NAMES: dict[int, str] = {
         [0x37E5, 0x37ED, 0x37F8, 0x37FE, 0x3804, 0x380A, 0x3810, 0x3816, 0x381C, 0x3822, 0x3828])},
     0x3834: "PUSH.I", 0x3831: "PUSH.I", 0x388A: "PUSH.L", 0x388D: "PUSH.L",
     0x3788: "PUSH.R8 0", 0x3791: "PUSH.R8 1", 0x379A: "PUSH.R8 2", 0x37A7: "PUSH.R8 3",
-    0x37AE: "PUSH.R8 4", 0x37B5: "PUSH.R8 5", 0x37BC: "PUSH.R8 6", 0x37D8: "PUSH.R8 10",
+    0x37AE: "PUSH.R8 4", 0x37B5: "PUSH.R8 5", 0x37BC: "PUSH.R8 6", 0x37C3: "PUSH.R8 7", 0x37CA: "PUSH.R8 8", 0x37D8: "PUSH.R8 10",
     0x387A: "PUSH.R8", 0x389A: "PUSH.T",
     0x37E2: "PUSH.B False", 0x383D: "PUSH.B True",
     # --- conversions ---------------------------------------------------
@@ -107,6 +108,7 @@ NAMES: dict[int, str] = {
     0x4312: "OR.V", 0x39F2: "OR.I",
     0x42D1: "NOT.V", 0x39DC: "NOT.I", 0x393E: "IDIV.L", 0x3AB5: "AND.L",
     0x3A4D: "SUB.L", 0x3A3A: "ADD.L", 0x3B2A: "LE.L", 0x3AC6: "OR.L", 0x3B42: "GT.L", 0x3924: "MOD.L",
+    0x3B77: "SUB.R8", 0x3AD7: "XOR.L", 0x3B1E: "LT.L",
     0x4720: "NEG",
     0x42B1: "MOD.V", 0x3918: "MOD.I", 0x4276: "IDIV.V", 0x38FF: "IDIV.I",
     0x4255: "POW.V", 0x3B92: "POW.R8", 0x77B8: "CONCAT",
@@ -129,6 +131,7 @@ NAMES: dict[int, str] = {
     0x3692: "INPUT#", 0x3698: "INPUT_ITEM.I", 0x36C2: "INPUT_ITEM.V", 0x36B6: "INPUT_ITEM.T",
     0x368C: "INPUT_END", 0x36DF: "INPUT_ITEM_FIELD?",
     0x3662: "GET#", 0x367E: "PUT#",                 # operand: record length
+    0x3654: "GET#_NOREC", 0x3670: "PUT#_NOREC", 0x374F: "SEEK", 0x19D7: "ERR_SET",
     # --- user-defined types -------------------------------------------
     0x0709: "AADDR.GLB",                     # address of an array element
     0x6CE6: "FIELD_ADDR", 0x6FB6: "FIELD_ADDR.T",  # operand: field offset
@@ -185,7 +188,10 @@ SEM: dict[int, tuple[str, str, int]] = {
     0x1A18: ("fn", "DateValue", 1), 0x105D: ("fn", "CLng", 1), 0x10D4: ("fn", "CCur", 1),
     0x100F: ("fn", "CDbl", 1), 0x75AE: ("fn", "LTrim$", 1), 0x75FE: ("fn", "RTrim$", 1),
     0x3302: ("fn", "CreateObject", 1), 0x53D7: ("kw", "FileCopy", 2),
-    0x0E9A: ("fn", "CCur", 1), 0x67A2: ("pass", "", 0), 0x6895: ("pass", "", 0), 0x6942: ("pass", "", 0),
+    0x3607: ("fn", "EOF", 1), 0x7604: ("fn", "Space$", 1), 0x762E: ("fn", "Str$", 1),
+    0x5387: ("fn", "CurDir$", 0), 0x0EED: ("pass", "", 0), 0x3BB9: ("fn", "Sqr", 1),
+    0x7428: ("kw", "Error", 1),
+    0x0E9A: ("fn", "CCur", 1), 0x6895: ("pass", "", 0), 0x6942: ("pass", "", 0),
     0x1156: ("pass", "", 0), 0x0ED9: ("pass", "", 0),
     0x1094: ("pass", "", 0), 0x1060: ("pass", "", 0), 0x0EC5: ("pass", "", 0),
     0x34A8: ("kw", "While", 1), 0x35F5: ("kw", "Wend", 0), 0x53FB: ("kw", "Kill", 1),

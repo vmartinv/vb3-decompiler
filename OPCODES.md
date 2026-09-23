@@ -153,8 +153,8 @@ Else/End If, Do/Loop, For/Next, Select Case, Exit/End/GoTo/On Error).
 (function/statement, name from the source line, arity) for the reading
 that makes the corpus lines lift exactly; accepted readings go in
 `opcodes.SEM`. `lift.py score` compares every aligned corpus statement with its source
-line (identifiers normalised): 3,241/3,326 match, 0 differ, 85 use
-unsupported handlers (Print/graphics methods, file I/O, rarer builtins).
+line (identifiers normalised): 3,322/3,326 match, 0 differ; the 4 left
+are OLE Automation method calls (`3357`, method ids without names).
 
 ## Next steps
 
@@ -162,7 +162,8 @@ unsupported handlers (Print/graphics methods, file I/O, rarer builtins).
   procedures (mostly VBX controls in `loan`), `Forms` collection.
 - Property names for custom (VBX) controls and `PGET_ME`/`PSET_ME`
   (implicit-form properties; operand not decoded).
-- Lifter long tail (Print/file I/O, remaining builtins, UDT fields), then
-  the source emitter + round-trip check: decompile each sample, recompile
-  with the IDE, compare p-code per procedure.
+- VBX controls: read their MODEL (properties/events) from the .VBX, like
+  VBRUN300's, to name their events and properties.
+- Source emitter + round-trip check: decompile each sample, recompile with
+  the IDE, compare p-code per procedure.
 - Pseudo-BASIC output: expression stack + control-flow structuring.
