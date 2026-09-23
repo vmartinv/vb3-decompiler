@@ -12,3 +12,6 @@ work/
 # Python
 __pycache__/
 *.pyc
+
+# Data extracted from analyzed executables -- regenerate locally.
+extraction/

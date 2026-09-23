@@ -4,18 +4,10 @@ Tools and findings for reverse-engineering Visual Basic 3.0 (1993)
 executables — both the NE resource format (forms, controls, pictures) and
 the p-code bytecode format (`VBRUN300.DLL`-interpreted, not native x86).
 
-No modern decompiler targets VB3 specifically — tools like VB Decompiler
-target VB5/6, which use a different (32-bit, Unicode) p-code encoding.
-Both the resource format and the p-code opcode encoding here are original,
-empirically-derived work: compile small known-source test programs
-through a real VB3 compiler, diff the output against the previous
-variant, repeat. See [`RESOURCE_FORMAT.md`](RESOURCE_FORMAT.md) and
-[`OPCODES.md`](OPCODES.md) for the findings.
-
-This project grew out of [Quibble Race](https://github.com/vmartinv/qrace),
-a decompilation/port project for a specific VB3-compiled freeware game —
-split out because the VB3-format knowledge here is useful independent of
-that game.
+No other decompiler targets VB3 (existing tools cover VB5/6, a different
+p-code). Findings: [`OPCODES.md`](OPCODES.md) (p-code) and
+[`RESOURCE_FORMAT.md`](RESOURCE_FORMAT.md) (forms/resources). Grew out of
+[Quibble Race](https://github.com/vmartinv/qrace).
 
 ## What's here
 
@@ -25,13 +17,21 @@ tools/
   extract_bitmaps.py     pulls embedded BMPs out of raw RCDATA dumps
   parse_form_headers.py  decodes form captions/control names
   segment_parser.py      NE segment table parser, p-code string scanner
+  pcode_disasm.py        full p-code disassembler (needs your VBRUN300.DLL
+                         + `pip install capstone`)
   vb3ide/
     kwaj_extract.py      decompresses VB3 setup-disk files (libmspack via ctypes)
     compile_snippet.py   drives the real VB3 IDE to compile test programs
 ```
 
 All Python, standard library only except `vb3ide/kwaj_extract.py` (needs
-`libmspack`, see Setup). No build step.
+`libmspack`, see Setup) and `pcode_disasm.py` (needs `capstone`). No build
+step.
+
+```sh
+python3 tools/pcode_disasm.py some.exe --runtime VBRUN300.DLL --check
+python3 tools/pcode_disasm.py some.exe --runtime VBRUN300.DLL --out listing.lst
+```
 
 ## Setup
 
@@ -69,9 +69,7 @@ Run it under Wine (its built-in win16 shim handles this transparently, no
 WINEPREFIX=$PWD/work/.wineprefix wine work/ide/VB.EXE
 ```
 
-The graphical `SETUP.EXE` on the disks reliably fails with a bogus
-"Insufficient memory or disk space" error under Wine, regardless of
-actual free space — not worth chasing, since it's not needed.
+Don't use the disks' `SETUP.EXE`; it fails under Wine and isn't needed.
 
 ### Automating it (`compile_snippet.py`)
 
@@ -100,17 +98,15 @@ python3 tools/vb3ide/compile_snippet.py --sweep 0 1 2 3 10 100 32767
 python3 tools/vb3ide/compile_snippet.py --name my_test --code-file snippets/my_test.bas
 ```
 
-Output lands in `work/sweep/`. See `OPCODES.md` for how to read the
-results (parse with `tools/segment_parser.py`).
+Output lands in `work/sweep/`. Disassemble results with
+`tools/pcode_disasm.py`.
 
 ## Status
 
-Actively developed. `RESOURCE_FORMAT.md` covers form/resource extraction
-fairly completely. `OPCODES.md` covers a solid but partial slice of the
-p-code instruction set — variable load/store, integer arithmetic, integer
-and (partially) floating-point literals, string literals. Comparisons,
-control flow, and procedure calls are not decoded yet. Contributions
-(more opcode findings, applying this to other VB3 binaries) welcome.
+- Resources: form headers, captions and pictures decoded.
+- P-code: instruction boundaries and procedure → segment mapping are
+  solved and validated on a real 16-form game. Handler naming is partial.
+  See `OPCODES.md` → Next steps.
 
 ## License
 
