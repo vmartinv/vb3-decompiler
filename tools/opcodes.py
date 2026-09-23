@@ -31,11 +31,14 @@ NAMES: dict[int, str] = {
     0x0E35: "END",
     0x34B7: "JF", 0x3500: "JF.I",           # jump if false (block If / loops)
     0x34B4: "IF1_JF", 0x3503: "IF1_JF.I",   # single-line If ... Then ...
-    0x34FD: "ELSEIF_JF",
+    0x34FD: "ELSEIF_JF", 0x34B1: "ELSEIF_JF",
+    0x34AE: "DO_WHILE_JF", 0x34AB: "LOOP_UNTIL_JF", 0x35F8: "LOOP",
     0x35FE: "JMP", 0x35EC: "ENDIF",
     0x1F41: "GOTO", 0x1F4A: "EXIT", 0x1FC6: "GOSUB", 0x1FE2: "RETURN",
     0x1F3E: "CASE",                          # u16: next Case / End Select
-    0x0D09: "SELECT.I", 0x0DA1: "END_SELECT", 0x0DA4: "END_SELECT",
+    0x0D09: "SELECT.I", 0x0CC8: "SELECT.V", 0x0CF8: "SELECT.R8", 0x0DA1: "END_SELECT", 0x0DA4: "END_SELECT",
+    0x396A: "CASE_VAL.I", 0x440D: "CASE_VAL.V", 0x3C14: "CASE_VAL.R8",   # Case value, then the test
+    0x0D4D: "CASE_EQ.I", 0x0D2F: "CASE_EQ.V", 0x0D39: "CASE_EQ.R8",      # u16 next Case, u16 body
     0x1B37: "FOR", 0x1B3E: "FOR_STEP", 0x1A7E: "FOR.I",
     0x1E08: "NEXT", 0x1C8A: "NEXT.I",
     0x7EB6: "ON_ERROR_GOTO", 0x7E63: "RESUME",
@@ -95,7 +98,9 @@ NAMES: dict[int, str] = {
     0x52BA: "Shell", 0x2A0D: "QBColor", 0x7EC5: "Error$", 0x19CE: "Err",
     0x52AF: "Timer", 0x1A78: "Now", 0x750A: "InStr", 0x75BC: "Mid$",
     0x537B: "ChDir", 0x5381: "ChDrive", 0x2A73: "Cls", 0x742E: "Beep",
-    0x37DF: "MSGBOX_ARGS", 0x3844: "MSGBOX_ARGS", 0x52F4: "MsgBox",
+    0x37DF: "ARG_MISSING", 0x3844: "ARG_MISSING", 0x52F4: "MsgBox", 0x5308: "MsgBox.fn",
+    0x5291: "Time", 0x52D8: "InputBox", 0x1480: "IsDate", 0x148A: "CVDate", 0x7766: "Format$",
+    0x10A0: "CStr", 0x5340: "DoEvents", 0x1A6A: "Minute",
     # --- file I/O ------------------------------------------------------
     0x376D: "FILENUM", 0x373B: "OPEN",        # operand: 1 Input, 2 Output
     0x3631: "CLOSE", 0x375B: "PRINT#", 0x6132: "PRINT#_ITEM",
@@ -124,3 +129,17 @@ NAMES |= _row("ASTORE.MOD", "065b 00e0 01fd 025e 03d8 037a 0495")
 # 4-byte loads are shared by Long and String (a far pointer): note both.
 for _h in (0x2CC4, 0x2B6C, 0x2AA3):
     NAMES[_h] = NAMES[_h][:-1] + "L/T"
+
+# METHOD operand byte 6 = method number (global across classes), from the corpus.
+METHODS = {
+    0x02: "AddItem", 0x03: "RemoveItem", 0x04: "Refresh", 0x0C: "Clear", 0x0E: "Arrange",
+    0x0F: "Show", 0x10: "Hide", 0x11: "EndDoc", 0x12: "NewPage", 0x13: "SetFocus",
+    0x14: "Drag", 0x15: "Move", 0x16: "ZOrder", 0x17: "Close", 0x18: "Delete",
+    0x19: "CommitTrans", 0x1A: "CreateDynaset", 0x1B: "ExecuteSQL", 0x1C: "Rollback",
+    0x1D: "AddNew", 0x1E: "Edit", 0x1F: "MoveFirst", 0x20: "MoveLast", 0x21: "MoveNext",
+    0x22: "MovePrevious", 0x24: "BeginTrans", 0x25: "Update", 0x26: "Append",
+    0x27: "FieldSize", 0x28: "GetChunk", 0x2D: "OpenTable", 0x2F: "ListTables",
+    0x32: "CreateSnapshot", 0x33: "OpenQueryDef", 0x34: "CreateQueryDef", 0x39: "Execute",
+    0x3A: "Seek", 0x3B: "Clone",
+}
+

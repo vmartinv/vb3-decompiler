@@ -145,12 +145,21 @@ its source line. Compiling VB3's own sample projects gives thousands of
 aligned lines (see README: `restore_install.py`, `compile_project.py`).
 Handlers are named from those pairs.
 
+## Lifting to source
+
+`tools/lift.py` lifts each statement back to BASIC on a symbolic expression
+stack (operators, builtins, objects/properties, methods, calls, If/ElseIf/
+Else/End If, Do/Loop, For/Next, Select Case, Exit/End/GoTo/On Error).
+`lift.py score` compares every aligned corpus statement with its source
+line (identifiers normalised): 2,516/3,239 match.
+
 ## Next steps
 
 - Remaining naming errors on samples (`tools/validate.py`): 15 event
   procedures (mostly VBX controls in `loan`), `Forms` collection.
 - Property names for custom (VBX) controls and `PGET_ME`/`PSET_ME`
   (implicit-form properties; operand not decoded).
-- Source emitter + round-trip check: decompile each sample, recompile with
-  the IDE, compare p-code per procedure.
+- Lifter long tail (Print/file I/O, remaining builtins, UDT fields), then
+  the source emitter + round-trip check: decompile each sample, recompile
+  with the IDE, compare p-code per procedure.
 - Pseudo-BASIC output: expression stack + control-flow structuring.

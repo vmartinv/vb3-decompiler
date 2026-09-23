@@ -23,6 +23,7 @@ tools/
   align_source.py        aligns a compiled project with its source, per statement
   corpus.py              builds/queries the aligned corpus (names handlers)
   validate.py            scores recovered names against sample source
+  lift.py                lifts statements to BASIC; scores against the corpus
   vb3ide/
     kwaj_extract.py      decompresses VB3 setup-disk files (libmspack via ctypes)
     restore_install.py   rebuilds the install tree (incl. sample projects)
