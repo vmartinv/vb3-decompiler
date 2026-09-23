@@ -479,6 +479,7 @@ KINDS: dict[str, int] = {}  # control name -> slot kind byte (last resolved)
 CLASSES: dict[tuple[str, str], str] = {}  # (form, control) -> class, as resolved
 SEG_FORM: dict[int, str] = {}  # code segment -> its form, as resolved
 RECORD_FORM: dict[int, str] = {}  # procedure record -> form (from event tables)
+OBJVAR_TYPES: dict[int, dict[int, str]] = {}  # code segment -> {slot: declared class}
 
 # Class byte in a form blob's control record (confirmed values only).
 CLASS_BY_BLOB = {0x00: "PictureBox", 0x01: "Label", 0x02: "TextBox", 0x04: "CommandButton",
@@ -531,11 +532,28 @@ def _slot_refs(segs: list[Segment], rt: "Runtime") -> dict[int, dict[int, str]]:
     out: dict[int, dict[int, str]] = {}
     for p in find_procs(segs):
         for i in decode(rt, segs[p.segment - 1].data, p)[0]:
-            kind = {"CONTROL": "control", "CTLARRAY": "control", "FORM": "form"}.get(NAMES.get(i.op))
+            kind = {"CONTROL": "control", "CTLARRAY": "control", "FORM": "form",
+                    "OBJVAR": "objvar"}.get(NAMES.get(i.op))
             if kind:
                 slot = struct.unpack_from("<H", i.operand, len(i.operand) - 2)[0]
                 out.setdefault(p.segment, {})[slot] = kind
     return out
+
+
+def objvar_kind(kind: str, w0: int, w1: int, w2: int) -> int | None:
+    """Declared class kind of an object variable's data-image record, or None.
+    Module-level `kind, 0, 0`; local `kind, frame offset, frame offset`
+    (negative); parameter `1, kind`. Kind 1 = Form, else a control kind."""
+    ok = lambda k: k == 1 or k in CLASS_BY_KIND
+    if kind not in ("objvar", "control"):
+        return None
+    if w1 == w2 == 0 and ok(w0):
+        return w0
+    if kind == "objvar" and w1 >= 0xFF00 and w2 >= 0xFF00 and ok(w0):
+        return w0
+    if kind == "objvar" and w0 == 1 and w1 and ok(w1):
+        return w1
+    return None
 
 
 def resolve_symbols(segs: list[Segment], rt: "Runtime", res: dict[int, bytes]) -> dict[int, dict[int, str]]:
@@ -575,11 +593,17 @@ def resolve_symbols(segs: list[Segment], rt: "Runtime", res: dict[int, bytes]) -
     code_segs = sorted({p.segment for p in find_procs(segs)})
 
     def names_at(base: int, seg: int, fi: int) -> dict[int, str] | None:
-        out = {}
+        out, types = {}, {}
         for slot, kind in refs[seg].items():
             if base + slot + 6 > len(d):
                 return None
             w0, w1, w2 = struct.unpack_from("<HHH", d, base + slot)
+            tk = objvar_kind(kind, w0, w1, w2)
+            if tk is not None:
+                types[slot] = "Form" if tk == 1 else CLASS_BY_KIND[tk]
+                continue
+            if kind == "objvar":
+                continue  # untyped (As Control/Form generic) or not in this image
             if kind == "control":
                 idx = w1 & 0x7FFF
                 if not (w1 & 0x8000 and w2 == 0 and w0 >> 8 == 0x40) or fi < 0 \
@@ -593,7 +617,8 @@ def resolve_symbols(segs: list[Segment], rt: "Runtime", res: dict[int, bytes]) -
                     continue  # object variable (Dim x As Control/Form), not a form
                 k = (w0 & 0xFF) - form_base if form_base is not None else -1
                 out[slot] = forms[k][0] if 0 <= k < len(forms) else BUILTIN_OBJECTS.get(w0 & 0xFF, f"obj#{w0 & 0xFF:#x}")
-        return out
+        OBJVAR_TYPES[seg] = types  # last evaluated candidate; the chosen one is re-evaluated
+        return {**out, **{-k - 1: t for k, t in types.items()}} if out or types else None
 
     # Segments are modules (no controls) then forms with code, in project
     # order; forms without code have no segment, so each segment's form is
@@ -614,8 +639,11 @@ def resolve_symbols(segs: list[Segment], rt: "Runtime", res: dict[int, bytes]) -
         cands = [seg_known[seg]] if seg_known.get(seg) is not None else range(fi, len(forms))
         for f in (cands if uses_controls else [-1]):
             scored = [(len(g), -j, j, g) for j in range(ci, len(chunks))
-                      if (g := names_at(chunks[j], seg, f))]
+                      if (g := names_at(chunks[j], seg, f)) is not None]
             got = max(scored)[2:] if scored else None  # most slots resolved, earliest on ties
+            if got:
+                names_at(chunks[got[0]], seg, f)  # leave OBJVAR_TYPES for the chosen image
+                got = (got[0], {k: v for k, v in got[1].items() if k >= 0})
             if got:
                 ci, result[seg] = got[0] + 1, got[1]
                 if f >= 0:
@@ -805,6 +833,7 @@ class Symbols:
         self.tables = {t[0]: t for t in form_names(res)}
         self.seg_form = dict(SEG_FORM)
         self.late = late_bound_names(res.get(1, b""), rt)
+        self.objvar_types = {k: dict(v) for k, v in OBJVAR_TYPES.items()}
         self.classes = dict(blob_classes(res))  # blob records first (authoritative)
         for key, cls in CLASSES.items():
             if key[0] in self.tables:
@@ -842,8 +871,11 @@ class Symbols:
                 target = text
                 other = self.tables.get(target)
                 cls = "Form" if target in self.tables else target
-            elif n in ("CONTROL", "CTLARRAY"):
-                cls = self.classes.get((form_of_seg, text))
+            elif n in ("CONTROL", "CTLARRAY", "OBJVAR") and i.operand:
+                slot = struct.unpack_from("<H", i.operand, len(i.operand) - 2)[0]
+                typed = self.objvar_types.get(seg, {}).get(slot)
+                cls = typed or (self.classes.get((form_of_seg, text)) if text else None)
+                other = self.tables.get(form_of_seg) if typed == "Form" else None
             elif n in ("CTLARRAY_OF", "SUBOBJ"):
                 f, _, c = text.partition("!")
                 if c:
@@ -852,7 +884,7 @@ class Symbols:
                     cls = OBJECT_PROPERTY_CLASS.get(text.split(".")[-1])
             elif n in ("ME", "ME_IMPLICIT"):
                 cls = "Form"
-            elif n in ("OBJVAR", "OBJ", "OBJ_SELF", "PGET", "PGET_IDX") or (n or "").startswith(("LOAD", "ALOAD")):
+            elif n in ("OBJ", "OBJ_SELF", "PGET", "PGET_IDX") or (n or "").startswith(("LOAD", "ALOAD")):
                 if n not in ("OBJ", "OBJ_SELF"):
                     cls = None  # object of unknown class (variable, property result)
                     other = None

@@ -98,7 +98,8 @@ def project(mak: Path, exe: Path, rt: P.Runtime, verbose: bool) -> Counter:
                         slot = struct.unpack_from("<H", i.operand, len(i.operand) - 2)[0]
                         nm = sym.get(slot)
                         c["refs_total"] += 1
-                        if nm is None and P.NAMES.get(i.op) == "FORM":
+                        typed = symbols.objvar_types.get(seg, {}).get(slot)
+                        if nm is None and (P.NAMES.get(i.op) == "FORM" or typed):
                             c["refs_objvar"] += 1  # object variable: named like any variable
                             continue
                         if nm is None:

@@ -175,8 +175,10 @@ are OLE Automation method calls (`3357`, method ids without names).
 
 ## Next steps
 
-- Declared types of object variables/parameters (for property names on
-  typed object variables).
+- Object-variable declared types: data-image records decoded for
+  module-level (`kind, 0, 0`) and local (`kind, frame, frame`) variables
+  and one parameter shape (`1, kind`); other parameter records (e.g.
+  `4, 6, frame` for `As Control`) need a targeted test.
 - Property names for custom (VBX) controls and `PGET_ME`/`PSET_ME`
   (implicit-form properties; operand not decoded).
 - Source emitter + round-trip check: decompile each sample, recompile with
