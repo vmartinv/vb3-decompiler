@@ -36,10 +36,16 @@ and open questions are called out explicitly rather than guessed at.
   terminator), not in any opcode-dispatch table. Coincidental overlap in a
   256-value byte space, not evidence the two tools share an opcode
   encoding. `VBDIS3E.exe` itself has still not been run (needs
-  `MSVBVM60.DLL`, not installed in the research environment this was found
-  in) — running it directly against a known test binary remains the only
-  way to actually compare its output to the findings below, if it's worth
-  pursuing.
+  `MSVBVM60.DLL`. **Update: ran it.** Installed `MSVBVM60.DLL` + `ComDlg32.OCX`
+  via `winetricks vb6run comdlg32ocx`, launched it under Wine, and drove it
+  through File > Open on `qrace.exe` and a project-output path — the UI
+  works (module/subroutine/control panes, scan button), but scanning
+  `qrace.exe` produces zero modules, zero output files, and no error. Dead
+  end: the bundled `vbdis3i.dat` opcode-table file is flagged by the tool's
+  own startup check as "wrong version," and the scan silently no-ops
+  without it. No usable disassembly obtained. Not pursuing this tool
+  further — continuing opcode discovery via the empirical compile-and-diff
+  method instead.
 
 ## Setup: getting a VB3 compiler running
 
