@@ -26,13 +26,20 @@ and open questions are called out explicitly rather than guessed at.
   ([Ron R. Dodi's port of DoDi's VB3 decompiler](https://github.com/Planet-Source-Code/ron-r-dodi-s-vb3-decompiler-has-been-decompiled-and-converterd-to-vb6-90-complete__1-38543),
   ~90% complete per its own README) with a real compiled disassembler
   binary, `VBDIS3E.exe` — a genuine 32-bit PE executable, not a 16-bit
-  stub. Its decompiled VB6 source (`MODULE12/15/17.BAS` etc.) contains
-  numeric constants that overlap suspiciously with opcodes found
-  independently below (e.g. `mc0124 = 229` / `0xE5`, matching this page's
-  "push literal 0" opcode). **Not yet run or cross-referenced in detail**
-  — it needs `MSVBVM60.DLL` (the VB6 runtime), not installed in the
-  research environment this was found in. Worth pursuing: if it runs, it
-  may shortcut or validate a large fraction of the empirical work below.
+  stub. Initially looked promising: its decompiled VB6 source
+  (`MODULE12/15/17.BAS` etc.) has a numeric constant, `mc0124 = 229`
+  (`0xE5`), matching this page's "push literal 0" opcode. **Checked in
+  detail and it's a false lead** — that constant is used in the
+  disassembler's own *output-file-writing* code
+  (`Chr$(mc0124)` appended to a string while generating a `.txt` report,
+  guarded by `Asc(Right$(...)) <> mc0124` to avoid a duplicate
+  terminator), not in any opcode-dispatch table. Coincidental overlap in a
+  256-value byte space, not evidence the two tools share an opcode
+  encoding. `VBDIS3E.exe` itself has still not been run (needs
+  `MSVBVM60.DLL`, not installed in the research environment this was found
+  in) — running it directly against a known test binary remains the only
+  way to actually compare its output to the findings below, if it's worth
+  pursuing.
 
 ## Setup: getting a VB3 compiler running
 
