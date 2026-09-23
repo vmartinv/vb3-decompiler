@@ -54,7 +54,14 @@ def compile_mak(mak: Path, load_wait: float = 8, build_wait: float = 10) -> bool
         time.sleep(1)
         new = [p for p in mak.parent.glob("*.[eE][xX][eE]") if before.get(p) != p.stat().st_mtime]
         if new:
-            time.sleep(1)
+            # VB writes the EXE progressively (resources last): wait until
+            # its size has been stable for a few seconds.
+            size, stable = -1, 0
+            while stable < 4:
+                time.sleep(1)
+                cur = new[0].stat().st_size
+                stable = stable + 1 if cur == size else 0
+                size = cur
             new[0].rename(exe)  # several projects can share a directory
             return True
     return False

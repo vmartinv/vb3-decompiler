@@ -354,6 +354,46 @@ class Runtime:
                 self._props[cls] = props
         return self._props
 
+    def _ds_name(self, o: int) -> str | None:
+        ds = self.data
+        if not 0 < o < len(ds):
+            return None
+        e = ds.find(b"\0", o)
+        t = ds[o:e]
+        return t.decode("latin-1") if 0 < len(t) < 40 and t.isascii() and t[:1].isalpha() else None
+
+    def _ds_word(self, o: int) -> int:
+        return struct.unpack_from("<H", self.data, o)[0] if 0 <= o <= len(self.data) - 2 else 0
+
+    def event_lists(self) -> dict[str, list[str]]:
+        """Class -> event names, from each MODEL's event list: entries 0xFFxx
+        (index ~w into the master standard-event table: Click, DblClick,
+        DragDrop, ...) or an EVENTINFO pointer (first word = name)."""
+        if hasattr(self, "_events"):
+            return self._events
+        w, name = self._ds_word, self._ds_name
+        master = []
+        for m in range(0, len(self.data) - 40, 2):
+            if name(w(w(m))) == "Click" and name(w(w(m + 2))) == "DblClick" and name(w(w(m + 4))) == "DragDrop":
+                k = m
+                while name(w(w(k))):
+                    master.append(name(w(w(k))))
+                    k += 2
+                break
+        self._events = {}
+        for r in range(8, len(self.data) - 4, 2):
+            cls, pl, el = name(w(r - 4)), w(r), w(r + 2)
+            if not (name(w(r - 6)) and cls and 0x1000 < pl < len(self.data) and 0x1000 < el < len(self.data)):
+                continue
+            evs, q = [], el
+            while w(q) and len(evs) < 64:
+                v = w(q)
+                evs.append((master[0xFFFF - v] if 0xFFFF - v < len(master) else None) if v >= 0xFF80 else name(w(v)))
+                q += 2
+            if evs and all(evs) and cls not in self._events:
+                self._events[cls] = evs
+        return self._events
+
     def is_branch(self, op: int) -> bool:
         self.operand_len(op)
         return op not in _MANUAL and any(
@@ -367,6 +407,14 @@ class Runtime:
 def rcdata(path: Path) -> dict[int, bytes]:
     from ne_parser import NEFile
     return {r.res_id: r.data for r in NEFile(path).iter_resources() if r.type_name == "RT_RCDATA"}
+
+
+def vbx_entries(res1: bytes) -> list[str]:
+    """VBX files and the control classes they add, from the project directory:
+    printable strings after the first `*.VBX` that aren't `*.FRM`."""
+    strs = [m.group(0).decode("latin-1") for m in re.finditer(rb"[\x20-\x7e]{3,}", res1)]
+    first = next((i for i, t in enumerate(strs) if t.upper().endswith(".VBX")), None)
+    return [] if first is None else [t for t in strs[first:] if not t.upper().endswith((".FRM", ".BAS"))]
 
 
 def form_names(res: dict[int, bytes]) -> list[list[str]]:
@@ -387,11 +435,12 @@ def form_names(res: dict[int, bytes]) -> list[list[str]]:
 KINDS: dict[str, int] = {}  # control name -> slot kind byte (last resolved)
 CLASSES: dict[tuple[str, str], str] = {}  # (form, control) -> class, as resolved
 SEG_FORM: dict[int, str] = {}  # code segment -> its form, as resolved
+RECORD_FORM: dict[int, str] = {}  # procedure record -> form (from event tables)
 
 # Class byte in a form blob's control record (confirmed values only).
 CLASS_BY_BLOB = {0x00: "PictureBox", 0x01: "Label", 0x02: "TextBox", 0x04: "CommandButton",
                  0x05: "CheckBox", 0x06: "OptionButton", 0x08: "ListBox", 0x09: "HScrollBar",
-                 0x0B: "Timer", 0x18: "Image"}
+                 0x0B: "Timer", 0x13: "Menu", 0x18: "Image"}
 _CTL_RECORD = re.compile(rb"[\x01\x03](..)\x00\x00(.)\x00(.)\xff", re.S)
 
 
@@ -453,11 +502,15 @@ def resolve_symbols(segs: list[Segment], rt: "Runtime", res: dict[int, bytes]) -
         nn = [m.group(0)[i] for i in range(0, len(m.group(0)), 6)]
         for k in range(len(nn) - len(forms) + 1):
             w = nn[k:k + len(forms)]
-            if forms and sorted(w) == list(range(min(w), min(w) + len(forms))):
+            if forms and min(w) >= 0x40 and sorted(w) == list(range(min(w), min(w) + len(forms))):
                 form_base = min(w)
                 break
         if form_base is not None:
             break
+    if form_base is None:
+        # Global object numbers: forms follow 0x46 + one per VBX file and one
+        # per VBX control class (both listed in the project directory, RT_RCDATA 1).
+        form_base = 0x46 + len(vbx_entries(res.get(1, b"")))
     chunks = [m.start() for m in re.finditer(rb"(?=..\x00\x00\x1e\x00)", d, re.S)]
     refs = _slot_refs(segs, rt)
     code_segs = sorted({p.segment for p in find_procs(segs)})
@@ -478,7 +531,7 @@ def resolve_symbols(segs: list[Segment], rt: "Runtime", res: dict[int, bytes]) -
                 CLASSES[(forms[fi][0], forms[fi][idx])] = CLASS_BY_KIND.get(w0 & 0xFF, "?")
             else:
                 if w0 >> 8 != 0x80:
-                    return None
+                    continue  # object variable (Dim x As Control/Form), not a form
                 k = (w0 & 0xFF) - form_base if form_base is not None else -1
                 out[slot] = forms[k][0] if 0 <= k < len(forms) else BUILTIN_OBJECTS.get(w0 & 0xFF, f"obj#{w0 & 0xFF:#x}")
         return out
@@ -486,14 +539,24 @@ def resolve_symbols(segs: list[Segment], rt: "Runtime", res: dict[int, bytes]) -
     # Segments are modules (no controls) then forms with code, in project
     # order; forms without code have no segment, so each segment's form is
     # the next one whose name table fits its control references.
+    proc_names(segs, rt, res)  # fills RECORD_FORM
+    form_index = {t[0]: k for k, t in enumerate(forms)}
+    seg_known = {}
+    for p in find_procs(segs):
+        if p.record in RECORD_FORM:
+            seg_known[p.segment] = form_index.get(RECORD_FORM[p.record])
     result, ci, fi = {}, 0, 0
     for seg in code_segs:
+        if seg in seg_known and seg_known[seg] is not None:
+            fi = seg_known[seg]
         if seg not in refs:
             continue
         uses_controls = "control" in refs[seg].values()
-        for f in (range(fi, len(forms)) if uses_controls else [-1]):
-            got = next(((j, g) for j in range(ci, len(chunks))
-                        if (g := names_at(chunks[j], seg, f)) is not None), None)
+        cands = [seg_known[seg]] if seg_known.get(seg) is not None else range(fi, len(forms))
+        for f in (cands if uses_controls else [-1]):
+            scored = [(len(g), -j, j, g) for j in range(ci, len(chunks))
+                      if (g := names_at(chunks[j], seg, f))]
+            got = max(scored)[2:] if scored else None  # most slots resolved, earliest on ties
             if got:
                 ci, result[seg] = got[0] + 1, got[1]
                 if f >= 0:
@@ -501,6 +564,55 @@ def resolve_symbols(segs: list[Segment], rt: "Runtime", res: dict[int, bytes]) -
                     fi = f + 1
                 break
     return result
+
+
+_CTL_HEADER = re.compile(rb"[\x01\x03](..)\x00\x00(.)(.)(.)\xff", re.S)
+
+
+def proc_names(segs: list[Segment], rt: "Runtime", res: dict[int, bytes]) -> dict[int, str]:
+    """Procedure record -> event procedure name (`control_Event`,
+    `Form_Event`). Each form blob's control records end with an event table:
+    `FF, u8 count (= the class's event count), count x u16` where a
+    non-zero entry is the handler's procedure record offset | 1. The owning
+    control is the record ending with the table (`u8 flag 1/2/3, u16
+    length, u16 flags, u8 name index, ...`, class at +7, or +9 for a
+    control-array element, flags & 0x8000); tables outside any control
+    record are the form's own. Procedures not found here are general
+    Sub/Function procedures (their names aren't stored)."""
+    records = {p.record for p in find_procs(segs)}
+    events = rt.event_lists()
+    counts = {len(v) for v in events.values()}
+    out, ids = {}, sorted(res)
+    for a, b in zip(ids, ids[1:]):
+        if not (res[a][:2] == b"\xff\xcc" and res[b][:2] != b"\xff\xcc"):
+            continue
+        d, names = res[a], form_names({a: res[a], b: res[b]})[0]
+        for p in range(1, len(d) - 2):
+            n = d[p]
+            if d[p - 1] != 0xFF or n not in counts or p + 1 + 2 * n > len(d):
+                continue
+            ents = struct.unpack_from(f"<{n}H", d, p + 1)
+            if not any(ents) or not all(e == 0 or (e & 1 and e & ~1 in records) for e in ents):
+                continue
+            end = p + 1 + 2 * n
+            hdr = next((q for q in range(p - 3, max(0, p - 1024), -1)
+                        if d[q] in (1, 2, 3) and q + 2 + struct.unpack_from("<H", d, q + 1)[0] in (end, end + 1)), None)
+            if hdr is not None:
+                flags = struct.unpack_from("<H", d, hdr + 3)[0]
+                idx = d[hdr + 5]
+                cb = d[hdr + 9] if flags & 0x8000 else d[hdr + 7]  # array element: + u8 elem, u16
+                ctl = names[idx] if idx < len(names) and names[idx] else f"ctl#{idx}"
+                cls = CLASS_BY_BLOB.get(cb)
+            else:
+                ctl, cls = "Form", "Form"
+            evs = events.get(cls) or next((v for v in events.values() if len(v) == n), [])
+            if len(evs) != n:
+                evs = next((v for v in events.values() if len(v) == n), [])
+            for k, e in enumerate(ents):
+                if e:
+                    out.setdefault(e & ~1, f"{ctl}_{evs[k] if k < len(evs) else f'Event{k}'}")
+                    RECORD_FORM[e & ~1] = names[0]
+    return out
 
 
 # Handler names live in opcodes.py; unnamed ones print as op_XXXX [id].

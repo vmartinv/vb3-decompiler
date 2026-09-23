@@ -97,9 +97,10 @@ image in `RT_RCDATA` 2 (see `RESOURCE_FORMAT.md`):
 - control slot: `u16 kind (0x40xx), u16 0x8000 | name index, u16 0`; the
   name index points into the form's name table.
 - form/object slot: `u16 0x80NN, u16 global offset`. Forms have
-  consecutive NN in project order (base = smallest NN in the global
-  per-form run `NN 80 00 00 00 00`); built-ins: `0x32` Printer, `0x33`
-  Screen, `0x34` Clipboard, `0x3D` App.
+  consecutive NN in project order from base `0x46` + one per VBX file and
+  one per VBX control class (both listed in `RT_RCDATA` 1); built-ins:
+  `0x32` Printer, `0x33` Screen, `0x34` Clipboard, `0x3D` App. A `FORM`
+  slot without `0x80NN` is an object variable (`Dim x As Control`).
 - `CTLARRAY_OF`/`SUBOBJ` operand `0x80nn` = control `nn` of the form
   pushed just before (`frmStatus!cmdTrain`).
 - Control class: slot kind byte (`0x1C/1D` Label, `0x1E/1F` TextBox,
@@ -118,9 +119,24 @@ against the corpus (e.g. Label `0x18` AutoSize, TextBox `0x0B` Text,
 ListBox `0x13` ListIndex). All 345 property accesses in `qrace.exe` are
 named.
 
-`pcode_disasm.py` resolves these; each segment's image is the first data
-chunk (in order) where every slot its code uses holds a valid record.
-Complete for `qrace.exe` (536 references) and 17 of 23 sample projects.
+`pcode_disasm.py` resolves these. A segment's form comes from its event
+procedures (below); its data image is the chunk resolving the most slots.
+Against sample source (`tools/validate.py`): 1,299/1,313 references
+correct, 5 wrong (`Forms` collection, one VBX), 9 object variables.
+
+## Procedure names
+
+Event procedures are bound in the form blob: each control record ends
+with an event table `FF, u8 count (= the class's event count), count × u16`
+where a non-zero entry is the handler's procedure record | 1. The owner is
+the record ending with the table (`u8 flag, u16 length (excl. itself), u16
+flags, u8 name index, …`, class byte at +7, or +9 for control-array
+elements); tables outside control records are the form's. Event names
+come from the class MODEL's event list in `VBRUN300.DLL` (entries `0xFFxx`
+→ master event table Click, DblClick, DragDrop, …; or EVENTINFO
+pointers). General `Sub`/`Function` names are not stored (record +4 is an
+offset into a design-time name pool that isn't in the EXE).
+Against sample source: 339/369 event procedures named correctly.
 
 ## Source-aligned corpus
 
@@ -131,9 +147,10 @@ Handlers are named from those pairs.
 
 ## Next steps
 
-- Symbol resolution gaps in 6 sample projects (`mdinote`, `timecard`,
-  `visdata`, `oleauto`, …): likely forms without code / MDI forms.
+- Remaining naming errors on samples (`tools/validate.py`): 15 event
+  procedures (mostly VBX controls in `loan`), `Forms` collection.
 - Property names for custom (VBX) controls and `PGET_ME`/`PSET_ME`
   (implicit-form properties; operand not decoded).
-- Procedure record → event name (record +4 looks like a control/event id).
+- Source emitter + round-trip check: decompile each sample, recompile with
+  the IDE, compare p-code per procedure.
 - Pseudo-BASIC output: expression stack + control-flow structuring.

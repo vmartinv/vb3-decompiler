@@ -1,0 +1,119 @@
+#!/usr/bin/env python3
+"""
+Scores the decompiler's recovered names against projects with known
+source (VB3's sample projects, generated test projects).
+
+  procs:    event procedure names (from form blob event tables)
+  refs:     CONTROL/FORM/CTLARRAY names vs identifiers on the source line
+  props:    PGET/PSET Class.Prop vs `.Prop` on the source line
+
+Usage:
+    python3 tools/validate.py <projects-root> --runtime VBRUN300.DLL [-v]
+"""
+from __future__ import annotations
+
+import argparse
+import re
+import struct
+import sys
+from collections import Counter
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import align_source as A  # noqa: E402
+import pcode_disasm as P  # noqa: E402
+
+
+def project(mak: Path, exe: Path, rt: P.Runtime, verbose: bool) -> Counter:
+    c: Counter = Counter()
+    segs = P.parse_ne(exe)
+    res = P.rcdata(exe)
+    names = P.proc_names(segs, rt, res)
+    syms = P.resolve_symbols(segs, rt, res)
+    by_seg: dict[int, list] = {}
+    for r in P.find_procs(segs):
+        by_seg.setdefault(r.segment, []).append(r)
+    files = [(f, A.source_procs(f)) for f in A.code_files(mak)]
+    nonempty = [(f, [p for p in ps if any(A.executable(l) for _, l in p["body"][:-1])]) for f, ps in files]
+    nonempty = [(f, ps) for f, ps in nonempty if ps]
+    for seg, (f, sprocs) in zip(sorted(by_seg), nonempty):
+        recs = sorted(by_seg[seg], key=lambda r: r.record)
+        if len(recs) != len(sprocs):
+            c["procs_unaligned"] += len(sprocs)
+            continue
+        for r, sp in zip(recs, sprocs):
+            got, want = names.get(r.record), sp["name"]
+            if "_" in want and not want.startswith(("Sub", "Function")):
+                c["procs_total"] += 1
+                if got and got.lower() == want.lower():
+                    c["procs_ok"] += 1
+                elif got:
+                    c["procs_wrong"] += 1
+                    if verbose:
+                        print(f"   proc {f.name}: {want} != {got}")
+            elif got:
+                c["procs_false"] += 1
+                if verbose:
+                    print(f"   proc {f.name}: general {want} named {got}")
+            # per statement: references and properties
+            insns, err = P.decode(rt, segs[seg - 1].data, r)
+            if err:
+                continue
+            groups, cur = [], None
+            for i in insns:
+                if rt.is_stmt(i.op):
+                    cur = [i]
+                    groups.append(cur)
+                elif cur is not None:
+                    cur.append(i)
+            groups = [g for g in groups if not (len(g) == 2 and g[1].op == A.LABEL)]
+            lines = [st for _, l in sp["body"] if A.executable(l) for st in A.split_statements(l)]
+            if len(groups) != len(lines):
+                continue
+            sym = syms.get(seg, {})
+            for g, src in zip(groups, lines):
+                idents = {t.lower() for t in re.findall(r"[A-Za-z_]\w*", A.strip_comment(src))}
+                for i in g:
+                    if P.NAMES.get(i.op) in ("CONTROL", "CTLARRAY", "FORM") and i.operand:
+                        slot = struct.unpack_from("<H", i.operand, len(i.operand) - 2)[0]
+                        nm = sym.get(slot)
+                        c["refs_total"] += 1
+                        if nm is None:
+                            c["refs_missing"] += 1
+                            if verbose:
+                                print(f"   missing {f.name}:{want}: slot {slot:#x} in {src!r}")
+                        elif nm.lower() in idents or nm.lower() in ("screen", "app", "printer", "clipboard"):
+                            c["refs_ok"] += 1
+                        else:
+                            c["refs_wrong"] += 1
+                            if verbose:
+                                print(f"   ref {f.name}:{want}: {nm} not in {src!r}")
+    return c
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("root", type=Path)
+    ap.add_argument("--runtime", type=Path, required=True)
+    ap.add_argument("-v", action="store_true")
+    args = ap.parse_args()
+    rt = P.Runtime(args.runtime)
+    total: Counter = Counter()
+    for mak in sorted(args.root.rglob("*.mak")):
+        exe = mak.with_suffix(".exe")
+        if not exe.is_file():
+            continue
+        try:
+            c = project(mak, exe, rt, args.v)
+        except Exception as e:  # report and continue
+            print(f"{mak.stem}: ERROR {e}")
+            continue
+        total += c
+        print(f"{mak.stem:10s} procs {c['procs_ok']}/{c['procs_total']} (wrong {c['procs_wrong']}, false {c['procs_false']})"
+              f"  refs {c['refs_ok']}/{c['refs_total']} (missing {c['refs_missing']}, wrong {c['refs_wrong']})")
+    print(f"TOTAL      procs {total['procs_ok']}/{total['procs_total']} (wrong {total['procs_wrong']}, false {total['procs_false']})"
+          f"  refs {total['refs_ok']}/{total['refs_total']} (missing {total['refs_missing']}, wrong {total['refs_wrong']})")
+
+
+if __name__ == "__main__":
+    main()
