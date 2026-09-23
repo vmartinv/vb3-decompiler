@@ -391,7 +391,7 @@ and with a longer 2-statement body) and diffing the 56-byte record:
   a linked-list-style chain) rather than this procedure's own code — not
   fully mapped out, but not needed for the code-location result above.
 
-### Multi-segment projects: the start/end recipe alone is AMBIGUOUS — confirmed, not hypothetical
+### Multi-segment projects: the start/end recipe alone is AMBIGUOUS (resolved below)
 
 Tested by adding a standard code module (`Module1.bas`, which VB3 always
 compiles into its own segment — confirmed: a 1-form-1-module project has 5
@@ -428,11 +428,94 @@ module-level `Sub` and a form-level `Sub` from `Form_Load`:
   this exact information, given both files independently have an
   unexplained id-2 resource of similar shape.
 
-**Not cracked**: the exact container→segment-number mapping. This is the
-concrete next step if resumed — needed before the `Call` recipe above can
-be trusted on `qrace.exe` specifically (single-segment/single-form test
-programs, which is everything else on this page, don't have this
-ambiguity, so they remain valid as-is).
+The exact container→segment-number mapping wasn't apparent from this data
+alone — see "CRACKED" below, where a proper sweep tool nailed it down.
+
+**Deeper dig, and an honest retraction**: pushed further with a
+2-modules-1-form project (3 code segments) to try to crack the
+container→segment mapping directly:
+
+- Confirmed each `.bas` module gets its own segment too (not shared with
+  other modules) — segment order was module-1, module-2, then the form,
+  which does *not* match `.mak` declaration order (the `.mak` listed the
+  form first). Untested whether this ordering is a fixed rule or
+  incidental to this test.
+- Attempted a cross-*form* call (`Form2.SomeSub`, the more realistic case
+  for `qrace.exe`, which has 16 forms and no `.bas` modules per
+  `RESOURCE_FORMAT.md`) — hit real VB3 syntax friction (`Call Form2.Sub`,
+  `Call Form2.Sub()`, and `Form2.Sub()` all failed to compile with
+  different parser/semantic errors). Not a research dead end, just VB3
+  call-syntax trivia not yet worked out; set aside since the underlying
+  segment-resolution mechanism should be identical either way.
+- Followed each `Sub` descriptor's byte 26-27 link and found it forms a
+  genuine chain across *all* procedures in the project (module 1's `Sub`
+  → module 2's `Sub` → a `16`-tagged record whose own start/end fields
+  matched `Form_Load`'s own code region exactly) — so the chain is
+  real and walkable, terminating at something that looks like a
+  per-segment "default procedure" anchor.
+- **Retraction**: the `16`-tagged "container" fields I labeled "MODULE
+  container?" / "FORM container?" earlier in this section were matched
+  by *field position only*, without confirming the two records actually
+  share a layout — they don't. The container reached by the module chain
+  above has clean, plausible start/end values; an earlier one (originally
+  written up as the "module container") has a `+36` value (2167) far too
+  large to be a code-end offset, meaning that earlier read was pattern-
+  matching noise, not a real field. Struck through in spirit here rather
+  than left uncorrected in place.
+
+**Assessment**: this stopped being simple opcode decoding and needed real
+tooling — built `tools/vb3ide/sweep_project_structure.py`, which generates
+whole multi-file VB3 projects (not just Form1 code snippets) and dumps
+every segment-3 record automatically. Ran it across 1/2/3-module projects
+and got a clean, decisive answer.
+
+### CRACKED: segment resolution is positional (chain-walk), not a stored field
+
+**There is no field anywhere that stores a literal segment number.**
+Instead: a fixed project-root record (`16`-tagged container at segment-3
+offset 72, present and structurally identical in every test) has, at byte
+offset 30 within its own 56-byte record, a pointer to the *first* module's
+`16`-tagged container. Each module's container has that *same* field
+(offset 30) pointing to the *next* module's container, terminated by
+`0xFFFF`. **Walking this chain and counting hops gives the code segment
+number directly: the Nth container reached (0-indexed) is segment `4+N`.**
+The form (always compiled after all modules) is segment `4 + module_count`
+— i.e. one past the end of the module chain.
+
+Verified programmatically (not by eye) across 1, 2, and 3-module test
+projects — the algorithm's predicted segment number matched the real NE
+segment table exactly in all 3 cases:
+
+```
+1 module: root -> container@256 (segment 4) -> end        => form = segment 5  ✓
+2 modules: root -> @256 (seg 4) -> @376 (seg 5) -> end     => form = segment 6  ✓
+3 modules: root -> @256 (seg 4) -> @376 (5) -> @496 (6) -> end => form = seg 7  ✓
+```
+
+This also explains why earlier per-record fields looked so inconsistent
+under a "does this field encode segment N" search: **module 1's own
+container record is byte-for-byte identical whether it's compiled alongside
+1, 2, or 3 other modules** (confirmed directly) — its shape only depends on
+whether it *has* a next-module pointer, never on its absolute position.
+There was never a "segment number field" to find.
+
+**Combined with the earlier `Call` decode**: resolving any `Call` target
+now requires (1) segment-3 offset from the `Call` operand → the `26`-tagged
+`Sub` descriptor, (2) that descriptor's start/end fields for the code
+range, and (3) — for multi-segment projects — walking the module-container
+chain from the fixed root at segment-3 offset 72 to count which physical
+segment (4, 5, 6, ...) owns that code range. Step 3 is a fixed, mechanical
+algorithm now, not a guess.
+
+**Still open**: this was verified for module chains only (`qrace.exe` has
+no standard modules per `RESOURCE_FORMAT.md` — all 16 units are forms). A
+multi-form test (2+ extra forms) hit a VB3 IDE/syntax snag during this
+session's sweep (`1mod_2form` failed to compile) and wasn't re-run. The
+natural hypothesis — forms chain the same way, via their own root pointer,
+after the module chain ends — is plausible given the symmetric design but
+**not yet confirmed for forms specifically**. That's the one remaining
+gap before this is fully validated for `qrace.exe`'s actual (form-only)
+structure.
 
 ## Reproducing this / extending it further
 
@@ -458,11 +541,13 @@ for full environment setup (Xvfb, window manager, Wine prefix).
 - Extend control flow to `ElseIf` and loops (`For`/`Do`/`While`) — only
   `If`/`Then`/`Else` is decoded so far; `For`/`Next` structure is sketched
   but not confirmed (see above).
-- `Call`'s operand and the descriptor record's code-location fields are
-  decoded, but **confirmed insufficient for multi-segment (multi-form)
-  projects** — see "Multi-segment projects" above. Cracking the
-  container→segment-number mapping is the top priority next step, since
-  it blocks trusting `Call` resolution on `qrace.exe` itself.
+- `Call` is fully decoded, including multi-segment resolution (the
+  module-container chain-walk algorithm — see "Multi-segment projects"
+  above). One gap remains: the chain-walk was verified for *modules*
+  only; whether multiple *forms* chain the same way (relevant to
+  `qrace.exe`, which has 16 forms and no modules) is untested — a
+  multi-form sweep case failed to compile this session and wasn't
+  retried. Confirming that is the top priority next step.
 - `Function` calls (with a return value) and built-in function calls not
   attempted yet.
 - Once enough of the opcode set is decoded, it should generalize
