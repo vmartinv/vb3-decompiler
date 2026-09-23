@@ -102,6 +102,21 @@ image in `RT_RCDATA` 2 (see `RESOURCE_FORMAT.md`):
   Screen, `0x34` Clipboard, `0x3D` App.
 - `CTLARRAY_OF`/`SUBOBJ` operand `0x80nn` = control `nn` of the form
   pushed just before (`frmStatus!cmdTrain`).
+- Control class: slot kind byte (`0x1C/1D` Label, `0x1E/1F` TextBox,
+  `0x22/23` CommandButton, `0x42/43` Image, … odd = control array; table in
+  the tool), or the class byte of the control's record in the form blob.
+
+## Properties
+
+`PGET`/`PSET` operand `0xC0nn` = entry `nn` of the object's class property
+list. The lists are read from `VBRUN300.DLL`'s data segment: each class
+has a MODEL (default name, class name, parent class, property list, event
+list); list entries are `0xFFxx` (index `~w` into the master
+standard-property table: Name, Index, hWnd, BackColor, …) or a pointer to
+a class-specific PROPINFO (first word = name), terminated by 0. Verified
+against the corpus (e.g. Label `0x18` AutoSize, TextBox `0x0B` Text,
+ListBox `0x13` ListIndex). All 345 property accesses in `qrace.exe` are
+named.
 
 `pcode_disasm.py` resolves these; each segment's image is the first data
 chunk (in order) where every slot its code uses holds a valid record.
@@ -118,7 +133,7 @@ Handlers are named from those pairs.
 
 - Symbol resolution gaps in 6 sample projects (`mdinote`, `timecard`,
   `visdata`, `oleauto`, …): likely forms without code / MDI forms.
-- Property names: `PGET`/`PSET` `nn` is per control class (kind word);
-  build class × index tables from the corpus.
+- Property names for custom (VBX) controls and `PGET_ME`/`PSET_ME`
+  (implicit-form properties; operand not decoded).
 - Procedure record → event name (record +4 looks like a control/event id).
 - Pseudo-BASIC output: expression stack + control-flow structuring.

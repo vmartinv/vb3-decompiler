@@ -38,6 +38,7 @@ from capstone import CS_ARCH_X86, CS_MODE_16, Cs
 from capstone.x86 import X86_OP_IMM
 
 INTERPRETER_SEGMENT = 25  # 1-based, in the stock VBRUN300.DLL
+RUNTIME_DATA_SEGMENT = 100  # VBRUN300's data segment (control models)
 PROC_TABLE_SEGMENT = 3    # 1-based, in every VB3 exe tested
 
 # ---------------------------------------------------------------------------
@@ -161,6 +162,7 @@ class Runtime:
     def __init__(self, dll: Path):
         segs = parse_ne(dll)
         self.code = segs[INTERPRETER_SEGMENT - 1].data
+        self.data = segs[RUNTIME_DATA_SEGMENT - 1].data
         self.md = Cs(CS_ARCH_X86, CS_MODE_16)
         self.md.detail = True
         self._insn: dict[int, object] = {}
@@ -307,6 +309,51 @@ class Runtime:
             self._stmt[op] = ok
         return self._stmt[op]
 
+    def property_lists(self) -> dict[str, list[str]]:
+        """Standard control classes' property lists, from VBRUN300's data
+        segment: each class MODEL has (default name, class name, parent
+        class, property list, event list); list entries are 0xFFxx (index
+        ~w into the master standard-property table) or a PROPINFO pointer
+        (first word = name), terminated by 0."""
+        if hasattr(self, "_props"):
+            return self._props
+        ds = self.data
+
+        def w(o):
+            return struct.unpack_from("<H", ds, o)[0] if 0 <= o <= len(ds) - 2 else 0
+
+        def name(o):
+            if not 0 < o < len(ds):
+                return None
+            e = ds.find(b"\0", o)
+            t = ds[o:e]
+            return t.decode("latin-1") if 0 < len(t) < 40 and t.isascii() and t[:1].isalpha() else None
+
+        # Master table: the first run of >= 20 PROPINFO pointers starting "Name".
+        master = []
+        for m in range(0, len(ds) - 40, 2):
+            if name(w(w(m))) == "Name" and name(w(w(m + 2))) == "Index" and name(w(w(m + 6))) == "BackColor":
+                k = m
+                while w(k) > 0x400 or (w(k) and name(w(w(k))) is None and k < m + 200):
+                    master.append(name(w(w(k))))
+                    k += 2
+                break
+        self._props = {}
+        for r in range(8, len(ds) - 4, 2):
+            cls, pl, el = name(w(r - 4)), w(r), w(r + 2)
+            if not (name(w(r - 6)) and cls and 0x1000 < pl < len(ds) and pl != el
+                    and (el == 0 or 0x1000 < el < len(ds))):  # objects/Shape/Line: no events
+                continue
+            props, q = [], pl
+            while w(q) and len(props) < 100:
+                v = w(q)
+                props.append((master[0xFFFF - v] if 0xFFFF - v < len(master) else None) if v >= 0xFF80
+                             else name(w(v)))
+                q += 2
+            if len(props) >= 5 and ("Name" in props or "Left" in props) and cls not in self._props:
+                self._props[cls] = props
+        return self._props
+
     def is_branch(self, op: int) -> bool:
         self.operand_len(op)
         return op not in _MANUAL and any(
@@ -336,6 +383,41 @@ def form_names(res: dict[int, bytes]) -> list[list[str]]:
             out.append(names)
     return out
 
+
+KINDS: dict[str, int] = {}  # control name -> slot kind byte (last resolved)
+CLASSES: dict[tuple[str, str], str] = {}  # (form, control) -> class, as resolved
+SEG_FORM: dict[int, str] = {}  # code segment -> its form, as resolved
+
+# Class byte in a form blob's control record (confirmed values only).
+CLASS_BY_BLOB = {0x00: "PictureBox", 0x01: "Label", 0x02: "TextBox", 0x04: "CommandButton",
+                 0x05: "CheckBox", 0x06: "OptionButton", 0x08: "ListBox", 0x09: "HScrollBar",
+                 0x0B: "Timer", 0x18: "Image"}
+_CTL_RECORD = re.compile(rb"[\x01\x03](..)\x00\x00(.)\x00(.)\xff", re.S)
+
+
+def blob_classes(res: dict[int, bytes]) -> dict[tuple[str, str], str]:
+    """(form, control) -> class from control records in each form's blob
+    (`u8 flag, u16 length, u16 0, u16 name index, u8 class, FF, ...`)."""
+    out, ids = {}, sorted(res)
+    tables = {t[0]: t for t in form_names(res)}
+    for a, b in zip(ids, ids[1:]):
+        if res[a][:2] == b"\xff\xcc" and res[b][:2] != b"\xff\xcc":
+            names = form_names({a: res[a], b: res[b]})[0]
+            for m in _CTL_RECORD.finditer(res[a]):
+                idx, cb = m.group(2)[0], m.group(3)[0]
+                if 0 < idx < len(names) and names[idx] and cb in CLASS_BY_BLOB:
+                    out.setdefault((names[0], names[idx]), CLASS_BY_BLOB[cb])
+    return out
+
+# Slot kind byte -> control class (even: single control, odd: control array).
+CLASS_BY_KIND = {k: c for c, ks in {
+    "PictureBox": (0x1A, 0x1B), "Label": (0x1C, 0x1D), "TextBox": (0x1E, 0x1F),
+    "Frame": (0x20, 0x21), "CommandButton": (0x22, 0x23), "CheckBox": (0x24, 0x25),
+    "OptionButton": (0x26, 0x27), "ComboBox": (0x28, 0x29), "ListBox": (0x2A, 0x2B),
+    "HScrollBar": (0x2C, 0x2D), "VScrollBar": (0x2E, 0x2F), "Timer": (0x30, 0x31),
+    "DriveListBox": (0x34, 0x35), "DirListBox": (0x36, 0x37), "FileListBox": (0x38, 0x39),
+    "Menu": (0x3B, 0x3C), "Shape": (0x3E, 0x3F), "Line": (0x40, 0x41),
+    "Image": (0x42, 0x43), "Data": (0x44, 0x45)}.items() for k in ks}
 
 # FORM also pushes VB's built-in objects; their NN (outside the form range):
 BUILTIN_OBJECTS: dict[int, str] = {0x32: "Printer", 0x33: "Screen", 0x34: "Clipboard", 0x3D: "App"}
@@ -392,6 +474,8 @@ def resolve_symbols(segs: list[Segment], rt: "Runtime", res: dict[int, bytes]) -
                         or idx >= len(forms[fi]) or not forms[fi][idx]:
                     return None
                 out[slot] = forms[fi][idx]
+                KINDS[forms[fi][idx]] = w0 & 0xFF
+                CLASSES[(forms[fi][0], forms[fi][idx])] = CLASS_BY_KIND.get(w0 & 0xFF, "?")
             else:
                 if w0 >> 8 != 0x80:
                     return None
@@ -412,7 +496,9 @@ def resolve_symbols(segs: list[Segment], rt: "Runtime", res: dict[int, bytes]) -
                         if (g := names_at(chunks[j], seg, f)) is not None), None)
             if got:
                 ci, result[seg] = got[0] + 1, got[1]
-                fi = f + 1 if f >= 0 else fi
+                if f >= 0:
+                    SEG_FORM[seg] = forms[f][0]
+                    fi = f + 1
                 break
     return result
 
@@ -486,9 +572,10 @@ def decode(rt: Runtime, data: bytes, p: Proc) -> tuple[list[Insn], str | None]:
 
 
 def fmt(rt: Runtime, ins: Insn, ctl: dict[int, str] | None = None,
-        other: list[str] | None = None) -> str:
+        other: list[str] | None = None, cls: str | None = None) -> str:
     """ctl: this segment's slot names; other: name table of the form most
-    recently pushed by FORM (for controls addressed on another form)."""
+    recently pushed by FORM (for controls addressed on another form);
+    cls: class of the object a PGET/PSET applies to."""
     name = NAMES.get(ins.op) or ("STMT" if rt.is_stmt(ins.op) else None)
     if name is None:
         oid = rt.opcode_id(ins.op)
@@ -500,6 +587,11 @@ def fmt(rt: Runtime, ins: Insn, ctl: dict[int, str] | None = None,
     if ctl and name in ("CONTROL", "CTLARRAY", "FORM") and ins.operand:
         slot = struct.unpack_from("<H", ins.operand, len(ins.operand) - 2)[0]
         text = "  " + ctl.get(slot, f"?slot {slot:#x}")
+    if name in ("PGET", "PSET") and cls and len(ins.operand) == 2:
+        nn = struct.unpack_from("<H", ins.operand)[0]
+        props = rt.property_lists().get(cls, [])
+        if nn >> 8 == 0xC0 and (nn & 0xFF) < len(props):
+            text = f"  {cls}.{props[nn & 0xFF]}"
     if other and name in ("CTLARRAY_OF", "SUBOBJ") and len(ins.operand) >= 2:
         idx = struct.unpack_from("<H", ins.operand, len(ins.operand) - 2)[0]
         if idx & 0xC000 == 0x8000 and (idx & 0x3FFF) < len(other):
@@ -521,6 +613,8 @@ def main():
     res = rcdata(args.exe)
     controls = resolve_symbols(segs, rt, res)
     tables = {t[0]: t for t in form_names(res)}
+    seg_form = SEG_FORM
+    blob_cls = blob_classes(res)
 
     lines, clean, failures = [], 0, []
     for p in procs:
@@ -531,12 +625,25 @@ def main():
             failures.append((p, err))
         lines.append(f"proc seg{p.segment}[{p.start}:{p.end}) record@{p.record} tag={p.tag:#x}"
                      + (f"   !! {err}" if err else ""))
-        other = None
+        other, cls = None, None
+        form_of_seg = seg_form.get(p.segment)
         for i in insns:
-            lines.append(fmt(rt, i, controls.get(p.segment), other))
-            if NAMES.get(i.op) == "FORM" and controls.get(p.segment):
-                slot = struct.unpack_from("<H", i.operand)[0]
-                other = tables.get(controls[p.segment].get(slot))
+            lines.append(fmt(rt, i, controls.get(p.segment), other, cls))
+            n = NAMES.get(i.op)
+            sym = controls.get(p.segment, {})
+            if n == "FORM":
+                target = sym.get(struct.unpack_from("<H", i.operand)[0])
+                other = tables.get(target)
+                cls = "Form" if target in tables else target
+            elif n in ("CONTROL", "CTLARRAY"):
+                target = sym.get(struct.unpack_from("<H", i.operand, len(i.operand) - 2)[0])
+                cls = CLASSES.get((form_of_seg, target))
+            elif n in ("CTLARRAY_OF", "SUBOBJ") and other and len(i.operand) >= 2:
+                idx = struct.unpack_from("<H", i.operand, len(i.operand) - 2)[0] & 0x3FFF
+                key = (other[0], other[idx]) if idx < len(other) else None
+                cls = CLASSES.get(key) or blob_cls.get(key)
+            elif n in ("ME", "ME_IMPLICIT"):
+                cls = "Form"
         lines.append("")
 
     # Coverage of each code segment by procedure records (should be exact).
