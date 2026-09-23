@@ -7,8 +7,9 @@ Emits a JSON corpus of (source line, instructions) used to name handlers.
 Mapping rules (see ../OPCODES.md):
   - code segments: modules (.bas/.gbl) first, then forms, each group in
     .mak order; files without code get no segment (checked by counts);
-  - within a segment, records in start order = the file's non-empty
-    procedures in source order;
+  - within a segment, records in table order = the file's non-empty
+    procedures in order of first mention of their name (definition or
+    call); code layout order differs;
   - each statement starts with a statement marker (Runtime.is_stmt).
 
 Usage:
@@ -67,6 +68,7 @@ def source_procs(path: Path) -> list[dict]:
                     i += 1
                     break
             i += 1
+    code_start = i
     procs, cur = [], None
     for n in range(i, len(lines)):
         s = lines[n]
@@ -79,7 +81,24 @@ def source_procs(path: Path) -> list[dict]:
             if PROC_END.match(s):
                 procs.append(cur)
                 cur = None
-    return procs
+    # Records are created in order of the name's first mention (definition
+    # or call), not definition order.
+    text = "\n".join(strip_comment(l) for l in lines[code_start:])
+    def first_mention(p):
+        m = re.search(r"(?<![\w.])" + re.escape(p["name"]) + r"\b", text, re.I)
+        return m.start() if m else 1 << 30
+    return sorted(procs, key=first_mention)
+
+
+def strip_comment(line: str) -> str:
+    out, in_str = "", False
+    for ch in line:
+        if ch == '"':
+            in_str = not in_str
+        elif ch == "'" and not in_str:
+            break
+        out += ch if not in_str else " "
+    return out
 
 
 def executable(line: str) -> bool:
@@ -133,7 +152,7 @@ def main():
     if len(seg_ids) != len(nonempty):
         print(f"!! {len(seg_ids)} code segments vs {len(nonempty)} code files", file=sys.stderr)
     for seg_id, (f, sprocs) in zip(seg_ids, nonempty):
-        rprocs = by_seg[seg_id]
+        rprocs = sorted(by_seg[seg_id], key=lambda r: r.record)  # records = source order
         if len(rprocs) != len(sprocs):
             print(f"!! seg{seg_id} {f.name}: {len(rprocs)} records vs {len(sprocs)} procedures", file=sys.stderr)
             continue

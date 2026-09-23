@@ -10,8 +10,10 @@ compiling known-source test programs with a real VB3 compiler.
 - **Segment 2**: data.
 - **Segment 3**: procedure table (records, below).
 - **Segments 4+**: code. One segment per module/form that has code:
-  standard modules first, then forms, each in project order. A unit's
-  non-empty procedures are concatenated in source order, one record each.
+  standard modules first, then forms, each in project order. Each
+  non-empty procedure has one record. Records are in order of the
+  procedure name's **first mention** in the file (its definition or an
+  earlier call). Code layout within the segment uses a different order.
 
 ### Procedure records (segment 3)
 
