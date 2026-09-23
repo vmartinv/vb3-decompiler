@@ -513,7 +513,7 @@ CLASS_BY_KIND = {k: c for c, ks in {
     "Image": (0x42, 0x43), "Data": (0x44, 0x45)}.items() for k in ks}
 
 # FORM also pushes VB's built-in objects; their NN (outside the form range):
-BUILTIN_OBJECTS: dict[int, str] = {0x32: "Printer", 0x33: "Screen", 0x34: "Clipboard", 0x3D: "App"}
+BUILTIN_OBJECTS: dict[int, str] = {0x08: "Forms", 0x32: "Printer", 0x33: "Screen", 0x34: "Clipboard", 0x3D: "App"}
 
 
 def _slot_refs(segs: list[Segment], rt: "Runtime") -> dict[int, dict[int, str]]:
@@ -541,9 +541,11 @@ def resolve_symbols(segs: list[Segment], rt: "Runtime", res: dict[int, bytes]) -
     (after the previous segment's) where every referenced slot is valid."""
     forms = form_names(res)
     d = res.get(2, b"")
-    form_base = None
+    form_base, global_at = None, None
     for m in re.finditer(rb"(?:[\x00-\xff]\x80\x00\x00\x00\x00)+", d):
         nn = [m.group(0)[i] for i in range(0, len(m.group(0)), 6)]
+        if global_at is None and any(x >= 0x40 for x in nn):
+            global_at = m.start()  # global object table: lives in the global data block
         for k in range(len(nn) - len(forms) + 1):
             w = nn[k:k + len(forms)]
             if forms and min(w) >= 0x40 and sorted(w) == list(range(min(w), min(w) + len(forms))):
@@ -556,6 +558,9 @@ def resolve_symbols(segs: list[Segment], rt: "Runtime", res: dict[int, bytes]) -
         # per VBX control class (both listed in the project directory, RT_RCDATA 1).
         form_base = 0x46 + len(vbx_entries(res.get(1, b"")))
     chunks = [m.start() for m in re.finditer(rb"(?=..\x00\x00\x1e\x00)", d, re.S)]
+    # The global data block (holding the global object table) is no module's image.
+    chunks = [c for c in chunks
+              if global_at is None or not c <= global_at < c + 2 + struct.unpack_from("<H", d, c)[0]]
     refs = _slot_refs(segs, rt)
     code_segs = sorted({p.segment for p in find_procs(segs)})
 

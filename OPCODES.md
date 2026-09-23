@@ -98,7 +98,7 @@ image in `RT_RCDATA` 2 (see `RESOURCE_FORMAT.md`):
 - form/object slot: `u16 0x80NN, u16 global offset`. Forms have
   consecutive NN in project order from base `0x46` + one per VBX file and
   one per VBX control class (both listed in `RT_RCDATA` 1); built-ins:
-  `0x32` Printer, `0x33` Screen, `0x34` Clipboard, `0x3D` App. A `FORM`
+  `0x08` Forms, `0x32` Printer, `0x33` Screen, `0x34` Clipboard, `0x3D` App. A `FORM`
   slot without `0x80NN` is an object variable (`Dim x As Control`).
 - `CTLARRAY_OF`/`SUBOBJ` operand `0x80nn` = control `nn` of the form
   pushed just before (`frmStatus!cmdTrain`).
