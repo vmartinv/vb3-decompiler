@@ -11,6 +11,10 @@ using its own formats inside them. Worked example: `qrace.exe`.
 - The smallest unpaired `RT_RCDATA` (id 1) is the project directory: the
   project name plus the list of `.FRM` files. Standard modules get no
   resource.
+- `RT_RCDATA` 2: initial data images (global segment, then each module's
+  data as `u16 length, 00 00, 1E 00, …` chunks, plus slot fix-up lists
+  `09 <u16 slot>`). Control and form slot records are documented in
+  `OPCODES.md` → "Symbols".
 
 ## Per-form `RT_RCDATA` pair
 
@@ -20,8 +24,9 @@ Each form is a **data blob immediately followed by its name table**
 form's code segment (see `OPCODES.md`: code segment = 4 + directory index).
 
 - **Name table** (small, 256 B): Pascal strings (u8 length + ASCII). The
-  first is the form name, followed by each named control in declaration
-  order.
+  first is the form name, then one entry per control name (control-array
+  elements share one). Empty entries are deleted controls and still count
+  as indices.
 - **Data blob**: compiled form properties and layout, plus embedded FRX
   pictures.
 

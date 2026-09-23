@@ -313,6 +313,110 @@ class Runtime:
             isinstance(x, tuple) and x[0] == "jump" for x in self._explore(op))
 
 
+# ---------------------------------------------------------------------------
+# Control slots (RT_RCDATA 2: per-module initial data images)
+# ---------------------------------------------------------------------------
+
+def rcdata(path: Path) -> dict[int, bytes]:
+    from ne_parser import NEFile
+    return {r.res_id: r.data for r in NEFile(path).iter_resources() if r.type_name == "RT_RCDATA"}
+
+
+def form_names(res: dict[int, bytes]) -> list[list[str]]:
+    """Name tables (form name, then one entry per control name, indexed by the
+    controls' name index; empty entries are deleted controls), in project
+    order: each form is a data blob (FF CC) followed by its name table."""
+    out, ids = [], sorted(res)
+    for a, b in zip(ids, ids[1:]):
+        if res[a][:2] == b"\xff\xcc" and res[b][:2] != b"\xff\xcc":
+            names, pos, d = [], 0, res[b]
+            while pos < len(d):  # zero-length entries = deleted controls
+                names.append(d[pos + 1:pos + 1 + d[pos]].decode("latin-1"))
+                pos += 1 + d[pos]
+            out.append(names)
+    return out
+
+
+# FORM also pushes VB's built-in objects; their NN (outside the form range):
+BUILTIN_OBJECTS: dict[int, str] = {0x32: "Printer", 0x33: "Screen", 0x34: "Clipboard", 0x3D: "App"}
+
+
+def _slot_refs(segs: list[Segment], rt: "Runtime") -> dict[int, dict[int, str]]:
+    """code segment -> {slot: 'control' | 'form'} for the references its code makes."""
+    out: dict[int, dict[int, str]] = {}
+    for p in find_procs(segs):
+        for i in decode(rt, segs[p.segment - 1].data, p)[0]:
+            kind = {"CONTROL": "control", "CTLARRAY": "control", "FORM": "form"}.get(NAMES.get(i.op))
+            if kind:
+                slot = struct.unpack_from("<H", i.operand, len(i.operand) - 2)[0]
+                out.setdefault(p.segment, {})[slot] = kind
+    return out
+
+
+def resolve_symbols(segs: list[Segment], rt: "Runtime", res: dict[int, bytes]) -> dict[int, dict[int, str]]:
+    """code segment -> {slot: name} for control and form references.
+
+    RT_RCDATA 2 holds each module's initial data image as a chunk
+    `u16 length, 00 00, 1E 00, ...`; slot offsets count from the chunk
+    start. A control slot holds `u16 kind, u16 0x8000|name index, u16 0`
+    (name index into the form's name table); a form slot holds
+    `u16 0x8000|NN, u16 global offset`, NN = base + the form's project
+    index, base = the smallest NN in the global per-form run
+    (`NN 80 00 00 00 00` x forms). Each segment's image is the first chunk
+    (after the previous segment's) where every referenced slot is valid."""
+    forms = form_names(res)
+    d = res.get(2, b"")
+    form_base = None
+    for m in re.finditer(rb"(?:[\x00-\xff]\x80\x00\x00\x00\x00)+", d):
+        nn = [m.group(0)[i] for i in range(0, len(m.group(0)), 6)]
+        for k in range(len(nn) - len(forms) + 1):
+            w = nn[k:k + len(forms)]
+            if forms and sorted(w) == list(range(min(w), min(w) + len(forms))):
+                form_base = min(w)
+                break
+        if form_base is not None:
+            break
+    chunks = [m.start() for m in re.finditer(rb"(?=..\x00\x00\x1e\x00)", d, re.S)]
+    refs = _slot_refs(segs, rt)
+    code_segs = sorted({p.segment for p in find_procs(segs)})
+
+    def names_at(base: int, seg: int, fi: int) -> dict[int, str] | None:
+        out = {}
+        for slot, kind in refs[seg].items():
+            if base + slot + 6 > len(d):
+                return None
+            w0, w1, w2 = struct.unpack_from("<HHH", d, base + slot)
+            if kind == "control":
+                idx = w1 & 0x7FFF
+                if not (w1 & 0x8000 and w2 == 0 and w0 >> 8 == 0x40) or fi < 0 \
+                        or idx >= len(forms[fi]) or not forms[fi][idx]:
+                    return None
+                out[slot] = forms[fi][idx]
+            else:
+                if w0 >> 8 != 0x80:
+                    return None
+                k = (w0 & 0xFF) - form_base if form_base is not None else -1
+                out[slot] = forms[k][0] if 0 <= k < len(forms) else BUILTIN_OBJECTS.get(w0 & 0xFF, f"obj#{w0 & 0xFF:#x}")
+        return out
+
+    # Segments are modules (no controls) then forms with code, in project
+    # order; forms without code have no segment, so each segment's form is
+    # the next one whose name table fits its control references.
+    result, ci, fi = {}, 0, 0
+    for seg in code_segs:
+        if seg not in refs:
+            continue
+        uses_controls = "control" in refs[seg].values()
+        for f in (range(fi, len(forms)) if uses_controls else [-1]):
+            got = next(((j, g) for j in range(ci, len(chunks))
+                        if (g := names_at(chunks[j], seg, f)) is not None), None)
+            if got:
+                ci, result[seg] = got[0] + 1, got[1]
+                fi = f + 1 if f >= 0 else fi
+                break
+    return result
+
+
 # Handler names live in opcodes.py; unnamed ones print as op_XXXX [id].
 from opcodes import NAMES  # noqa: E402
 
@@ -381,7 +485,10 @@ def decode(rt: Runtime, data: bytes, p: Proc) -> tuple[list[Insn], str | None]:
     return out, f"overran end ({pc} > {p.end})"
 
 
-def fmt(rt: Runtime, ins: Insn) -> str:
+def fmt(rt: Runtime, ins: Insn, ctl: dict[int, str] | None = None,
+        other: list[str] | None = None) -> str:
+    """ctl: this segment's slot names; other: name table of the form most
+    recently pushed by FORM (for controls addressed on another form)."""
     name = NAMES.get(ins.op) or ("STMT" if rt.is_stmt(ins.op) else None)
     if name is None:
         oid = rt.opcode_id(ins.op)
@@ -390,6 +497,13 @@ def fmt(rt: Runtime, ins: Insn) -> str:
     if ins.op == 0x389A and len(ins.operand) >= 6:  # PUSH.T
         (slen,) = struct.unpack_from("<H", ins.operand, 4)
         text = "  " + repr(ins.operand[6:6 + slen].decode("latin-1"))
+    if ctl and name in ("CONTROL", "CTLARRAY", "FORM") and ins.operand:
+        slot = struct.unpack_from("<H", ins.operand, len(ins.operand) - 2)[0]
+        text = "  " + ctl.get(slot, f"?slot {slot:#x}")
+    if other and name in ("CTLARRAY_OF", "SUBOBJ") and len(ins.operand) >= 2:
+        idx = struct.unpack_from("<H", ins.operand, len(ins.operand) - 2)[0]
+        if idx & 0xC000 == 0x8000 and (idx & 0x3FFF) < len(other):
+            text = f"  {other[0]}!{other[idx & 0x3FFF]}"
     return f"  {ins.pc:5d}: {ins.op:04x} {ins.operand.hex(' '):<24s} {name}{text}"
 
 
@@ -404,6 +518,9 @@ def main():
     rt = Runtime(args.runtime)
     segs = parse_ne(args.exe)
     procs = find_procs(segs)
+    res = rcdata(args.exe)
+    controls = resolve_symbols(segs, rt, res)
+    tables = {t[0]: t for t in form_names(res)}
 
     lines, clean, failures = [], 0, []
     for p in procs:
@@ -414,7 +531,12 @@ def main():
             failures.append((p, err))
         lines.append(f"proc seg{p.segment}[{p.start}:{p.end}) record@{p.record} tag={p.tag:#x}"
                      + (f"   !! {err}" if err else ""))
-        lines += [fmt(rt, i) for i in insns]
+        other = None
+        for i in insns:
+            lines.append(fmt(rt, i, controls.get(p.segment), other))
+            if NAMES.get(i.op) == "FORM" and controls.get(p.segment):
+                slot = struct.unpack_from("<H", i.operand)[0]
+                other = tables.get(controls[p.segment].get(slot))
         lines.append("")
 
     # Coverage of each code segment by procedure records (should be exact).

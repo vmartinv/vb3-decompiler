@@ -77,7 +77,8 @@ corpus. Names ending in `?` (2 in `qrace.exe`) are inferred from context.
   4-byte loads serve both Long and String (far pointer).
 - **Arrays**: operands `u16 dimension count, u16 array slot`, indices
   pushed first.
-- **Controls/forms**: `CONTROL`/`FORM` push a reference (operand = slot);
+- **Controls/forms**: `CONTROL`/`FORM` push a reference (operand = slot,
+  resolved to a name — see "Symbols" below);
   `PGET`/`PSET` operand `0xC0nn` = property `nn` **of that control's
   class**; `PGET_ME`/`PSET_ME` address the implicit form.
 - **Methods**: `ARGS … OBJ OBJ_SELF [args] METHOD NARGS END_CALL`.
@@ -88,6 +89,24 @@ corpus. Names ending in `?` (2 in `qrace.exe`) are inferred from context.
 - **Builtins**: a stub is `call <trampoline>; u16 index` into the runtime
   library; handlers are named from the corpus (`Rnd`, `Int`, `Val`, …).
 
+## Symbols: control and form references
+
+A module's slots for controls and forms are initialized from its data
+image in `RT_RCDATA` 2 (see `RESOURCE_FORMAT.md`):
+
+- control slot: `u16 kind (0x40xx), u16 0x8000 | name index, u16 0`; the
+  name index points into the form's name table.
+- form/object slot: `u16 0x80NN, u16 global offset`. Forms have
+  consecutive NN in project order (base = smallest NN in the global
+  per-form run `NN 80 00 00 00 00`); built-ins: `0x32` Printer, `0x33`
+  Screen, `0x34` Clipboard, `0x3D` App.
+- `CTLARRAY_OF`/`SUBOBJ` operand `0x80nn` = control `nn` of the form
+  pushed just before (`frmStatus!cmdTrain`).
+
+`pcode_disasm.py` resolves these; each segment's image is the first data
+chunk (in order) where every slot its code uses holds a valid record.
+Complete for `qrace.exe` (536 references) and 17 of 23 sample projects.
+
 ## Source-aligned corpus
 
 `tools/align_source.py` pairs each statement of a compiled project with
@@ -97,7 +116,9 @@ Handlers are named from those pairs.
 
 ## Next steps
 
-- Control slot → control mapping (needed to name controls and their
-  properties).
+- Symbol resolution gaps in 6 sample projects (`mdinote`, `timecard`,
+  `visdata`, `oleauto`, …): likely forms without code / MDI forms.
+- Property names: `PGET`/`PSET` `nn` is per control class (kind word);
+  build class × index tables from the corpus.
 - Procedure record → event name (record +4 looks like a control/event id).
 - Pseudo-BASIC output: expression stack + control-flow structuring.
