@@ -634,8 +634,8 @@ _CANDIDATES = (0, 2, 4, 6, 8, 1, 3, 5, 10, 12)
 def decode(rt: Runtime, data: bytes, p: Proc) -> tuple[list[Insn], str | None]:
     """Decode [p.start, p.end). Opcodes whose length can't be derived
     statically are solved by constraint: the only candidate length that lets
-    the rest of the procedure decode to exactly p.end (ties: the shortest
-    one followed by a statement marker; recorded in
+    the rest of the procedure decode to exactly p.end (ties: the smallest;
+    recorded in
     rt.solved, so conflicting solutions across procedures are visible)."""
     def run(pc: int, depth: int):
         out = []
@@ -655,9 +655,9 @@ def decode(rt: Runtime, data: bytes, p: Proc) -> tuple[list[Insn], str | None]:
                     if rest is not None:
                         fits.append((c, rest))
                 if len(fits) > 1:
-                    # Tie-break: an operand-less statement end is followed by
-                    # the next line's statement marker.
-                    fits = [f for f in fits if f[1] and rt.is_stmt(f[1][0].op)][:1] or fits
+                    # Tie-break: the smallest length (a too-long guess swallows
+                    # real instructions; confirmed on Len and Resume).
+                    fits = fits[:1] if all(f[0] >= fits[0][0] for f in fits) else sorted(fits)[:1]
                 if len(fits) != 1:
                     return None
                 c, rest = fits[0]

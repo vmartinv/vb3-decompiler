@@ -36,7 +36,8 @@ FUNCS = {  # builtin -> arity
     "Rnd": 0, "Timer": 0, "Now": 0, "Err": 0, "Error$": 0,
     "Int": 1, "Fix": 1, "Abs": 1, "CInt": 1, "Str$": 1, "Val": 1, "Len": 1, "Chr$": 1, "Asc": 1,
     "UCase$": 1, "QBColor": 1, "IsDate": 1, "CVDate": 1, "CStr": 1, "Minute": 1, "Time": 0,
-    "Left$": 2, "Shell": 2, "Format$": 2, "InStr": 3, "Mid$": 3, "InputBox": 3,
+    "Left$": 2, "Shell": 2, "Format$": 2, "InStr": 2, "Mid$": 3, "InputBox": 3,
+    "RGB": 3, "Trim$": 1, "Format$.1": 1,
 }
 STATEMENT_FUNCS = {"MsgBox": 3, "DoEvents": 0, "Cls": 0, "Beep": 0, "ChDir": 1, "ChDrive": 1}
 FUNCTION_FORMS = {"MsgBox.fn": ("MsgBox", 3)}
@@ -85,7 +86,8 @@ def lift(code: list[tuple[int, bytes]], ids: dict[int, int] | None = None) -> st
         name = family(op, NAMES.get(op, f"op_{op:04X}"))
         fam = name.split(".")[0].split(" ")[0].rstrip("?")
         if fam.startswith("CVT") or name in ("ARGS", "ARGS_FREE", "END_CALL", "TRAP", "LABEL", "NARGS",
-                                             "ARG_STR", "ARG_V", "ARG_S", "ARG_D") or fam in STATEMENT_PREFIX:
+                                             "ARG_STR", "ARG_V", "ARG_S", "ARG_D", "ARGS_DLL",
+                                             "ARG_T_BYREF", "ARG_PAREN", "ARG_TEMP") or fam in STATEMENT_PREFIX:
             continue
         if name in ("OBJ", "OBJ_SELF"):
             if name == "OBJ_SELF" or not obj_at or obj_at[-1] != len(st):
@@ -124,10 +126,34 @@ def lift(code: list[tuple[int, bytes]], ids: dict[int, int] | None = None) -> st
             o, i = pop(), pop()
             st.append(E(f"{o.text}!c{slot_of(operand) & 0x3FFF:x}({i.text})"))
         elif name == "SUBOBJ":
-            o = pop()
-            st.append(E(f"{o.text}!c{slot_of(operand) & 0x3FFF:x}"))
+            o, sub = pop(), slot_of(operand)
+            st.append(E(f"{o.text}.p{sub & 0xFF:x}" if sub & 0xC000 == 0xC000 else f"{o.text}!c{sub & 0x3FFF:x}"))
         elif name == "ARG_MISSING":
             st.append(E(MISSING_TEXT))
+        elif name == "PGET_IDX":
+            o = pop()
+            n = struct.unpack_from("<H", operand)[0]
+            idx = [pop() for _ in range(n)][::-1]
+            st.append(E(f"{o.text}.p{slot_of(operand) & 0xFF:x}({', '.join(i.text for i in idx)})"))
+        elif name == "PSET_IDX":
+            o = pop()
+            n = struct.unpack_from("<H", operand)[0]
+            idx = [pop() for _ in range(n)][::-1]
+            v = pop()
+            out.append(f"{o.text}.p{slot_of(operand) & 0xFF:x}({', '.join(i.text for i in idx)}) = {v.text}")
+        elif name == "Len.T":
+            st.append(E(f"Len({pop().text})"))
+        elif name == "FIELD_GET.T" or name.startswith("FIELD_GET"):
+            st.append(E(f"{pop().text}.f{slot_of(operand):x}"))
+        elif name == "PUSH.L":
+            st.append(E(str(struct.unpack_from("<i", operand)[0])))
+        elif name == "DO":
+            out.append("Do")
+        elif name == "CASE_ELSE":
+            out.append("Case Else")
+        elif name == "NEXT_NOVAR":
+            pop()
+            out.append("Next")
         elif name == "PGET":
             o = pop()
             st.append(E(f"{o.text}.p{slot_of(operand) & 0xFF:x}"))
@@ -173,9 +199,16 @@ def lift(code: list[tuple[int, bytes]], ids: dict[int, int] | None = None) -> st
             if name in FUNCTION_FORMS:
                 st.append(E(f"{fn}({text})"))
             else:
-                out.append(f"{fn} {text}".rstrip())
-        elif name.split(".")[0] in FUNCS:
-            fn = name.split(".")[0]
+                o = pop().text if n == 0 and st and st[-1].text != MISSING_TEXT else ""
+                obj = o + "." if o else ""
+                out.append(f"{obj}{fn} {text}".rstrip())
+        elif name in FUNCS or name.split(".")[0] in FUNCS:
+            fn = name if name in FUNCS else name.split(".")[0]
+            n = FUNCS[fn]
+            fn = fn.split(".")[0]
+            args = [pop() for _ in range(n)][::-1]
+            st.append(E(fn + (f"({', '.join(a.text for a in args)})" if n else "")))
+        elif False:
             n = FUNCS[fn]
             args = [pop() for _ in range(n)][::-1]
             st.append(E(fn + (f"({', '.join(a.text for a in args)})" if n else "")))
@@ -199,7 +232,10 @@ def lift(code: list[tuple[int, bytes]], ids: dict[int, int] | None = None) -> st
         elif name.startswith("CASE_VAL."):
             pass
         elif name.startswith("CASE_EQ."):
-            out.append(f"Case {pop().text}")
+            if out and out[-1].startswith("Case ") and out[-1] != "Case Else":
+                out[-1] += f", {pop().text}"  # Case a, b
+            else:
+                out.append(f"Case {pop().text}")
         elif name == "ENDIF":
             out.append("End If")
         elif name in ("END_SELECT",):
@@ -225,6 +261,8 @@ def lift(code: list[tuple[int, bytes]], ids: dict[int, int] | None = None) -> st
             out.append(f"Load {pop().text}")
         else:
             out.append(f"<{name}>")
+    if len(out) > 1 and out[0] == "Else":  # single-line Else: `Else stmt`
+        out = ["Else " + out[1]] + out[2:]
     text = "; ".join(out) if out else (st[-1].text if st else "")
     return prefix + text
 
@@ -237,9 +275,15 @@ KEYWORDS = {"and", "or", "not", "mod", "xor", "eqv", "imp", "if", "then", "else"
 
 
 def norm(text: str) -> list[str]:
+    text = re.sub(r"&H([0-9A-Fa-f]+)&?", lambda m: str(int(m.group(1), 16)), text)
+    text = text.replace("!", ".")  # a!b == a.b
+    text = re.sub(r"(?i)\bexit\s+function\b", "Exit Sub", text)  # kind is the emitter's job
     toks = re.findall(r'"[^"]*"|[A-Za-z_]\w*[$%&!#]?|\d*\.?\d+(?:[eE][-+]?\d+)?#?|<>|<=|>=|\S', text)
     out = []
-    for t in toks:
+    for k, t in enumerate(toks):
+        if k and toks[k - 1] in (".", "!") and re.match(r"[A-Za-z_]", t):
+            out.append("ID")  # member name, even if it matches a builtin (.Left)
+            continue
         low = t.lower()
         if t in "()":
             continue  # parentheses aren't encoded in p-code
@@ -247,7 +291,8 @@ def norm(text: str) -> list[str]:
             out.append(t)
         elif re.fullmatch(r"\d*\.?\d+(?:[eE][-+]?\d+)?#?", t):
             out.append(repr(float(t.rstrip("#"))))
-        elif low.rstrip("$") in {f.lower().rstrip("$") for f in FUNCS} or low in KEYWORDS:
+        elif low in KEYWORDS or (low.rstrip("$") in {f.lower().split(".")[0].rstrip("$") for f in FUNCS}
+                                   and (t.endswith("$") or toks[k + 1:k + 2] == ["("])):
             out.append(low.rstrip("$"))
         elif re.match(r"[A-Za-z_]", t):
             out.append("ID")
@@ -279,7 +324,7 @@ def score(corpus: Path, verbose: bool, runtime: Path | None = None) -> None:
                 c["ok"] += 1
             else:
                 c["wrong"] += 1
-                if verbose and c["wrong"] <= 40:
+                if verbose and c["wrong"] <= 80:
                     print(f"  {src[:60]:<60s} | {got[:60]}")
     print(f"statements: {c['ok']}/{c['total']} match, {c['wrong']} differ, {c['unsupported']} unsupported")
     for k, v in c.most_common(25):

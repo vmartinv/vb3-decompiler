@@ -46,8 +46,7 @@ Handlers read operands with `es:lodsw`/`es:lodsb` and end with
   their operands have been read.
 - **Constraint solving** covers the rest: every procedure must decode to
   exactly its end offset, so an underivable length is the unique candidate
-  that makes that work (ties: the shortest followed by a statement
-  marker). One manual length remains (`0x36DF`).
+  that makes that work (ties: the smallest). One manual length remains (`0x36DF`).
 - **Opcode ID**: the u16 immediately before each handler. It is shared by
   type-specialized variants of the same operation. For example, variable
   access handlers `2D21 2B15 4BA3 4BCC 4A6E 316D` all have ID `0x0B`.
@@ -151,7 +150,8 @@ Handlers are named from those pairs.
 stack (operators, builtins, objects/properties, methods, calls, If/ElseIf/
 Else/End If, Do/Loop, For/Next, Select Case, Exit/End/GoTo/On Error).
 `lift.py score` compares every aligned corpus statement with its source
-line (identifiers normalised): 2,516/3,239 match.
+line (identifiers normalised): 3,001/3,326 match, 0 differ, 325 use
+unsupported handlers (Print/graphics methods, file I/O, rarer builtins).
 
 ## Next steps
 

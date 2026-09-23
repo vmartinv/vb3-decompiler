@@ -36,17 +36,17 @@ NAMES: dict[int, str] = {
     0x35FE: "JMP", 0x35EC: "ENDIF",
     0x1F41: "GOTO", 0x1F4A: "EXIT", 0x1FC6: "GOSUB", 0x1FE2: "RETURN",
     0x1F3E: "CASE",                          # u16: next Case / End Select
-    0x0D09: "SELECT.I", 0x0CC8: "SELECT.V", 0x0CF8: "SELECT.R8", 0x0DA1: "END_SELECT", 0x0DA4: "END_SELECT",
+    0x0D09: "SELECT.I", 0x0CC8: "SELECT.V", 0x0CF8: "SELECT.R8", 0x0DA1: "END_SELECT", 0x0DA4: "CASE_ELSE",
     0x396A: "CASE_VAL.I", 0x440D: "CASE_VAL.V", 0x3C14: "CASE_VAL.R8",   # Case value, then the test
     0x0D4D: "CASE_EQ.I", 0x0D2F: "CASE_EQ.V", 0x0D39: "CASE_EQ.R8",      # u16 next Case, u16 body
     0x1B37: "FOR", 0x1B3E: "FOR_STEP", 0x1A7E: "FOR.I",
-    0x1E08: "NEXT", 0x1C8A: "NEXT.I",
+    0x1E08: "NEXT", 0x1C8A: "NEXT.I", 0x1C87: "NEXT_NOVAR", 0x35E9: "DO", 0x0D73: "END_SELECT",
     0x7EB6: "ON_ERROR_GOTO", 0x7E63: "RESUME",
     # --- calls ---------------------------------------------------------
     0x62E0: "CALL", 0x62DD: "CALL", 0x62A7: "CALL_FN",
     0x67B1: "ARGS",                          # opens an argument frame
     0x4FC3: "OBJ", 0x3767: "OBJ_SELF",
-    0x6819: "ARG_MISSING", 0x6AD5: "ARG_MISSING",
+    0x6819: "ARG_MISSING", 0x6AD5: "ARG_TEMP",   # ARG_TEMP: by-value temporary for a ByRef parameter
     0x4B61: "METHOD",                        # operand byte 6 = method number
     0x4FFC: "NARGS", 0x376A: "END_CALL",
     0x6A63: "ARG_STR", 0x6A72: "ARGS_FREE", 0x6A02: "ARG_V", 0x6823: "ARG_S", 0x6834: "ARG_D",
@@ -56,13 +56,14 @@ NAMES: dict[int, str] = {
     0x4A7F: "OBJVAR",
     0x4BA3: "PGET_ME", 0x4C14: "PSET_ME",    # property of the implicit form
     0x4C09: "PGET", 0x4C72: "PSET",          # operand 0xC0nn: class property nn
-    0x4A63: "SUBOBJ", 0x4CA8: "CTLARRAY", 0x4EB0: "CTLARRAY_OF",
+    0x4A63: "SUBOBJ", 0x4A57: "SUBOBJ", 0x4CA8: "CTLARRAY", 0x4EB0: "CTLARRAY_OF", 0x4EA9: "CTLARRAY_OF",
+    0x4EC7: "PGET_IDX", 0x4EDD: "PSET_IDX",   # indexed property: u16 index count, u16 0xC0nn
     0x4A23: "UNLOAD", 0x4A2A: "LOAD",
     0x316D: "ADDR.GLB", 0x4F69: "SET_OBJ?",
     # --- literals ------------------------------------------------------
     **{a: f"PUSH.I {n}" for n, a in enumerate(
         [0x37E5, 0x37ED, 0x37F8, 0x37FE, 0x3804, 0x380A, 0x3810, 0x3816, 0x381C, 0x3822, 0x3828])},
-    0x3834: "PUSH.I", 0x3831: "PUSH.I",
+    0x3834: "PUSH.I", 0x3831: "PUSH.I", 0x388A: "PUSH.L",
     0x3788: "PUSH.R8 0", 0x3791: "PUSH.R8 1", 0x379A: "PUSH.R8 2", 0x37A7: "PUSH.R8 3",
     0x37AE: "PUSH.R8 4", 0x37B5: "PUSH.R8 5", 0x37D8: "PUSH.R8 10",
     0x387A: "PUSH.R8", 0x389A: "PUSH.T",
@@ -71,7 +72,8 @@ NAMES: dict[int, str] = {
     0x0EB0: "CVT.I>V", 0x0E8B: "CVT.I>R8", 0x0E7B: "CVT.I>L", 0x0F1C: "CVT.L>V",
     0x0F2E: "CVT.S>R8?", 0x0F67: "CVT.R8>I", 0x0F7B: "CVT.R8>L", 0x0F49: "CVT.R8",
     0x1050: "CVT.V>I", 0x10A3: "CVT.V>T", 0x10F1: "CVT.S>V", 0x1102: "CVT.R8>V",
-    0x11BB: "CVT.Ttmp>V", 0x11C3: "CVT.T>V", 0x49CE: "CVT.>B",
+    0x11BB: "CVT.Ttmp>V", 0x11C3: "CVT.T>V", 0x49CE: "CVT.>B", 0x106D: "CVT.V>S",
+    0x67EA: "ARGS_DLL", 0x67A8: "ARGS_DLL", 0x1972: "ARG_T_BYREF", 0x699D: "ARG_PAREN",
     # --- operators -----------------------------------------------------
     0x40DF: "ADD.V", 0x38D3: "ADD.I", 0x3B6E: "ADD.R8", 0x3D47: "ADD.T",
     0x416A: "SUB.V", 0x38E1: "SUB.I",
@@ -86,21 +88,22 @@ NAMES: dict[int, str] = {
     0x44C2: "GT.V", 0x39B9: "GT.I", 0x3C3D: "GT.R8",
     0x42FD: "AND.V", 0x39E7: "AND.I",
     0x4312: "OR.V", 0x39F2: "OR.I",
-    0x42D1: "NOT.V", 0x39DC: "NOT.I",
+    0x42D1: "NOT.V", 0x39DC: "NOT.I", 0x393E: "IDIV.L", 0x3AB5: "AND.L",
     0x42B1: "MOD.V", 0x3918: "MOD.I", 0x4276: "IDIV.V", 0x38FF: "IDIV.I",
     0x4255: "POW.V", 0x3B92: "POW.R8", 0x77B8: "CONCAT",
     0x4290: "XOR.V", 0x39FE: "XOR.I", 0x42A3: "EQV.V", 0x3A0A: "EQV.I", 0x42E7: "IMP.V", 0x3A17: "IMP.I",
     # --- builtins ------------------------------------------------------
     0x19F5: "Rnd", 0x743A: "Randomize",
     0x3BCA: "Int.R8", 0x4738: "Int.V", 0x3A24: "Int.I", 0x4744: "Fix.V", 0x472C: "Abs.V", 0x104D: "CInt",
-    0x7582: "Len", 0x756A: "Left$", 0x74C9: "Chr$", 0x74C3: "Asc", 0x769C: "UCase$", 0x775F: "Format$",
+    0x7582: "Len", 0x756A: "Left$", 0x74C9: "Chr$", 0x74C3: "Asc", 0x769C: "UCase$", 0x775F: "Format$.1",
     0x7677: "Str$", 0x760A: "Str$.I", 0x76A2: "Val",
     0x52BA: "Shell", 0x2A0D: "QBColor", 0x7EC5: "Error$", 0x19CE: "Err",
     0x52AF: "Timer", 0x1A78: "Now", 0x750A: "InStr", 0x75BC: "Mid$",
     0x537B: "ChDir", 0x5381: "ChDrive", 0x2A73: "Cls", 0x742E: "Beep",
     0x37DF: "ARG_MISSING", 0x3844: "ARG_MISSING", 0x52F4: "MsgBox", 0x5308: "MsgBox.fn",
     0x5291: "Time", 0x52D8: "InputBox", 0x1480: "IsDate", 0x148A: "CVDate", 0x7766: "Format$",
-    0x10A0: "CStr", 0x5340: "DoEvents", 0x1A6A: "Minute",
+    0x10A0: "CStr", 0x5340: "DoEvents", 0x1A6A: "Minute", 0x28DA: "RGB", 0x75F5: "Trim$",
+    0x7594: "Len.T",
     # --- file I/O ------------------------------------------------------
     0x376D: "FILENUM", 0x373B: "OPEN",        # operand: 1 Input, 2 Output
     0x3631: "CLOSE", 0x375B: "PRINT#", 0x6132: "PRINT#_ITEM",
@@ -109,6 +112,7 @@ NAMES: dict[int, str] = {
     # --- user-defined types -------------------------------------------
     0x0709: "AADDR.GLB",                     # address of an array element
     0x6CE6: "FIELD_ADDR", 0x6FB6: "FIELD_ADDR.T",  # operand: field offset
+    0x70D5: "FIELD_GET.T",
     0x6D00: "FIELD_SET.I", 0x6BD2: "FIELD_GET.I", 0x6D9B: "FIELD_SET.V", 0x6C6C: "FIELD_GET.V",
 }
 
@@ -140,6 +144,6 @@ METHODS = {
     0x22: "MovePrevious", 0x24: "BeginTrans", 0x25: "Update", 0x26: "Append",
     0x27: "FieldSize", 0x28: "GetChunk", 0x2D: "OpenTable", 0x2F: "ListTables",
     0x32: "CreateSnapshot", 0x33: "OpenQueryDef", 0x34: "CreateQueryDef", 0x39: "Execute",
-    0x3A: "Seek", 0x3B: "Clone",
+    0x3A: "Seek", 0x3B: "Clone", 0x07: "LinkExecute", 0x35: "FindFirst",
 }
 
