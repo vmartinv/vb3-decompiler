@@ -19,7 +19,9 @@ tools/
   segment_parser.py      NE segment table parser, p-code string scanner
   pcode_disasm.py        full p-code disassembler (needs your VBRUN300.DLL
                          + `pip install capstone`)
+  opcodes.py             handler names
   align_source.py        aligns a compiled project with its source, per statement
+  corpus.py              builds/queries the aligned corpus (names handlers)
   vb3ide/
     kwaj_extract.py      decompresses VB3 setup-disk files (libmspack via ctypes)
     restore_install.py   rebuilds the install tree (incl. sample projects)
@@ -113,8 +115,8 @@ Output lands in `work/sweep/`. Disassemble results with
 ```sh
 python3 tools/vb3ide/restore_install.py merged/PACKING.LST expanded/ work/root
 python3 tools/vb3ide/compile_project.py --all work/root/vb/samples
-python3 tools/align_source.py work/root/vb/samples/calc/calc.mak \
-    work/root/vb/samples/calc/calc.exe --runtime VBRUN300.DLL --json calc.json
+python3 tools/corpus.py build work/root/vb/samples work/corpus --runtime VBRUN300.DLL
+python3 tools/corpus.py examples work/corpus --runtime VBRUN300.DLL --exe some.exe
 ```
 
 ## Status

@@ -288,7 +288,7 @@ class Runtime:
         return self._len[op]
 
     def is_stmt(self, op: int) -> bool:
-        """Statement markers: `mov ax, imm` stubs (possibly none) falling
+        """Statement markers: `mov ax, imm` / `inc si` stubs (possibly none) falling
         into `dec ss:[0x278]; js yield`. Several such entry points exist;
         the IDE tells source-line kinds apart by the entry address."""
         if op not in self._stmt:
@@ -300,7 +300,8 @@ class Runtime:
                 if i.mnemonic == "dec" and i.op_str == "word ptr ss:[0x278]":
                     ok = True
                     break
-                if i.mnemonic != "mov" or not i.op_str.startswith("ax, "):
+                if not (i.mnemonic == "mov" and i.op_str.startswith("ax, ")
+                        or i.mnemonic == "inc" and i.op_str == "si"):  # 0x48AF skips a u16
                     break
                 a += i.size
             self._stmt[op] = ok
@@ -312,25 +313,8 @@ class Runtime:
             isinstance(x, tuple) and x[0] == "jump" for x in self._explore(op))
 
 
-# ---------------------------------------------------------------------------
-# Names for handlers whose meaning is confirmed (see OPCODES.md). Everything
-# else prints as op_XXXX with its interpreter opcode ID.
-# ---------------------------------------------------------------------------
-
-NAMES = {
-    0x494B: "STMT", 0x65D9: "RET",
-    **{a: f"PUSH_I2 {n}" for n, a in enumerate(
-        [0x37E5, 0x37ED, 0x37F8, 0x37FE, 0x3804, 0x380A, 0x3810, 0x3816, 0x381C, 0x3822, 0x3828])},
-    0x3834: "PUSH_I2", 0x389A: "PUSH_STR",
-    0x2D21: "LOAD", 0x2FD4: "STORE", 0x0EB0: "CVT_LIT",
-    0x38D3: "ADD_I2", 0x38E1: "SUB_I2", 0x38EF: "MUL_I2", 0x40DF: "ADD", 0x390B: "NEG",
-    0x3B89: "DIV", 0x10F1: "CVT_R8",
-    0x4468: "EQ", 0x447A: "NE", 0x448C: "LE", 0x449E: "LT", 0x44B0: "GE", 0x44C2: "GT",
-    0x49CE: "CVT_BOOL",
-    0x34B7: "JMP_FALSE", 0x35FE: "JMP", 0x35EC: "ENDIF",
-    0x1B37: "FOR", 0x1B3E: "FOR_STEP", 0x1E08: "NEXT",
-    0x62E0: "CALL", 0x4A15: "PRINT",
-}
+# Handler names live in opcodes.py; unnamed ones print as op_XXXX [id].
+from opcodes import NAMES  # noqa: E402
 
 
 @dataclass
@@ -398,12 +382,12 @@ def decode(rt: Runtime, data: bytes, p: Proc) -> tuple[list[Insn], str | None]:
 
 
 def fmt(rt: Runtime, ins: Insn) -> str:
-    name = NAMES.get(ins.op)
+    name = NAMES.get(ins.op) or ("STMT" if rt.is_stmt(ins.op) else None)
     if name is None:
         oid = rt.opcode_id(ins.op)
         name = f"op_{ins.op:04X}" + (f" [id {oid:#x}]" if oid is not None else "")
     text = ""
-    if ins.op == 0x389A and len(ins.operand) >= 6:
+    if ins.op == 0x389A and len(ins.operand) >= 6:  # PUSH.T
         (slen,) = struct.unpack_from("<H", ins.operand, 4)
         text = "  " + repr(ins.operand[6:6 + slen].decode("latin-1"))
     return f"  {ins.pc:5d}: {ins.op:04x} {ins.operand.hex(' '):<24s} {name}{text}"
