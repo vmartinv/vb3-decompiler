@@ -257,30 +257,43 @@ Decoded via `If x = 1 Then \n y = 2 \n End If`, a variant with a longer
 Not yet tested: `ElseIf`, loops (`For`/`Do`/`While`), and whether `EC 35`
 appears in other block-closing contexts (e.g. loop ends) or is `If`-specific.
 
-### `For`/`Next`: structurally distinct, not decoded in detail
+### `For`/`Next`: partially decoded
 
-`For i = 1 To 3 \n y = i \n Next i` confirms `For`/`Next` does **not** reuse
-the comparison (`44`)/branch (`34`/`35`) opcodes above — it's a separate
-opcode family. Solid findings only:
+`For`/`Next` does **not** reuse the comparison (`44`)/branch (`34`/`35`)
+opcodes — it's a separate family. Tested `For i = 1 To 3` / `Next i`, a
+`Step 2` variant, and a 2-statement-body variant to triangulate:
 
-- `0F 32 <u16 LE slot>` appears twice: once on the `For` line (before the
-  start/end values are pushed) and again, identically, on the `Next` line
-  — both instances reference the loop control variable's slot. Clearly
-  FOR/NEXT-specific, parameterized by the loop variable.
-- Two `B8 FF <u16 LE operand>` instructions appear (one right after the
-  start/end values are pushed, one at the very end of the `Next` line) —
-  plausibly the loop-test/branch-back mechanism, but unlike `If`'s
-  branches, the operands didn't land cleanly on statement-marker
-  boundaries when checked, so the exact target semantics are **not
-  confirmed**. Don't trust this pairing yet.
-- A handful of other bytes (`37 1B`, `08 1E`) don't match any previously
-  decoded family — likely step-related or loop-control-block setup, not
-  investigated.
+- `0F 32 <u16 LE slot>` appears identically on both the `For` line and the
+  `Next` line, referencing the loop control variable's slot.
+- Start/end are pushed as normal literals (small-int table + `B0 0E`
+  coerce, same as everywhere else). An explicit `Step` value is pushed the
+  same way, right after start/end; without an explicit `Step`, that push
+  is skipped and the following "commit bounds" opcode's first byte changes
+  (`37 1B` with implicit step-1 vs `3E 1B` with an explicit step on the
+  stack) — so `X 1B` = "commit FOR bounds," first byte flags whether step
+  came from the stack.
+- **Back-edge jump (end of the `Next` line), CONFIRMED**: a 2-byte opcode
+  + `<u16 LE target>` whose target reliably equals the exact byte offset
+  of the loop body's first statement — verified in all 3 variants
+  (targets 20/24/20 correctly tracking body position as body length and
+  step changed).
+- **Entry-test / early-skip branch (right after bounds are committed), NOT
+  fully resolved**: present in all 3 variants, but its operand does not
+  land on the post-loop statement marker the way `If`'s branch does —
+  it's consistently 2 bytes before that marker (i.e. it points at the
+  back-edge jump's own operand field, not a real instruction boundary).
+  Exact semantics unclear; may reference a loop-control descriptor rather
+  than being a plain code-segment jump.
+- The 2-byte "opcode" preceding each of these operands was `B8 FF` in the
+  two 1-statement-body tests but `A8 FF` in the 2-statement-body test —
+  **not stable**, so it's probably not a fixed mnemonic; more likely these
+  bytes encode something numeric (not yet determined) rather than a
+  literal opcode. Don't treat `B8 FF`/`A8 FF` as confirmed opcode values.
 
-Needs a proper series of controlled variants (vary start/end/step
-independently, vary body length, check `Do`/`While` for comparison) before
-writing this up as a real decode — flagged as the next concrete task
-rather than guessed at here.
+Next step if resumed: vary loop-body length more granularly (byte-by-byte)
+to see if the "opcode" bytes are actually a relative offset/count, and
+check `Do`/`While` for a simpler (non-FOR-specific) loop encoding to
+cross-reference against.
 
 ## Reproducing this / extending it further
 
