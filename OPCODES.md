@@ -208,6 +208,21 @@ compiling `Print "hi"` through the real IDE and finding the exact same
 call sequence (`15 4A 37 21 9A 38 08 00 0C 00` before the string, `00 00
 32 61` after it) is not yet decoded.
 
+## Comparison operators
+
+`z = (y OP x)` (both operands LOADed, isolates the operator cleanly): all six
+share second byte `44` — a third linear opcode table, stride **18**, followed
+by a uniform result-coercion opcode `CE 49` (same role as `B0 0E`/`F1 10` for
+arithmetic — converts the raw comparison result to Variant Boolean) before
+STORE:
+
+| op | `=` | `<>` | `<=` | `<` | `>=` | `>` |
+|---|---|---|---|---|---|---|
+| opcode | `68 44` | `7A 44` | `8C 44` | `9E 44` | `B0 44` | `C2 44` |
+
+Not yet tested: literal-operand provenance (whether comparisons have a
+"both-literal" alternate form the way `ADD` did with `D3 38` vs `DF 40`).
+
 ## Reproducing this / extending it further
 
 - `tools/vb3ide/kwaj_extract.py <disk-files-dir> <out-dir>` — decompress a
@@ -228,10 +243,9 @@ for full environment setup (Xvfb, window manager, Wine prefix).
 
 - Decode `Print`'s call sequence and the floating-point arithmetic family
   in the same way arithmetic-on-integers was decoded.
-- Extend to comparison operators (`=`, `<`, `>`), `If`/loop constructs,
-  and calling other procedures/built-in functions — none attempted yet.
-- Try running `VBDIS3E.exe` (see "Prior art" above) — needs `MSVBVM60.DLL`
-  (try `winetricks vb6run`), might shortcut or validate a lot of this.
+- Extend to `If`/loop constructs (the actual branch/jump opcode, now that
+  comparisons producing a Boolean are decoded) and calling other
+  procedures/built-in functions — none attempted yet.
 - Once enough of the opcode set is decoded, it should generalize
   directly to any VB3 p-code binary, not just small test programs —
   [Quibble Race](https://github.com/vmartinv/qrace) is being used as the
