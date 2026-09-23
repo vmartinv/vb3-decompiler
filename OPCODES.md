@@ -149,8 +149,11 @@ Handlers are named from those pairs.
 `tools/lift.py` lifts each statement back to BASIC on a symbolic expression
 stack (operators, builtins, objects/properties, methods, calls, If/ElseIf/
 Else/End If, Do/Loop, For/Next, Select Case, Exit/End/GoTo/On Error).
-`lift.py score` compares every aligned corpus statement with its source
-line (identifiers normalised): 3,001/3,326 match, 0 differ, 325 use
+`lift.py infer` proposes semantics for unknown handlers by searching
+(function/statement, name from the source line, arity) for the reading
+that makes the corpus lines lift exactly; accepted readings go in
+`opcodes.SEM`. `lift.py score` compares every aligned corpus statement with its source
+line (identifiers normalised): 3,241/3,326 match, 0 differ, 85 use
 unsupported handlers (Print/graphics methods, file I/O, rarer builtins).
 
 ## Next steps

@@ -23,9 +23,10 @@ from collections import Counter
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from opcodes import METHODS, NAMES  # noqa: E402
+from opcodes import METHODS, NAMES, SEM  # noqa: E402
 
 BINOPS = {  # family -> (text, precedence; higher binds tighter)
+    "IS": ("Is", 3),
     "POW": ("^", 10), "MUL": ("*", 8), "DIV": ("/", 8), "IDIV": ("\\", 7), "MOD": ("Mod", 6),
     "ADD": ("+", 5), "SUB": ("-", 5), "CONCAT": ("&", 4),
     "EQ": ("=", 3), "NE": ("<>", 3), "LT": ("<", 3), "LE": ("<=", 3), "GT": (">", 3), "GE": (">=", 3),
@@ -42,6 +43,7 @@ FUNCS = {  # builtin -> arity
 STATEMENT_FUNCS = {"MsgBox": 3, "DoEvents": 0, "Cls": 0, "Beep": 0, "ChDir": 1, "ChDrive": 1}
 FUNCTION_FORMS = {"MsgBox.fn": ("MsgBox", 3)}
 MISSING_TEXT = "\0missing"
+DIM_MARK = "\0dim"
 
 
 class E:
@@ -65,13 +67,16 @@ def var_name(name: str, operand: bytes) -> str:
 STATEMENT_PREFIX = {"CASE"}  # block-end jumps opening ElseIf/Case lines
 
 
-def lift(code: list[tuple[int, bytes]], ids: dict[int, int] | None = None) -> str:
+def lift(code: list[tuple[int, bytes]], ids: dict[int, int] | None = None,
+         extra: dict[int, tuple] | None = None) -> str:
     """code: [(handler, operand)] for one statement (marker excluded).
     ids: handler -> interpreter opcode ID, used to classify unnamed handlers."""
     st: list[E] = []
     out: list[str] = []
     prefix = ""
+    local = ""
     obj_at: list[int] = []  # stack depth just after a method's object was pushed
+    ret_value: list[int] = []  # a pending method call is used as a value
 
     def pop() -> E:
         return st.pop() if st else E("?")
@@ -83,6 +88,22 @@ def lift(code: list[tuple[int, bytes]], ids: dict[int, int] | None = None) -> st
         return {0x0B: "LOAD.X", 0x0C: "STORE.X", 0x0E: "ALOAD.X", 0x0F: "ASTORE.X"}.get(low, name)
 
     for k, (op, operand) in enumerate(code):
+        sem = (extra or {}).get(op) or SEM.get(op)
+        if sem:
+            kind, fn, n = sem
+            if kind == "pass":
+                continue
+            args = [pop() for _ in range(n)][::-1]
+            while args and args[-1].text == MISSING_TEXT:
+                args.pop()
+            text = ", ".join("" if a.text == MISSING_TEXT else a.text for a in args)
+            if kind == "fn":
+                st.append(E(fn + (f"({text})" if n else "")))
+            elif kind == "kw":  # keyword statement with bare args: `Kill f`
+                out.append(f"{fn} {text}".rstrip())
+            elif kind == "push":
+                st.append(E(fn))
+            continue
         name = family(op, NAMES.get(op, f"op_{op:04X}"))
         fam = name.split(".")[0].split(" ")[0].rstrip("?")
         if fam.startswith("CVT") or name in ("ARGS", "ARGS_FREE", "END_CALL", "TRAP", "LABEL", "NARGS",
@@ -111,7 +132,12 @@ def lift(code: list[tuple[int, bytes]], ids: dict[int, int] | None = None) -> st
                 args.pop()
             m = METHODS.get(operand[6] if len(operand) > 6 else -1, f"Method{operand[6]:x}")
             call = (f"{o.text}." if o.text else "") + m
-            out.append((call + " " + ", ".join("" if a.text == MISSING_TEXT else a.text for a in args)).rstrip())
+            argtext = ", ".join("" if a.text == MISSING_TEXT else a.text for a in args)
+            if ret_value:
+                ret_value.pop()
+                st.append(E(f"{call}({argtext})"))
+            else:
+                out.append((call + " " + argtext).rstrip())
         elif name in ("CALL", "CALL_FN"):
             n, rec = struct.unpack_from("<HH", operand)
             args = [pop() for _ in range(n)][::-1]
@@ -130,6 +156,37 @@ def lift(code: list[tuple[int, bytes]], ids: dict[int, int] | None = None) -> st
             st.append(E(f"{o.text}.p{sub & 0xFF:x}" if sub & 0xC000 == 0xC000 else f"{o.text}!c{sub & 0x3FFF:x}"))
         elif name == "ARG_MISSING":
             st.append(E(MISSING_TEXT))
+        elif name == "FILENUM":
+            st.append(E("#" + pop().text))
+        elif name == "OPEN":
+            m = slot_of(operand)
+            mode = {1: "Input", 2: "Output", 4: "Random", 8: "Append", 0x20: "Binary"}.get(m & 0xFF, f"Mode{m:x}")
+            mode += {0x100: " Access Read", 0x200: " Access Write", 0x300: " Access Read Write"}.get(m & 0x300, "")
+            num, fname = pop(), pop()
+            out.append(f"Open {fname.text} For {mode} As {num.text}")
+        elif name == "CLOSE":
+            n = slot_of(operand)
+            args = [pop() for _ in range(n)][::-1]
+            out.append(("Close " + ", ".join(a.text for a in args)).rstrip())
+        elif name == "AADDR.GLB":
+            n = struct.unpack_from("<H", operand)[0]
+            idx = [pop() for _ in range(n)][::-1]
+            st.append(E(f"glb{slot_of(operand):x}({', '.join(i.text for i in idx)})"))
+        elif name == "LOAD.UDT":
+            st.append(E(f"u{slot_of(operand):x}"))
+        elif name.startswith("FIELD_SET"):
+            rec, v = pop(), pop()
+            out.append(f"{rec.text}.f{slot_of(operand):x} = {v.text}")
+        elif name == "GOSUB":
+            out.append(f"GoSub L{slot_of(operand):x}")
+        elif name == "RETURN":
+            out.append("Return")
+        elif name == "Randomize":
+            out.append("Randomize")
+        elif op == 0x0DFA:  # LoadPicture: u16 0x8043, u16 argument count
+            n = struct.unpack_from("<H", operand, 2)[0]
+            args = [pop() for _ in range(n)][::-1]
+            st.append(E(f"LoadPicture({', '.join(a.text for a in args if a.text != MISSING_TEXT)})"))
         elif name == "PGET_IDX":
             o = pop()
             n = struct.unpack_from("<H", operand)[0]
@@ -149,6 +206,66 @@ def lift(code: list[tuple[int, bytes]], ids: dict[int, int] | None = None) -> st
             st.append(E(str(struct.unpack_from("<i", operand)[0])))
         elif name == "DO":
             out.append("Do")
+        elif name == "LOCAL":
+            local = "Local "
+        elif name == "EXIT_DO":
+            out.append("Exit Do")
+        elif name == "EXIT_FOR":
+            out.append("Exit For")
+        elif name == "LOOP_WHILE_JT":
+            out.append(f"Loop While {pop().text}")
+        elif name == "DO_UNTIL_JT":
+            out.append(f"Do Until {pop().text}")
+        elif name == "RESUME_LABEL":
+            out.append(f"Resume L{slot_of(operand):x}")
+        elif name == "RESUME_NEXT":
+            out.append("Resume Next")
+        elif name == "RESUME":
+            out.append("Resume")
+        elif name == "DIM_BOUND":
+            st.append(E(DIM_MARK))  # next value is a dimension's only (upper) bound
+        elif name == "ARRAY_REF":
+            n, slot = struct.unpack_from("<HH", operand)
+            if n & 0x8000:
+                st.append(E(f"a{slot:x}"))
+            else:
+                vals, need = [], n // 2
+                while need and st:
+                    v = pop()
+                    if v.text == DIM_MARK:
+                        vals[-1] = (vals[-1][0], True) if vals else vals
+                        continue
+                    vals.append((v.text, False))
+                    need -= 1
+                while st and st[-1].text == DIM_MARK:  # marker for the first value
+                    pop()
+                    vals[-1] = (vals[-1][0], True)
+                vals.reverse()
+                dims, k = [], 0
+                while k < len(vals):
+                    if vals[k][1] or k + 1 >= len(vals):
+                        dims.append(vals[k][0]); k += 1
+                    else:
+                        dims.append(f"{vals[k][0]} To {vals[k + 1][0]}"); k += 2
+                st.append(E(f"a{slot:x}({', '.join(dims)})"))
+        elif name == "ARRAY_REF_LB":
+            n, slot = struct.unpack_from("<HH", operand)
+            vals = [pop().text for _ in range(n)][::-1]
+            dims = [f"{vals[k]} To {vals[k + 1]}" for k in range(0, len(vals) - 1, 2)]
+            st.append(E(f"a{slot:x}({', '.join(dims)})"))
+        elif name == "RET_SLOT":
+            ret_value.append(len(st))
+        elif name in ("REDIM", "REDIM_PRESERVE"):
+            out.append(("ReDim Preserve " if name == "REDIM_PRESERVE" else "ReDim ") + pop().text)
+        elif name == "UBOUND":
+            st.append(E(f"UBound({pop().text})"))
+        elif name == "PUSH_NOTHING":
+            st.append(E("Nothing"))
+        elif name == "TYPEOF_IS":
+            st.append(E(f"TypeOf {pop().text} Is c{slot_of(operand):x}", 3))
+        elif name == "SET_OBJ":
+            target, value = pop(), pop()
+            out.append(f"Set {target.text} = {value.text}")
         elif name == "CASE_ELSE":
             out.append("Case Else")
         elif name == "NEXT_NOVAR":
@@ -254,7 +371,8 @@ def lift(code: list[tuple[int, bytes]], ids: dict[int, int] | None = None) -> st
             out.append(f"GoTo L{slot_of(operand):x}")
         elif name == "ON_ERROR_GOTO":
             t = slot_of(operand)
-            out.append({0xFFFF: "On Error GoTo 0", 0xFFFE: "On Error Resume Next"}.get(t, f"On Error GoTo L{t:x}"))
+            out.append({0xFFFF: f"On {local}Error GoTo 0", 0xFFFE: f"On {local}Error Resume Next"}.get(
+                t, f"On {local}Error GoTo L{t:x}"))
         elif name == "UNLOAD":
             out.append(f"Unload {pop().text}")
         elif name == "LOAD":
@@ -270,6 +388,9 @@ def lift(code: list[tuple[int, bytes]], ids: dict[int, int] | None = None) -> st
 # --- scoring against the corpus -------------------------------------------
 
 KEYWORDS = {"and", "or", "not", "mod", "xor", "eqv", "imp", "if", "then", "else", "elseif", "true", "false",
+            "do", "loop", "while", "until", "wend", "redim", "preserve", "set", "is", "nothing", "typeof",
+            "local", "ubound", "to", "open", "input", "output", "append", "random", "binary", "as", "close",
+            "gosub", "return", "randomize", "loadpicture", "access", "read", "write",
             "for", "to", "step", "next", "end", "exit", "sub", "function", "on", "error", "goto", "resume",
             "unload", "load", "select", "case"}
 
@@ -327,9 +448,50 @@ def score(corpus: Path, verbose: bool, runtime: Path | None = None) -> None:
                 if verbose and c["wrong"] <= 80:
                     print(f"  {src[:60]:<60s} | {got[:60]}")
     print(f"statements: {c['ok']}/{c['total']} match, {c['wrong']} differ, {c['unsupported']} unsupported")
-    for k, v in c.most_common(25):
+    for k, v in c.most_common(200):
         if k.startswith("op "):
             print(f"   {v:5d} {k[3:]}")
+
+
+def infer(corpus: Path, runtime: Path | None) -> None:
+    """Propose semantics for unsupported handlers: try (fn|kw|pass, name from
+    the source line, arity 0-3) and keep what makes most lines match."""
+    ids = {}
+    if runtime:
+        import pcode_disasm as P
+        rt = P.Runtime(runtime)
+        ids = {op: rt.opcode_id(op) or 0 for op in range(len(rt.code))}
+    lines = []
+    for f in sorted(corpus.glob("*.json")):
+        for e in json.loads(f.read_text()):
+            code = [(op, bytes.fromhex(x)) for op, x in e["code"][1:]]
+            if code:
+                lines.append((e["src"], code))
+    unknown = Counter()
+    for src, code in lines:
+        got = lift(code, ids)
+        for m in re.finditer(r"<op_([0-9A-F]{4})>", got):
+            unknown[int(m.group(1), 16)] += 1
+    for op, cnt in unknown.most_common():
+        mine = [(src, code) for src, code in lines if any(o == op for o, _ in code)]
+        cands = {("pass", "", 0)}
+        for src, _ in mine:
+            words = re.findall(r"[A-Za-z_]\w*\$?", A_strip(src))
+            for w in words[:6]:
+                for n in range(4):
+                    cands.add(("fn", w, n))
+                    cands.add(("kw", w, n))
+        best = []
+        for cand in cands:
+            ok = sum(norm(lift(code, ids, {op: cand})) == norm(src) for src, code in mine)
+            best.append((ok, cand))
+        best.sort(key=lambda x: (-x[0], x[1][0] != "fn", x[1][2]))
+        ok, cand = best[0]
+        print(f"0x{op:04X}: {cand!r:34s} {ok}/{len(mine)}   e.g. {mine[0][0][:60]}")
+
+
+def A_strip(src: str) -> str:
+    return re.sub(r'"[^"]*"', "", src.split("'")[0])
 
 
 def main():
@@ -339,8 +501,14 @@ def main():
     s.add_argument("corpus", type=Path)
     s.add_argument("--runtime", type=Path)
     s.add_argument("-v", action="store_true")
+    i = sub.add_parser("infer")
+    i.add_argument("corpus", type=Path)
+    i.add_argument("--runtime", type=Path)
     args = ap.parse_args()
-    score(args.corpus, args.v, args.runtime)
+    if args.cmd == "infer":
+        infer(args.corpus, args.runtime)
+    else:
+        score(args.corpus, args.v, args.runtime)
 
 
 if __name__ == "__main__":

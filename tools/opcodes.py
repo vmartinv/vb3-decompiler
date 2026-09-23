@@ -31,17 +31,25 @@ NAMES: dict[int, str] = {
     0x0E35: "END",
     0x34B7: "JF", 0x3500: "JF.I",           # jump if false (block If / loops)
     0x34B4: "IF1_JF", 0x3503: "IF1_JF.I",   # single-line If ... Then ...
-    0x34FD: "ELSEIF_JF", 0x34B1: "ELSEIF_JF",
+    0x34FD: "ELSEIF_JF", 0x34B1: "ELSEIF_JF", 0x34DF: "ELSEIF_JF", 0x34E5: "JF", 0x34FA: "DO_WHILE_JF",
     0x34AE: "DO_WHILE_JF", 0x34AB: "LOOP_UNTIL_JF", 0x35F8: "LOOP",
     0x35FE: "JMP", 0x35EC: "ENDIF",
     0x1F41: "GOTO", 0x1F4A: "EXIT", 0x1FC6: "GOSUB", 0x1FE2: "RETURN",
     0x1F3E: "CASE",                          # u16: next Case / End Select
     0x0D09: "SELECT.I", 0x0CC8: "SELECT.V", 0x0CF8: "SELECT.R8", 0x0DA1: "END_SELECT", 0x0DA4: "CASE_ELSE",
-    0x396A: "CASE_VAL.I", 0x440D: "CASE_VAL.V", 0x3C14: "CASE_VAL.R8",   # Case value, then the test
-    0x0D4D: "CASE_EQ.I", 0x0D2F: "CASE_EQ.V", 0x0D39: "CASE_EQ.R8",      # u16 next Case, u16 body
+    0x396A: "CASE_VAL.I", 0x440D: "CASE_VAL.V", 0x3C14: "CASE_VAL.R8", 0x3DC0: "CASE_VAL.T",
+    0x0D4D: "CASE_EQ.I", 0x0D2F: "CASE_EQ.V", 0x0D39: "CASE_EQ.R8", 0x0D57: "CASE_EQ.T",  # u16 next Case, u16 body
+    0x0D83: "END_SELECT", 0x0D76: "CASE_ELSE",
     0x1B37: "FOR", 0x1B3E: "FOR_STEP", 0x1A7E: "FOR.I",
-    0x1E08: "NEXT", 0x1C8A: "NEXT.I", 0x1C87: "NEXT_NOVAR", 0x35E9: "DO", 0x0D73: "END_SELECT",
-    0x7EB6: "ON_ERROR_GOTO", 0x7E63: "RESUME",
+    0x1E08: "NEXT", 0x1C8A: "NEXT.I", 0x1C87: "NEXT_NOVAR", 0x1E0B: "NEXT_NOVAR", 0x35E9: "DO", 0x0D73: "END_SELECT",
+    0x7EB6: "ON_ERROR_GOTO", 0x7E63: "RESUME", 0x7E44: "RESUME_LABEL", 0x7E5D: "RESUME_NEXT",
+    0x3761: "LOCAL",                          # `On Local Error`
+    0x1D9F: "EXIT_DO", 0x1DA2: "EXIT_FOR", 0x3512: "LOOP_WHILE_JT", 0x35B8: "DO_UNTIL_JT",
+    0x079D: "DIM_BOUND", 0x077A: "ARRAY_REF",  # u16 2*values (0x8000: whole array), u16 slot
+    0x0768: "ARRAY_REF_LB",                     # `lower To upper` per dimension: u16 2*dims, u16 slot
+    0x0816: "REDIM", 0x0813: "REDIM_PRESERVE", 0x0AEF: "UBOUND",
+    0x0DEA: "RET_SLOT",                        # reserves a call's return value (method used as a value)
+    0x4A08: "PUSH_NOTHING", 0x4F3A: "IS", 0x4A3A: "TYPEOF_IS",
     # --- calls ---------------------------------------------------------
     0x62E0: "CALL", 0x62DD: "CALL", 0x62A7: "CALL_FN",
     0x67B1: "ARGS",                          # opens an argument frame
@@ -59,7 +67,7 @@ NAMES: dict[int, str] = {
     0x4A63: "SUBOBJ", 0x4A57: "SUBOBJ", 0x4CA8: "CTLARRAY", 0x4EB0: "CTLARRAY_OF", 0x4EA9: "CTLARRAY_OF",
     0x4EC7: "PGET_IDX", 0x4EDD: "PSET_IDX",   # indexed property: u16 index count, u16 0xC0nn
     0x4A23: "UNLOAD", 0x4A2A: "LOAD",
-    0x316D: "ADDR.GLB", 0x4F69: "SET_OBJ?",
+    0x316D: "ADDR.GLB", 0x4F69: "SET_OBJ",
     # --- literals ------------------------------------------------------
     **{a: f"PUSH.I {n}" for n, a in enumerate(
         [0x37E5, 0x37ED, 0x37F8, 0x37FE, 0x3804, 0x380A, 0x3810, 0x3816, 0x381C, 0x3822, 0x3828])},
@@ -89,6 +97,8 @@ NAMES: dict[int, str] = {
     0x42FD: "AND.V", 0x39E7: "AND.I",
     0x4312: "OR.V", 0x39F2: "OR.I",
     0x42D1: "NOT.V", 0x39DC: "NOT.I", 0x393E: "IDIV.L", 0x3AB5: "AND.L",
+    0x3A4D: "SUB.L", 0x3A3A: "ADD.L", 0x3B2A: "LE.L", 0x3AC6: "OR.L", 0x3B42: "GT.L", 0x3924: "MOD.L",
+    0x4720: "NEG",
     0x42B1: "MOD.V", 0x3918: "MOD.I", 0x4276: "IDIV.V", 0x38FF: "IDIV.I",
     0x4255: "POW.V", 0x3B92: "POW.R8", 0x77B8: "CONCAT",
     0x4290: "XOR.V", 0x39FE: "XOR.I", 0x42A3: "EQV.V", 0x3A0A: "EQV.I", 0x42E7: "IMP.V", 0x3A17: "IMP.I",
@@ -114,6 +124,8 @@ NAMES: dict[int, str] = {
     0x6CE6: "FIELD_ADDR", 0x6FB6: "FIELD_ADDR.T",  # operand: field offset
     0x70D5: "FIELD_GET.T",
     0x6D00: "FIELD_SET.I", 0x6BD2: "FIELD_GET.I", 0x6D9B: "FIELD_SET.V", 0x6C6C: "FIELD_GET.V",
+    0x70EE: "FIELD_SET.T", 0x6C52: "FIELD_GET.D", 0x6D1C: "FIELD_SET.L", 0x6D7F: "FIELD_SET.D",
+    0x6BF1: "FIELD_GET.L", 0x31B0: "LOAD.UDT",
 }
 
 # Variables: load (id 0x0B) / store (id 0x0C) by storage x type.
@@ -145,5 +157,26 @@ METHODS = {
     0x27: "FieldSize", 0x28: "GetChunk", 0x2D: "OpenTable", 0x2F: "ListTables",
     0x32: "CreateSnapshot", 0x33: "OpenQueryDef", 0x34: "CreateQueryDef", 0x39: "Execute",
     0x3A: "Seek", 0x3B: "Clone", 0x07: "LinkExecute", 0x35: "FindFirst",
+}
+
+# Lifter semantics for handlers that are plain builtins/statements:
+# op -> (kind, name, arity); kind: "fn" function, "kw" keyword statement,
+# "push" constant expression, "pass" no source effect. Proposed by
+# `lift.py infer` (search over the aligned corpus) and kept only where
+# they make the corpus lines lift exactly.
+SEM: dict[int, tuple[str, str, int]] = {
+    0x53CC: ("fn", "Dir", 1), 0x53C6: ("fn", "Dir", 0), 0x5314: ("fn", "DoEvents", 0),
+    0x75EF: ("fn", "Right$", 2), 0x3613: ("fn", "FreeFile", 0), 0x75B4: ("fn", "Mid$", 2),
+    0x7690: ("fn", "String$", 2), 0x7684: ("fn", "String", 2), 0x3958: ("fn", "Abs", 1),
+    0x7570: ("fn", "Len", 1), 0x7610: ("fn", "Str$", 1), 0x4841: ("fn", "IsNumeric", 1),
+    0x3BE8: ("fn", "Sgn", 1), 0x74E1: ("fn", "Hex$", 1), 0x75D4: ("fn", "Oct$", 1),
+    0x1043: ("fn", "CDbl", 1), 0x7535: ("fn", "InStr", 3),
+    0x3625: ("fn", "LOF", 1), 0x361F: ("fn", "Loc", 1), 0x3619: ("fn", "Input$", 2),
+    0x1A18: ("fn", "DateValue", 1), 0x105D: ("fn", "CLng", 1), 0x10D4: ("fn", "CCur", 1),
+    0x100F: ("fn", "CDbl", 1), 0x75AE: ("fn", "LTrim$", 1),
+    0x1156: ("pass", "", 0), 0x0ED9: ("pass", "", 0),
+    0x1094: ("pass", "", 0), 0x1060: ("pass", "", 0), 0x0EC5: ("pass", "", 0),
+    0x34A8: ("kw", "While", 1), 0x35F5: ("kw", "Wend", 0), 0x53FB: ("kw", "Kill", 1),
+    0x199D: ("pass", "", 0), 0x10D7: ("pass", "", 0),
 }
 

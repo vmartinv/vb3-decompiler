@@ -146,6 +146,8 @@ _BUILTIN_FARJMPS = {0x79A1, 0x79A6, 0x79B0}
 # Shared procedure-call core: every call-family handler has read all of its
 # operands (u16 0 + u16 record, or u16 record) by the time it gets here.
 _CALL_CORE = 0x62E4
+# Shared Resume code: `Resume <label>` reads its target, then jumps here.
+_RESUME_CORE = 0x7E63
 # Handlers whose operand reads happen in ways the static explorer can't
 # follow (frame setup / peeking ahead). Each value was confirmed by the
 # whole-program check (every procedure decodes to exactly its end offset).
@@ -206,7 +208,7 @@ class Runtime:
                 if steps > maxsteps or (a, delta) in seen:
                     break
                 seen.add((a, delta))
-                if a == _CALL_CORE and not helper:
+                if a in (_CALL_CORE, _RESUME_CORE) and a != start and not helper:
                     results.add(delta); break
                 i = self.insn(a)
                 if i is None:
@@ -279,7 +281,8 @@ class Runtime:
             return _MANUAL[op]
         if op not in self._len:
             r = self._explore(op) if op < len(self.code) else set()
-            if any(isinstance(x, tuple) and x[0] == "varlen" for x in r):
+            if any(isinstance(x, tuple) and x[0] == "varlen" for x in r) and \
+                    not any(isinstance(x, int) for x in r):  # a path dispatching normally wins
                 self._len[op] = "var"
             else:
                 disp = {x for x in r if not isinstance(x, tuple)}
