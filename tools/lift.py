@@ -48,11 +48,37 @@ DIM_MARK = "\0dim"
 
 class E:
     """Expression with a precedence (for parenthesising)."""
-    def __init__(self, text: str, prec: float = 99):
-        self.text, self.prec = text, prec
+    def __init__(self, text: str, prec: float = 99, t: str = ""):
+        self.text, self.prec, self.t = text, prec, t  # t: result type letter ('&' prefix: by reference)
 
     def at(self, prec: float) -> str:
         return self.text if self.prec >= prec else f"({self.text})"
+
+
+CMP_FAMILIES = {"EQ", "NE", "LT", "LE", "GT", "GE", "LIKE", "IS", "TYPEOF_IS"}
+
+
+def result_type(name: str) -> str:
+    """Type of the value an instruction leaves on the stack (V I L S D C T,
+    'L/T' when the handler is shared; '&x' for an address)."""
+    fam, _, suf = name.partition(".")
+    suf = suf.rsplit(".", 1)[-1] if suf else ""
+    if fam.startswith("CVT"):
+        tgt = name.rsplit(">", 1)[-1]
+        return {"R8": "D", "Ttmp": "T", "": ""}.get(tgt, tgt)
+    if fam in CMP_FAMILIES:
+        return "I"
+    if fam.startswith(("ADDR", "AADDR", "FIELD_ADDR")):
+        return "&" + (suf if suf in ("V", "T") else "")
+    if fam == "PUSH":
+        return {"B": "I", "R8": "D"}.get(suf.split(" ")[0], suf.split(" ")[0])
+    if fam == "BYVAL":
+        return "*"  # `ByVal x` passed to an `As Any` parameter
+    if fam.startswith(("PGET", "PGET_ME")):
+        return "V"
+    if fam.endswith("$"):
+        return "T"
+    return {"R8": "D"}.get(suf, suf) if suf in ("I", "L", "S", "D", "C", "T", "V", "R8", "L/T") else ""
 
 
 def is_call(text: str) -> bool:
@@ -87,11 +113,13 @@ STATEMENT_PREFIX = {"CASE"}  # block-end jumps opening ElseIf/Case lines
 
 
 def lift(code: list[tuple[int, bytes]], ids: dict[int, int] | None = None,
-         extra: dict[int, tuple] | None = None, names: list[str | None] | None = None) -> str:
+         extra: dict[int, tuple] | None = None, names: list[str | None] | None = None,
+         calls: list | None = None) -> str:
     """code: [(handler, operand)] for one statement (marker excluded).
     ids: handler -> interpreter opcode ID, used to classify unnamed handlers.
     names: per instruction, the recovered name of its variable/control/
-    procedure/member ('' = default property); None keeps a placeholder."""
+    procedure/member ('' = default property); None keeps a placeholder.
+    calls: if given, receives (handler, operand, argument types) per call."""
     st: list[E] = []
     out: list[str] = []
     prefix = ""
@@ -117,7 +145,16 @@ def lift(code: list[tuple[int, bytes]], ids: dict[int, int] | None = None,
         low = (ids or {}).get(op, 0) & 0xFF
         return {0x0B: "LOAD.X", 0x0C: "STORE.X", 0x0E: "ALOAD.X", 0x0F: "ASTORE.X"}.get(low, name)
 
+    prev_name, prev_top = "", None
+
+    def settle():  # type the value the previous instruction pushed
+        if st and st[-1] is not prev_top and not st[-1].t:
+            st[-1].t = result_type(prev_name)
+
     for k, (op, operand) in enumerate(code):
+        settle()
+        prev_top = st[-1] if st else None
+        prev_name = NAMES.get(op, "")
         sem = (extra or {}).get(op) or SEM.get(op)
         if sem:
             kind, fn, n = sem
@@ -136,6 +173,13 @@ def lift(code: list[tuple[int, bytes]], ids: dict[int, int] | None = None,
             continue
         name = family(op, NAMES.get(op, f"op_{op:04X}"))
         fam = name.split(".")[0].split(" ")[0].rstrip("?")
+        if name == "PAREN":  # explicit parentheses in the source (kept for the IDE's listing)
+            if st:
+                e = pop()
+                st.append(E(f"({e.text})", 99, e.t))
+            continue
+        if fam.startswith("CVT") and st:
+            st[-1].t = result_type(name)
         if name == "CVT.Ttmp>V" and st and is_call(st[-1].text):
             st[-1].text = re.sub(r"^(\w+)\$", r"\1", st[-1].text)  # Variant form: Left(...), not Left$(...)
         if fam.startswith("CVT") or name in ("ARGS", "ARGS_FREE", "END_CALL", "TRAP", "LABEL", "NARGS",
@@ -178,6 +222,8 @@ def lift(code: list[tuple[int, bytes]], ids: dict[int, int] | None = None,
         elif name in ("CALL", "CALL_FN"):
             n, rec = struct.unpack_from("<HH", operand)
             args = [pop() for _ in range(n)][::-1]
+            if calls is not None:
+                calls.append((name, operand, [a.t for a in args]))
             fn = nm(f"proc{rec & 0xFFF8:x}")
             if name == "CALL_FN":
                 st.append(E(f"{fn}({', '.join(a.text for a in args)})"))
@@ -212,7 +258,7 @@ def lift(code: list[tuple[int, bytes]], ids: dict[int, int] | None = None,
             st.append(E(f"{pre}({x.text}, {y.text})"))
         elif name == "CIRCLE_C":
             st.append(E("\0color"))
-        elif name in ("LINE", "LINE_C", "CIRCLE", "PSET_C", "SCALE"):
+        elif name in ("LINE", "LINE_C", "CIRCLE", "PSET_C", "PSET_P", "SCALE"):
             o, mark = gfx.pop() if gfx else ("", len(st))
             parts = [e.text for e in st[mark:]]
             del st[mark:]
@@ -224,7 +270,7 @@ def lift(code: list[tuple[int, bytes]], ids: dict[int, int] | None = None,
                 out.append(f"{o}Line " + ", ".join(args))
             elif name == "CIRCLE":
                 out.append(f"{o}Circle " + ", ".join(t for t in parts if t != "\0color"))
-            elif name == "PSET_C":
+            elif name in ("PSET_C", "PSET_P"):
                 out.append(f"{o}PSet " + ", ".join(parts))
             else:
                 out.append(f"{o}Scale")
@@ -345,17 +391,17 @@ def lift(code: list[tuple[int, bytes]], ids: dict[int, int] | None = None,
                     pop()
                     vals[-1] = (vals[-1][0], True)
                 vals.reverse()
-                dims, k = [], 0
-                while k < len(vals):
-                    if vals[k][1] or k + 1 >= len(vals):
-                        dims.append(vals[k][0]); k += 1
+                dims, d = [], 0
+                while d < len(vals):
+                    if vals[d][1] or d + 1 >= len(vals):
+                        dims.append(vals[d][0]); d += 1
                     else:
-                        dims.append(f"{vals[k][0]} To {vals[k + 1][0]}"); k += 2
+                        dims.append(f"{vals[d][0]} To {vals[d + 1][0]}"); d += 2
                 st.append(E(f"{nm(f'a{slot:x}')}({', '.join(dims)})"))
         elif name == "ARRAY_REF_LB":
             n, slot = struct.unpack_from("<HH", operand)
             vals = [pop().text for _ in range(n)][::-1]
-            dims = [f"{vals[k]} To {vals[k + 1]}" for k in range(0, len(vals) - 1, 2)]
+            dims = [f"{vals[d]} To {vals[d + 1]}" for d in range(0, len(vals) - 1, 2)]
             st.append(E(f"{nm(f'a{slot:x}')}({', '.join(dims)})"))
         elif name == "RET_SLOT":
             ret_value.append(len(st))
@@ -501,6 +547,7 @@ def lift(code: list[tuple[int, bytes]], ids: dict[int, int] | None = None,
             out.append(f"Load {pop().text}")
         else:
             out.append(f"<{name}>")
+    settle()
     if len(out) > 1 and out[0] == "Else":  # single-line Else: `Else stmt`
         out = ["Else " + out[1]] + out[2:]
     text = "; ".join(out) if out else (st[-1].text if st else "")

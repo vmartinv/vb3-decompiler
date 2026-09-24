@@ -53,7 +53,8 @@ NAMES: dict[int, str] = {
     0x2137: "GFX", 0x2130: "GFX_FN",
     0x22F6: "PT", 0x22E9: "PT", 0x231E: "PT_TO", 0x2328: "PT_STEP_TO", 0x2332: "PT_STEP_TO",
     0x26C7: "LINE", 0x26C1: "LINE_C",            # operand: 0 / 1 B / 2 BF
-    0x23DA: "CIRCLE_C", 0x23E3: "CIRCLE", 0x27BE: "PSET_C", 0x27E8: "SCALE",
+    0x23DA: "CIRCLE_C", 0x23E3: "CIRCLE", 0x27BE: "PSET_C", 0x27C4: "PSET_P",  # PSet (x, y) [, color]
+    0x27E8: "SCALE",
     0x296C: "TEXTWIDTH", 0x28FF: "TEXTHEIGHT", 0x2A69: "POINT",
     0x3764: "DEBUG", 0x2124: "PRINT_BEGIN",
     0x6132: "PRINT_NL", 0x60A4: "PRINT_NL", 0x60DE: "PRINT_NL", 0x6012: "PRINT_COMMA",
@@ -90,7 +91,7 @@ NAMES: dict[int, str] = {
     0x0EB0: "CVT.I>V", 0x0E8B: "CVT.I>R8", 0x0E7B: "CVT.I>L", 0x0F1C: "CVT.L>V",
     0x0F2E: "CVT.S>R8?", 0x0F67: "CVT.R8>I", 0x0F7B: "CVT.R8>L", 0x0F49: "CVT.R8",
     0x1050: "CVT.V>I", 0x10A3: "CVT.V>T", 0x10F1: "CVT.S>V", 0x1102: "CVT.R8>V",
-    0x11BB: "CVT.Ttmp>V", 0x11C3: "CVT.T>V", 0x49CE: "CVT.>B", 0x106D: "CVT.V>S",
+    0x11BB: "CVT.Ttmp>V", 0x11C3: "CVT.T>V", 0x49CE: "PAREN", 0x106D: "CVT.V>S",
     0x67EA: "ARGS_DLL", 0x67A8: "ARGS_DLL", 0x1972: "ARG_T_BYREF", 0x699D: "ARG_PAREN",
     # --- operators -----------------------------------------------------
     0x40DF: "ADD.V", 0x38D3: "ADD.I", 0x3B6E: "ADD.R8", 0x3D47: "ADD.T",
@@ -119,7 +120,8 @@ NAMES: dict[int, str] = {
     0x3BCA: "Int.R8", 0x4738: "Int.V", 0x3A24: "Int.I", 0x4744: "Fix.V", 0x472C: "Abs.V", 0x104D: "CInt",
     0x7582: "Len", 0x756A: "Left$", 0x74C9: "Chr$", 0x74C3: "Asc", 0x769C: "UCase$", 0x775F: "Format$.1",
     0x7677: "Str$", 0x760A: "Str$.I", 0x76A2: "Val",
-    0x52BA: "Shell", 0x2A0D: "QBColor", 0x7EC5: "Error$", 0x19CE: "Err",
+    0x52BA: "Shell", 0x4FA6: "OBJ_FREE",  # OBJ_FREE: epilogue release of a local object variable
+    0x2A0D: "QBColor", 0x7EC5: "Error$", 0x19CE: "Err",
     0x52AF: "Timer", 0x1A78: "Now", 0x750A: "InStr", 0x75BC: "Mid$",
     0x537B: "ChDir", 0x5381: "ChDrive", 0x2A73: "Cls", 0x742E: "Beep",
     0x37DF: "ARG_MISSING", 0x3844: "ARG_MISSING", 0x52F4: "MsgBox", 0x5308: "MsgBox.fn",
@@ -171,6 +173,7 @@ METHODS = {
     0x27: "FieldSize", 0x28: "GetChunk", 0x2D: "OpenTable", 0x2F: "ListTables",
     0x32: "CreateSnapshot", 0x33: "OpenQueryDef", 0x34: "CreateQueryDef", 0x39: "Execute",
     0x3A: "Seek", 0x3B: "Clone", 0x07: "LinkExecute", 0x35: "FindFirst",
+    0x01: "LinkSend", 0x05: "LinkPoke", 0x06: "LinkRequest", 0x08: "GetText", 0x0A: "SetText",
 }
 
 # Lifter semantics for handlers that are plain builtins/statements:
@@ -191,7 +194,7 @@ SEM: dict[int, tuple[str, str, int]] = {
     0x3302: ("fn", "CreateObject", 1), 0x53D7: ("kw", "FileCopy", 2),
     0x3607: ("fn", "EOF", 1), 0x7604: ("fn", "Space$", 1), 0x762E: ("fn", "Str$", 1),
     0x5387: ("fn", "CurDir$", 0), 0x0EED: ("pass", "", 0), 0x3BB9: ("fn", "Sqr", 1),
-    0x7428: ("kw", "Error", 1),
+    0x7428: ("kw", "Error", 1), 0x52B5: ("fn", "Shell", 1), 0x4FA6: ("pass", "", 0),
     0x0E9A: ("fn", "CCur", 1), 0x6895: ("pass", "", 0), 0x6942: ("pass", "", 0),
     0x1156: ("pass", "", 0), 0x0ED9: ("pass", "", 0),
     0x1094: ("pass", "", 0), 0x1060: ("pass", "", 0), 0x0EC5: ("pass", "", 0),

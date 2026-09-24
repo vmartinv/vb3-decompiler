@@ -76,6 +76,9 @@ def compile_mak(mak: Path, load_wait: float = 8, build_wait: float = 10) -> bool
                 size = cur
             new[0].rename(exe)  # several projects can share a directory
             return True
+    # no EXE: keep a screenshot of the IDE (compile errors are dialogs)
+    subprocess.run(["import", "-window", "root", str(mak.with_suffix(".fail.png"))], env=ENV,
+                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     return False
 
 

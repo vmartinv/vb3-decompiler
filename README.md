@@ -24,6 +24,10 @@ tools/
   corpus.py              builds/queries the aligned corpus (names handlers)
   validate.py            scores recovered names against sample source
   lift.py                lifts statements to BASIC; scores against the corpus
+  decompile.py           rebuilds a project (.mak/.frm/.bas) from an exe
+  vbdecl.py              declarations from the data images (Types, globals)
+  roundtrip.py           recompiles decompiled samples in the IDE, compares p-code
+  pcode_diff.py          instruction-level diff of two builds
   vb3ide/
     kwaj_extract.py      decompresses VB3 setup-disk files (libmspack via ctypes)
     restore_install.py   rebuilds the install tree (incl. sample projects)
@@ -38,6 +42,7 @@ step.
 ```sh
 python3 tools/pcode_disasm.py some.exe --runtime VBRUN300.DLL --check
 python3 tools/pcode_disasm.py some.exe --runtime VBRUN300.DLL --out listing.lst
+python3 tools/decompile.py some.exe --runtime VBRUN300.DLL --out src/
 ```
 
 ## Setup
@@ -124,9 +129,9 @@ python3 tools/corpus.py examples work/corpus --runtime VBRUN300.DLL --exe some.e
 ## Status
 
 - Resources: form headers, captions and pictures decoded.
-- P-code: instruction boundaries and procedure → segment mapping are
-  solved and validated on a real 16-form game. Handler naming is partial.
-  See `OPCODES.md` → Next steps.
+- P-code: fully decoded and named on the VB3 samples; statements lift
+  back to BASIC; `decompile.py` rebuilds compilable source (form layouts
+  still come from the original). See `OPCODES.md` → Next steps.
 
 ## License
 

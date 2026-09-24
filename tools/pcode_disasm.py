@@ -494,9 +494,15 @@ RECORD_FORM: dict[int, str] = {}  # procedure record -> form (from event tables)
 OBJVAR_TYPES: dict[int, dict[int, str]] = {}  # code segment -> {slot: declared class}
 SEG_IMAGE: dict[int, int] = {}  # code segment -> offset of its data image chunk in RT_RCDATA 2
 EVENT_TYPES: dict[tuple[str, str], tuple[int, ...]] = {}
-MASTER_EVENT_TYPES: dict[str, tuple[int, ...]] = {}  # standard event -> parameter types  # (class, event) -> EVENTINFO parameter types
+MASTER_EVENT_TYPES: dict[str, tuple[int, ...]] = {}  # standard event -> parameter types
 MEPROPS: dict[int, dict[int, int]] = {}  # code segment -> {PGET_ME slot: property index}
 FORM_CLASS: dict[str, str] = {}  # form -> Form | MDIForm (from its own event table)
+
+
+def reset_state() -> None:
+    """Forget what was resolved for the previous executable."""
+    for d in (KINDS, CLASSES, SEG_FORM, RECORD_FORM, OBJVAR_TYPES, SEG_IMAGE, MEPROPS, FORM_CLASS):
+        d.clear()
 
 # Class byte in a form blob's control record (confirmed values only).
 CLASS_BY_BLOB = {0x00: "PictureBox", 0x01: "Label", 0x02: "TextBox", 0x04: "CommandButton",
@@ -910,6 +916,7 @@ class Symbols:
     """Names for one executable's control/form references and properties."""
 
     def __init__(self, rt: "Runtime", segs: list[Segment], res: dict[int, bytes]):
+        reset_state()
         self.rt = rt
         self.controls = resolve_symbols(segs, rt, res)
         self.tables = {t[0]: t for t in form_names(res)}

@@ -69,8 +69,10 @@ def run(mak: Path, runtime: Path, vbx_dirs: list[Path], do_compile: bool, verbos
         return None
     root = WORK / mak.stem.lower()
     orig, deco = root / "orig", root / "deco"
-    if do_compile:
-        shutil.rmtree(root, ignore_errors=True)
+    a = orig / (mak.stem + ".exe")
+    build_orig = do_compile and not a.exists()  # the original build is kept between runs
+    if build_orig:
+        shutil.rmtree(orig, ignore_errors=True)
         shutil.copytree(mak.parent, orig)
         for f in orig.iterdir():
             if f.suffix.lower() == ".exe":
@@ -79,11 +81,13 @@ def run(mak: Path, runtime: Path, vbx_dirs: list[Path], do_compile: bool, verbos
     shutil.rmtree(deco, ignore_errors=True)
     dmak = write_project(d, deco, mak.parent, mak.stem.lower())
     if do_compile:
-        for m in (orig / mak.name, dmak):
+        for m in ([orig / mak.name] if build_orig else []) + [dmak]:
             if not compile_mak(m):
-                print(f"{mak.stem}: compile failed: {m}")
+                logs = [f for f in m.parent.iterdir() if f.suffix.lower() == ".log"]
+                why = "; ".join(line for f in logs for line in f.read_text("latin-1").splitlines()[:3])
+                print(f"{mak.stem}: compile failed: {m.name}" + (f" ({why})" if why else
+                      f" (see {m.with_suffix('.fail.png')})"), flush=True)
                 return None
-    a = orig / (mak.stem + ".exe")
     b = dmak.with_suffix(".exe")
     if not a.exists() or not b.exists():
         print(f"{mak.stem}: missing build")
@@ -92,7 +96,7 @@ def run(mak: Path, runtime: Path, vbx_dirs: list[Path], do_compile: bool, verbos
     res = compare(a, b, rt, verbose)
     print(f"{mak.stem:10s} procs {res['same']}/{res['procs']}" + ("" if res["count_ok"] else " (count differs)")
           + f"  image {'=' if res['image'] else '≠'}  table {'=' if res['table'] else '≠'}"
-          + ("  EXE IDENTICAL" if res["identical"] else ""))
+          + ("  EXE IDENTICAL" if res["identical"] else ""), flush=True)
     return res
 
 

@@ -19,10 +19,16 @@ compiling known-source test programs with a real VB3 compiler.
 
 | offset | field |
 |---|---|
-| +0 | u16 tag (`0x16` event procedure, `0x26`/`0x28`/`0x3A`/… `Sub`/`Function`) |
+| +0 | u16 frame size (`0x16` + locals and return value) |
+| +12 | u8 1 `Sub`, 2 `Function` |
+| +13 | u8 return type: 1 Integer, 2 Long, 3 Single, 4 Double, 5 Currency, 6 Variant, 7 String |
+| +14 | u8 `0x0C` for a `Declare` (DLL) record |
+| +15 | u8 argument words (ByRef 2, ByVal Integer 1, ...) |
 | +24 | u16 code start offset within its code segment |
 | +36 | u16 code end offset |
 | +38 | code segment selector, filled by an NE `INTREF` relocation |
+| +40, +46 | `Declare`: DLL and function name (name pool offsets) |
+| +50 | u16 source line count, including the comment block above it |
 
 **The code segment is given by the NE relocation table of segment 3**:
 one `INTREF` fixup chain per code segment, visiting +38 of every record
@@ -203,8 +209,67 @@ that makes the corpus lines lift exactly; accepted readings go in
 line (identifiers normalised): 3,335/3,335 match (samples + generated
 tests), 0 differ, 0 unsupported.
 
+## Source recovery
+
+`tools/decompile.py` rebuilds the project from the exe; `tools/roundtrip.py`
+recompiles it in the IDE next to the original source and compares p-code
+per procedure (`tools/pcode_diff.py` shows instruction diffs).
+
+- **RT_RCDATA 2 layout**: a header, the global image, the name pool
+  (`u16 size, 0, 0x1A`, 32-bucket hash, entries `u16 link, u8, u8 len,
+  name`, offsets from its start + 2; DLL/`Declare` names), then each .bas
+  image, then each form image (16 zero bytes, form record at 0x16) and its
+  control list. Chunks are `u16 len, u16, u16 0x1E`, some with a 2-byte
+  prefix. All 22 samples enumerate exactly their .mak modules and forms.
+- **Slots**: variables, parameters, return values, constants, Type/class
+  references, controls and globals share one slot numbering per module,
+  assigned in source text order. A slot's value/storage starts 2 bytes past
+  it (control and object records start at the operand itself). Order:
+  Functions and Declares (record offsets, sorted by name), then the
+  declarations section, then each procedure.
+- **Declarations section**: a module variable/constant is inline (size by
+  type: I 2, L/S/T 4, D/C 8, V 16, Type size + 2; constants hold their
+  value); a `Global` is a 2-byte slot holding its global offset; `Global
+  x As <class>` a 4-byte `kind, global offset`; `x() As New frmX` a
+  class reference plus `0x80NN, global offset`.
+- **Global image**: offset 4 heads the Type chain (`name, next, size,
+  first field`; field `name, next, type, offset`, fixed strings with a
+  length word before; FIELD_* operands are field record offsets); globals
+  follow in declaration order with constant values inline; the global
+  object table (`0x80NN, 0, 0`) ends it. Type/field names aren't stored.
+- **Locals and parameters**: a slot's value is its BP offset (> 0
+  parameter, < 0 local, 1 String); frame sizes give types of unused ones.
+  `Const` inside a procedure is inline like a module one.
+- **Names not stored**: general Sub/Function (code layout = procedures
+  sorted by name, case-insensitive; Function/Declare slots sorted too, so
+  synthetic names are fitted between the stored ones), variables, labels.
+- **Event signatures**: EVENTINFO parameter types (1 Integer, 3 Single, 6
+  String, 8 Control) from VBRUN300/VBX; `Index` when the argument words
+  exceed them.
+- **Declare parameters**: arguments are converted to the declared type at
+  the call site (`CVT.V>I` → `ByVal Integer`, `ByVal x` → `As Any`).
+- **Statement markers encode indentation**: `494B 4935 491F 4906 48F0
+  48D7 48C1` are columns 0, 4, … 24; the `mov ax, NN00` entries before each
+  are column `(NN >> 2) + 1` (the IDE regenerates source from p-code).
+- **Type suffix at a use** (`b% = 3`) selects another entry of the
+  variable handler, interpreter ID `| type << 10`; `Dim b%` doesn't.
+- `Left(` vs `Left$(`: the Variant form ends with `CVT.Ttmp>V`.
+- **Parentheses are compiled**: `49CE` (`PAREN`) marks every explicit
+  `( … )` of the source, so the lifter emits exactly those and no others
+  (parenthesis structure matches 3,330/3,335 corpus lines; the rest are
+  `DoEvents()` vs `DoEvents`).
+- `4FA6` releases a local object variable at procedure exit (epilogue).
+- A `Global Const` used from another module gets a slot there holding a
+  copy of its value (first use); any Global Const of the same type and
+  value compiles identically.
+- Project: `.VBX` files and Title from RT_RCDATA 1; executable name =
+  its first 9 bytes after `03 20 81 80 FF FF`.
+
 ## Next steps
 
-- Source emitter + round-trip check: decompile each sample, recompile with
-  the IDE, compare p-code per procedure.
-- Pseudo-BASIC output: expression stack + control-flow structuring.
+- Round-trip every sample (current results in the commit log); fix what
+  the IDE rejects or compiles differently.
+- Declarations-section record (line count, `Option Explicit` flag) and
+  per-form metadata so whole executables match, not only p-code.
+- Form layouts (Begin Form ... End) from the form resources; the
+  round-trip still copies them from the original source.
