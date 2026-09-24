@@ -721,12 +721,13 @@ class Decompiler:
             elif it[0] == "newobj":
                 names[it[1]] = f"G{it[3]:X}" if m["kind"] == "bas" else f"m{it[1]:X}"
                 self.global_name[it[3]] = names[it[1]]
-        gconst = {}  # (type, literal) -> Global Const name
+        gconst = {}  # (type, literal) -> Global Const names (each copy slot needs its own)
         for mm in self.all_mods:
             for it in mm["items"]:
                 if it[0] == "global" and it[2]:
-                    gconst.setdefault((it[4], it[2]), it[5])
-        for s, v in vars_.items():
+                    gconst.setdefault((it[4], it[2]), []).append(it[5])
+        used_g: set = set()
+        for s, v in sorted(vars_.items()):
             if s in names:
                 continue
             if v.glob is not None and v.glob in self.global_name:
@@ -736,8 +737,10 @@ class Decompiler:
             if v.scope == "MOD" and s >= m["first_owned"] and not v.stored and not v.array:
                 for t in ([v.type()] if v.votes else []) + ["L", "I"]:  # untyped: shared Long/String handler
                     lit = self.inline_const(m["image"], s, t, 16, zero=True)
-                    if lit and (t, lit) in gconst:
-                        gname = gconst[(t, lit)]
+                    free = [g for g in gconst.get((t, lit), []) if g not in used_g] if lit else []
+                    if free:
+                        gname = free[0]
+                        used_g.add(gname)
                         v.copy_type = t
                         break
                 if not gname:
@@ -1031,10 +1034,12 @@ class Decompiler:
             if frame_known == [1 << 30] and owned_k:
                 # no used locals: unused ones are the zeros between the previous
                 # procedure's slots and this one's first (String fillers: no frame)
-                fo, pe = min(owned_k), self.prev_end(m, k)
+                rest = [x for x in owned_k if x not in skip]
+                fo, pe = (min(rest) if rest else 1 << 30), self.prev_end(m, k)
                 # the procedure's own (unused) parameters come first: 2 slot bytes per
                 # ByRef parameter (4 argument bytes)
                 pe += 2 * (info.argwords // 2) + (2 if info.function else 0)
+                pe = max([pe] + [x + 2 for x in skip])
                 if pe < fo and all(self.value(base, z) == 0 for z in range(pe, fo, 2)):
                     for z in range(pe, fo, 2):
                         items.append((z, "dim", f"f{z:X}", " As String", Var(z, "LOC")))
