@@ -4,8 +4,11 @@ Round-trip check: decompile a compiled sample, recompile the result in the
 VB3 IDE (under Wine) and compare it with the original source recompiled
 the same way.
 
-  python3 tools/roundtrip.py <project.mak> [...] --runtime VBRUN300.DLL [--vbx-dir DIR]
+  python3 tools/roundtrip.py [project.mak ...] [--runtime VBRUN300.DLL] [--vbx-dir DIR]
           [--no-compile] [-v]
+
+Defaults: every sample under work/root/vb/samples that has a compiled exe,
+work/ide/VBRUN300.DLL and work/ide for VBX files.
 
 Both builds go to work/rt/<project>/{orig,deco} (equal-length paths: the
 source path is embedded in the executable). Reported per project:
@@ -102,12 +105,15 @@ def run(mak: Path, runtime: Path, vbx_dirs: list[Path], do_compile: bool, verbos
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("mak", type=Path, nargs="+")
-    ap.add_argument("--runtime", type=Path, required=True)
+    ap.add_argument("mak", type=Path, nargs="*")
+    ap.add_argument("--runtime", type=Path, default=REPO / "work/ide/VBRUN300.DLL")
     ap.add_argument("--vbx-dir", type=Path, action="append", default=[])
     ap.add_argument("--no-compile", action="store_true", help="compare existing builds only")
     ap.add_argument("-v", action="store_true")
     args = ap.parse_args()
+    args.vbx_dir = args.vbx_dir or [REPO / "work/ide"]
+    args.mak = args.mak or sorted((m for m in (REPO / "work/root/vb/samples").rglob("*")
+                                   if m.suffix.lower() == ".mak" and find_exe(m)), key=lambda m: m.stem.lower())
     tot = [0, 0]
     for mak in args.mak:
         r = run(mak, args.runtime, args.vbx_dir, not args.no_compile, args.v)
