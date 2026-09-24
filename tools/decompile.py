@@ -491,8 +491,8 @@ class Decompiler:
                 else:
                     items.append(("dim", s, "As Integer", "filler"))
                 s += 2
-            while items and len(items[-1]) == 4 and items[-1][3] == "filler":
-                items.pop()  # trailing zeros before the procedures aren't declarations
+            if all(len(it) == 4 and it[3] == "filler" for it in items):
+                items = []  # only zeros before the procedures: not declarations (compiler padding)
             m["items"] = items
         # global declarations: sizes/types from the global image and the uses
         gs = sorted({it[3] for m in mods for it in m["items"] if it[0] == "global"})
@@ -573,9 +573,14 @@ class Decompiler:
     def declare_lines(self, m: dict) -> list[str]:
         out = []
         recs = [r for _, r in m["funcs"]]
-        if m is self.decl_home:  # Declare Subs have no slot: found from their calls
-            recs += sorted(r for r in self.call_types if r not in self.by_record and r not in self.slotted
-                           and self.is_declare(r))
+        # Declare Subs have no slot: found from their calls; declared in the module
+        # that calls them (records follow text order), else the first .bas
+        for r in sorted(r for r in self.call_types if r not in self.by_record and r not in self.slotted
+                        and self.is_declare(r)):
+            homes = self.call_modules.get(r, set())
+            home = next(iter(homes)) if len(homes) == 1 else id(self.decl_home)
+            if home == id(m):
+                recs.append(r)
         recs.sort()  # records are allocated in order of first mention in the text
         for r in recs:
             if r in self.by_record:
@@ -773,6 +778,7 @@ class Decompiler:
     def collect_calls(self, mods: list[dict]) -> None:
         """Argument types per called record (for Declare parameters)."""
         self.call_types: dict[int, list] = {}
+        self.call_modules: dict[int, set] = {}
         for m in mods:
             self.cur_base = m["image"]
             for info in m["infos"]:
@@ -788,6 +794,7 @@ class Decompiler:
                     if name == "CALL_FN":
                         rec = self.value(m["image"], rec, False)
                     self.call_types.setdefault(rec & 0xFFF8, []).append(types)
+                    self.call_modules.setdefault(rec & 0xFFF8, set()).add(id(m))
 
     def fit_names(self, m: dict) -> None:
         """Names for general procedures (not stored) that keep both orders
@@ -1074,6 +1081,50 @@ class Decompiler:
             dims.setdefault(pos, []).append(f"{word_} {name}{decl if decl[0] in '( ' else ' ' + decl}")
             last = (pos, -1)
         return dims
+
+    def proc_spans(self, m: dict) -> dict:
+        """Slot intervals each procedure allocates (text order: each one's
+        after the previous one's): variables 2 bytes (Variants 4), control
+        records 6, form/property/object records 4, constants' copies their
+        size, external function slots 2. k -> (start, end) of its span, and
+        "intervals": k -> [(a, b)]."""
+        if "spans" in m:
+            return m["spans"]
+        base, vars_ = m["image"], m["vars"]
+        iv: dict[int, list] = {}
+        for x, v in vars_.items():
+            if not v.procs or x < m["first_owned"]:
+                continue
+            k = v.procs[0]
+            if v.scope in ("LOC", "REF"):
+                info = m["infos"][k]
+                t = info.ret if x == info.ret_slot else (v.type() if v.votes else None)
+                nxtv = self.value(base, x + 2, False)
+                wide = t == "V" or (t is None and nxtv in (0, 1) and x in info.params) or \
+                    (x + 2 not in vars_ and nxtv % 2 == 1 and nxtv < 200 and self.value(base, x) < 0)
+                if v.obj:
+                    iv.setdefault(k, []).append((x - 2, x + 2))
+                    continue
+                iv.setdefault(k, []).append((x, x + (4 if wide else 2)))
+            elif v.scope == "MOD":
+                n = MOD_SIZE.get(v.copy_type or v.type(), 2)
+                iv.setdefault(k, []).append((x, x + n))
+            else:
+                iv.setdefault(k, []).append((x, x + 2))
+        for r, (k, _) in m["refs"].items():
+            w0, w1 = word(self.image, base + r), word(self.image, base + r + 2)
+            n = 4 if w0 >> 8 == 0x80 else 6  # form/object record 4; control and form property 6
+            iv.setdefault(k, []).append((r - 2, r - 2 + n))
+        for x, k in m.get("call_slots", {}).items():
+            iv.setdefault(k, []).append((x, x + 2))
+        spans, prev = {"intervals": iv}, m["first_owned"]
+        for k in range(len(m["infos"])):
+            ivs = iv.get(k, [])
+            end = max([b for _, b in ivs] + [prev])
+            spans[k] = (prev, end)
+            prev = end
+        m["spans"] = spans
+        return spans
 
     def statements(self, info: ProcInfo, names: dict, calls: list | None = None) -> list[tuple[int, str]]:
         """(indentation column, lifted text) per statement (marker to the
