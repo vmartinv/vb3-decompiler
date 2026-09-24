@@ -989,7 +989,8 @@ class Decompiler:
                 elif lit:  # a Const inside the procedure: stored inline like a module one
                     items.append((s, "const", names[s], f"= {lit}", v))
                 else:
-                    items.append((s, "static", names[s], ("()" if v.array else "") + f" As {TYPE_NAME[v.type()]}", v))
+                    dims = f"({self.array_dims(base, s)[0]})" if v.array else ""
+                    items.append((s, "static", names[s], dims + f" As {TYPE_NAME[v.type()]}", v))
             elif v.scope == "GLB" and v.procs and v.procs[0] == k and s >= m["first_owned"]:
                 items.append((s, "fixed", names[s], None, v))
         for s, (kk, n) in m["refs"].items():
@@ -1004,7 +1005,7 @@ class Decompiler:
                 known.add(it[0] + 2)  # a local Variant takes 4 bytes of slots
         for x, v in vars_.items():  # constants' copies / statics: inline, sized by type
             if v.scope == "MOD" and v.procs and v.procs[0] == k and x >= m["first_owned"]:
-                n = MOD_SIZE.get(v.copy_type or v.type(), 2)
+                n = self.array_dims(base, x)[1] if v.array else MOD_SIZE.get(v.copy_type or v.type(), 2)
                 known.update(range(x, x + n, 2))
         for x in skip:  # Variant return value / parameters take 4 bytes of slots too
             v = vars_.get(x)
@@ -1038,7 +1039,7 @@ class Decompiler:
                 fo, pe = (min(rest) if rest else 1 << 30), self.prev_end(m, k)
                 # the procedure's own (unused) parameters come first: 2 slot bytes per
                 # ByRef parameter (4 argument bytes)
-                pe += 2 * (info.argwords // 2) + (2 if info.function else 0)
+                pe += self.param_slot_bytes(m, info)
                 pe = max([pe] + [x + 2 for x in skip])
                 if pe < fo and all(self.value(base, z) == 0 for z in range(pe, fo, 2)):
                     for z in range(pe, fo, 2):
@@ -1052,7 +1053,10 @@ class Decompiler:
             first_bp = self.value(base, x)
             v1 = vars_.get(x)
             fs1 = {"I": 2, "L": 4, "S": 4, "D": 8, "C": 8, "V": 16}.get(v1.type() if v1 and v1.votes else "V", 2)
-            evidence = prev_end == m["first_owned"] or (first_bp < 0 and -22 - first_bp - fs1 >= 16)
+            # Strings and Variants share one numbering (1, 3, ...): a first local numbered
+            # above 1 means numbered locals were declared before it
+            evidence = prev_end == m["first_owned"] or (first_bp < 0 and -22 - first_bp - fs1 >= 16) or \
+                (first_bp > 1 and first_bp % 2 == 1)
             if evidence and prev_end < x and all(self.value(base, z) == 0 and z not in known
                                                  for z in range(prev_end, x, 2)):
                 x = prev_end
@@ -1081,6 +1085,13 @@ class Decompiler:
                         extra = max(0, prev_bp - self.value(base, nxt_k) - fs2)
                         nv = min(extra // 16, (y - x) // 4)
                         extra -= 16 * nv
+                    if nv == 0:  # the numbering (Strings, Variants: 1, 3, ...) of the next local
+                        nxt_s = min((z for z in known if z >= y and self.value(base, z) > 0
+                                     and self.value(base, z) % 2 == 1 and z in vars_), default=None)
+                        if nxt_s is not None:
+                            prior = sum(1 for z in known if z < x and self.value(base, z) > 0
+                                        and self.value(base, z) % 2 == 1 and self.value(base, z) < 200)
+                            nv = max(0, min((self.value(base, nxt_s) - 1) // 2 - prior, (y - x) // 4))
                     while x < y:
                         if nv > 0:
                             vt, step, nv = "Variant", 4, nv - 1
@@ -1182,6 +1193,24 @@ class Decompiler:
         m["spans"] = spans
         return spans
 
+    def param_slot_bytes(self, m: dict, info: ProcInfo) -> int:
+        """Slot bytes of a procedure's parameters and return value: 2 each,
+        4 for object (Control/Form) and Variant ones."""
+        n = 2 if info.function else 0
+        ev = self.events.get(info.proc.record)
+        if ev:
+            ctl, _, e = ev.rpartition("_")
+            cls = self.sym.form_class.get(m["form"], "Form") if ctl in ("Form", "MDIForm") else \
+                self.sym.classes.get((m["form"], ctl), "")
+            types = P.EVENT_TYPES.get((cls, e), P.MASTER_EVENT_TYPES.get(e, ()))
+            n += sum(4 if t == 8 else 2 for t in types)
+            if info.argwords > 2 * len(types):
+                n += 2  # Index
+            return n
+        count = info.argwords // 2
+        known = [m["vars"][x] for x in info.params if x in m["vars"]]
+        return n + 2 * count + sum(2 for v in known if v.obj or (v.votes and v.type() == "V"))
+
     def prev_end(self, m: dict, k: int) -> int:
         """End of the slots allocated by the procedures before k (text order),
         each one's range starting with its parameters (2 slot bytes per ByRef
@@ -1189,11 +1218,11 @@ class Decompiler:
         if "ends" not in m:
             base, vars_, ends, end = m["image"], m["vars"], [], m["first_owned"]
             for kk, info in enumerate(m["infos"]):
-                e = end + 2 * (info.argwords // 2) + (2 if info.function else 0)
+                e = end + self.param_slot_bytes(m, info)
                 for x, v in vars_.items():
                     if v.procs and v.procs[0] == kk and x >= m["first_owned"]:
                         if v.scope == "MOD":
-                            n = MOD_SIZE.get(v.copy_type or v.type(), 2)
+                            n = self.array_dims(base, x)[1] if v.array else MOD_SIZE.get(v.copy_type or v.type(), 2)
                         else:
                             n = 4 if (v.votes and v.type() == "V") or (
                                 x + 2 not in vars_ and self.value(base, x + 2, False) % 2 == 1) else 2
