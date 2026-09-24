@@ -406,7 +406,7 @@ def lift(code: list[tuple[int, bytes]], ids: dict[int, int] | None = None,
             n, slot = struct.unpack_from("<HH", operand)
             vals = [pop().text for _ in range(n)][::-1]
             dims = [f"{vals[d]} To {vals[d + 1]}" for d in range(0, len(vals) - 1, 2)]
-            st.append(E(f"{nm(f'a{slot:x}')}({', '.join(dims)})"))
+            st.append(E(f"{nm(f'a{slot:x}').rstrip('$')}$({', '.join(dims)})"))  # 0768: `ReDim a$(...)`
         elif name == "RET_SLOT":
             ret_value.append(len(st))
         elif name in ("REDIM", "REDIM_PRESERVE"):

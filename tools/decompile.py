@@ -1120,6 +1120,23 @@ class Decompiler:
                     x += 4 if t == "V" else 2
                 else:
                     x += 2
+        # zeros just before the next procedure's slots, after all earlier ones: unused
+        # locals of a procedure that owns no slots (String fillers: no frame); they go
+        # in the procedure right before it
+        def own(kk: int) -> list:
+            return [x for x, v in vars_.items() if v.procs and v.procs[0] == kk and x >= m["first_owned"]] + \
+                   [r - 2 for r, (k2, _) in m["refs"].items() if k2 == kk] + \
+                   [x for x, k2 in m.get("call_slots", {}).items() if k2 == kk]
+        nxt_info = m["infos"][k + 1] if k + 1 < len(m["infos"]) else None
+        # only when the next procedure starts with its first parameter: zeros before
+        # it can't be its own locals (they follow its parameters)
+        first_ok = nxt_info is not None and own(k + 1) and nxt_info.argwords and \
+            self.value(base, min(own(k + 1))) == 6 + 2 * nxt_info.argwords - 4
+        if first_ok and not own(k) and not info.argwords:
+            end, start = self.prev_end(m, k + 1), min(own(k + 1))
+            if end < start and all(self.value(base, z) == 0 for z in range(end, start, 2)):
+                for z in range(end, start, 2):
+                    items.append((z, "dim", f"f{z:X}", " As String", Var(z, "LOC")))
         items.sort(key=lambda it: (it[0], it[1]))
 
         texts = [re.sub(r'"[^"]*"', lambda x: " " * len(x.group(0)), t or "") for _, t in body]

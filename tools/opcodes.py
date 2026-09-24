@@ -47,7 +47,7 @@ NAMES: dict[int, str] = {
     0x3761: "LOCAL",                          # `On Local Error`
     0x1D9F: "EXIT_DO", 0x1DA2: "EXIT_FOR", 0x3512: "LOOP_WHILE_JT", 0x35B8: "DO_UNTIL_JT",
     0x079D: "DIM_BOUND", 0x077A: "ARRAY_REF",  # u16 2*values (0x8000: whole array), u16 slot
-    0x0768: "ARRAY_REF_LB",                     # `lower To upper` per dimension: u16 2*dims, u16 slot
+    0x0768: "ARRAY_REF_LB",                     # ReDim with the `$` suffix (`a$(l To u)`): u16 2*dims, u16 slot
     0x0816: "REDIM", 0x0813: "REDIM_PRESERVE", 0x0AEF: "UBOUND",
     # graphics / Print methods: `obj GFX pieces... END`; value methods: `obj GFX_FN args FN`
     0x2137: "GFX", 0x2130: "GFX_FN",
