@@ -118,10 +118,11 @@ against the corpus (e.g. Label `0x18` AutoSize, TextBox `0x0B` Text,
 ListBox `0x13` ListIndex). All 345 property accesses in `qrace.exe` are
 named.
 
-Validation against sample source (`tools/validate.py`): 1,342/1,393
-property accesses named correctly, 0 wrong; the rest are on object
-variables/parameters whose declared type isn't decoded yet (OLE objects,
-`Dim f As Form`). Object class is tracked per instruction: control class
+Validation against sample source (`tools/validate.py`): 1,366/1,393
+property accesses named correctly, 0 wrong (generated tests: 24/24). The
+27 left: `As New <form>` instances (13), the `Forms`/`Controls`
+collections (7), `ActiveForm` (2), `Me!control` (2), default properties
+(`FieldBoxes(3) = …`, 4) and one `As Frame` global. Object class is tracked per instruction: control class
 from the form blob's control record (records chained by `start + 1 +
 length`; class byte at +7, +9 for array elements, VBX class name after
 `0xFF`), `Form` for forms and `Me`, the built-in's own list for Printer/
@@ -132,6 +133,18 @@ Late-bound properties (on `As Control`/`As Form` variables) use operand
 project, and `RT_RCDATA` 1 stores, per class, each one's index in that
 class's property list (`58 <class#> 00 00, kind, kind, 47 00 00 | 47 03
 00 <VBX name>, u16 n, n × number, n × index`); names follow from the lists.
+
+OLE Automation (`As Object` variables) is late-bound by name: `RT_RCDATA`
+3 (present only when OLE is used) is `u16 length` + NUL-terminated member
+names, and `PGET`/`PSET 0x00nn`, `PGET_IDX`/`PSET_IDX u16 argc, u16 name`
+and `OLE_CALL` (`3357`: `u16 argc, u16 name`, statement call) take the byte
+offset of the name. No server or OLE DLL is needed to name them.
+
+Object-variable declared class, from the variable's data-image record
+(`kind` 1 = Form, 4 = Control, else a control class kind): module-level
+`kind, 0, 0`; local `kind, frame, frame` (negative offsets); parameter
+`kind, bp offset` (positive, e.g. `01 00 0a 00` = first of two `As Form`
+parameters).
 
 `pcode_disasm.py` resolves these. A segment's form comes from its event
 procedures (below); its data image is the chunk resolving the most slots.
@@ -170,15 +183,14 @@ Else/End If, Do/Loop, For/Next, Select Case, Exit/End/GoTo/On Error).
 (function/statement, name from the source line, arity) for the reading
 that makes the corpus lines lift exactly; accepted readings go in
 `opcodes.SEM`. `lift.py score` compares every aligned corpus statement with its source
-line (identifiers normalised): 3,322/3,326 match, 0 differ; the 4 left
-are OLE Automation method calls (`3357`, method ids without names).
+line (identifiers normalised): 3,335/3,335 match (samples + generated
+tests), 0 differ, 0 unsupported.
 
 ## Next steps
 
-- Object-variable declared types: data-image records decoded for
-  module-level (`kind, 0, 0`) and local (`kind, frame, frame`) variables
-  and one parameter shape (`1, kind`); other parameter records (e.g.
-  `4, 6, frame` for `As Control`) need a targeted test.
+- Remaining property classes: `As New <form>` records, `Forms(i)` /
+  `ActiveForm` (→ Form), `Controls` collection, default properties
+  (control-array element assigned directly), `As Frame`.
 - Property names for custom (VBX) controls and `PGET_ME`/`PSET_ME`
   (implicit-form properties; operand not decoded).
 - Source emitter + round-trip check: decompile each sample, recompile with

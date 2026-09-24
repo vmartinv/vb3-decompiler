@@ -545,7 +545,7 @@ def objvar_kind(kind: str, w0: int, w1: int, w2: int) -> int | None:
     Module-level `kind, 0, 0`; local `kind, frame offset, frame offset`
     (negative); parameter `kind, bp offset` (positive). Kind 1 = Form,
     4 = Control (generic, late-bound), else a control class kind."""
-    ok = lambda k: k == 1 or k in CLASS_BY_KIND
+    ok = lambda k: k in (1, 4) or k in CLASS_BY_KIND
     if kind not in ("objvar", "control"):
         return None
     if w1 == w2 == 0 and ok(w0):
@@ -601,7 +601,7 @@ def resolve_symbols(segs: list[Segment], rt: "Runtime", res: dict[int, bytes]) -
             w0, w1, w2 = struct.unpack_from("<HHH", d, base + slot)
             tk = objvar_kind(kind, w0, w1, w2)
             if tk is not None:
-                types[slot] = "Form" if tk == 1 else CLASS_BY_KIND[tk]
+                types[slot] = {1: "Form", 4: "Control"}.get(tk) or CLASS_BY_KIND[tk]
                 continue
             if kind == "objvar":
                 continue  # untyped (As Control/Form generic) or not in this image
@@ -825,6 +825,19 @@ def late_bound_names(res1: bytes, rt: "Runtime") -> dict[int, str]:
     return out
 
 
+def ole_names(res3: bytes) -> dict[int, str]:
+    """OLE Automation member names (late-bound on `As Object` variables):
+    RT_RCDATA 3 is `u16 length, NUL-terminated names`; PGET/PSET 0x00nn and
+    PGET_IDX/PSET_IDX/OLE_CALL name operands are byte offsets into it."""
+    out, q = {}, 2
+    end = min(len(res3), 2 + struct.unpack_from("<H", res3)[0]) if len(res3) >= 2 else 0
+    while q < end and res3[q]:
+        z = res3.index(b"\0", q)
+        out[q] = res3[q:z].decode("latin-1")
+        q = z + 1
+    return out
+
+
 class Symbols:
     """Names for one executable's control/form references and properties."""
 
@@ -834,6 +847,7 @@ class Symbols:
         self.tables = {t[0]: t for t in form_names(res)}
         self.seg_form = dict(SEG_FORM)
         self.late = late_bound_names(res.get(1, b""), rt)
+        self.ole = ole_names(res.get(3, b""))
         self.objvar_types = {k: dict(v) for k, v in OBJVAR_TYPES.items()}
         self.classes = dict(blob_classes(res))  # blob records first (authoritative)
         for key, cls in CLASSES.items():
@@ -857,8 +871,12 @@ class Symbols:
                 props = self.rt.property_lists().get(cls, []) if cls else []
                 if nn >> 8 == 0xC0 and (nn & 0xFF) < len(props):
                     text = f"{cls}.{props[nn & 0xFF]}"
+                elif nn >> 8 == 0 and nn in self.ole and cls != "Control":  # OLE Automation
+                    text = f"Object.{self.ole[nn]}"
                 elif nn >> 8 == 0 and nn in self.late:  # late-bound (object variable)
                     text = f"?.{self.late[nn]}"
+            elif n == "OLE_CALL" and len(i.operand) >= 4:
+                text = f"Object.{self.ole.get(struct.unpack_from('<H', i.operand, 2)[0], '?')}"
             elif n in ("CTLARRAY_OF", "SUBOBJ") and len(i.operand) >= 2:
                 idx = struct.unpack_from("<H", i.operand, len(i.operand) - 2)[0]
                 if other and idx & 0xC000 != 0xC000 and (idx & 0x3FFF) < len(other):

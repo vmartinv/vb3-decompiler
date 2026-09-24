@@ -75,6 +75,7 @@ NAMES: dict[int, str] = {
     0x4C09: "PGET", 0x4C72: "PSET",          # operand 0xC0nn: class property nn
     0x4A63: "SUBOBJ", 0x4A57: "SUBOBJ", 0x4CA8: "CTLARRAY", 0x4EB0: "CTLARRAY_OF", 0x4EA9: "CTLARRAY_OF",
     0x4EC7: "PGET_IDX", 0x4EDD: "PSET_IDX",   # indexed property: u16 index count, u16 0xC0nn
+    0x3357: "OLE_CALL",                      # OLE Automation method: u16 argc, u16 name (RT_RCDATA 3 offset)
     0x4A23: "UNLOAD", 0x4A2A: "LOAD",
     0x316D: "ADDR.GLB", 0x4F69: "SET_OBJ", 0x33BE: "SET_OBJ",
     # --- literals ------------------------------------------------------

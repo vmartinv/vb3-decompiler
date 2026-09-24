@@ -140,6 +140,11 @@ def lift(code: list[tuple[int, bytes]], ids: dict[int, int] | None = None,
                 st.append(E(f"{call}({argtext})"))
             else:
                 out.append((call + " " + argtext).rstrip())
+        elif name == "OLE_CALL":  # obj.Name args (late-bound OLE Automation)
+            o = pop()
+            n = struct.unpack_from("<H", operand)[0]
+            args = [pop() for _ in range(n)][::-1]
+            out.append(f"{o.text}.m{slot_of(operand):x} {', '.join(a.text for a in args)}".rstrip())
         elif name in ("CALL", "CALL_FN"):
             n, rec = struct.unpack_from("<HH", operand)
             args = [pop() for _ in range(n)][::-1]

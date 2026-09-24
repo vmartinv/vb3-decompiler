@@ -16,6 +16,8 @@ using its own formats inside them. Worked example: `qrace.exe`.
   data as `u16 length, 00 00, 1E 00, …` chunks, plus slot fix-up lists
   `09 <u16 slot>`). Control and form slot records are documented in
   `OPCODES.md` → "Symbols".
+- `RT_RCDATA` 3 (only with OLE Automation): member-name pool for
+  late-bound `As Object` calls (`OPCODES.md` → Properties).
 
 ## Per-form `RT_RCDATA` pair
 
