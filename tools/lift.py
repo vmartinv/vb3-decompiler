@@ -157,10 +157,12 @@ def lift(code: list[tuple[int, bytes]], ids: dict[int, int] | None = None,
             st.append(E(f"{var_name(name, operand)}({pop().text})"))
         elif name == "CTLARRAY_OF":
             o, i = pop(), pop()
-            st.append(E(f"{o.text}!c{slot_of(operand) & 0x3FFF:x}({i.text})"))
+            sep = "!" if op == 0x4EA9 else "."  # 4EA9 `a!b(i)`, 4EB0 `a.b(i)`
+            st.append(E(f"{o.text}{sep}c{slot_of(operand) & 0x3FFF:x}({i.text})"))
         elif name == "SUBOBJ":
             o, sub = pop(), slot_of(operand)
-            st.append(E(f"{o.text}.p{sub & 0xFF:x}" if sub & 0xC000 == 0xC000 else f"{o.text}!c{sub & 0x3FFF:x}"))
+            sep = "!" if op == 0x4A57 else "."  # 4A57 `a!b`, 4A63 `a.b`
+            st.append(E(f"{o.text}.p{sub & 0xFF:x}" if sub & 0xC000 == 0xC000 else f"{o.text}{sep}c{sub & 0x3FFF:x}"))
         elif name == "ARG_MISSING":
             st.append(E(MISSING_TEXT))
         elif name in ("GFX", "GFX_FN", "PRINT_BEGIN"):

@@ -480,6 +480,7 @@ CLASSES: dict[tuple[str, str], str] = {}  # (form, control) -> class, as resolve
 SEG_FORM: dict[int, str] = {}  # code segment -> its form, as resolved
 RECORD_FORM: dict[int, str] = {}  # procedure record -> form (from event tables)
 OBJVAR_TYPES: dict[int, dict[int, str]] = {}  # code segment -> {slot: declared class}
+FORM_CLASS: dict[str, str] = {}  # form -> Form | MDIForm (from its own event table)
 
 # Class byte in a form blob's control record (confirmed values only).
 CLASS_BY_BLOB = {0x00: "PictureBox", 0x01: "Label", 0x02: "TextBox", 0x04: "CommandButton",
@@ -534,18 +535,30 @@ def _slot_refs(segs: list[Segment], rt: "Runtime") -> dict[int, dict[int, str]]:
         for i in decode(rt, segs[p.segment - 1].data, p)[0]:
             kind = {"CONTROL": "control", "CTLARRAY": "control", "FORM": "form",
                     "OBJVAR": "objvar"}.get(NAMES.get(i.op))
-            if kind:
+            if kind is None and is_objarr(rt, i):
+                kind = "objarr"
+            if kind and not (kind == "objarr" and p.segment in out
+                             and out[p.segment].get(struct.unpack_from("<H", i.operand, 2)[0]) not in (None, "objarr")):
                 slot = struct.unpack_from("<H", i.operand, len(i.operand) - 2)[0]
                 out.setdefault(p.segment, {})[slot] = kind
     return out
 
 
+def is_objarr(rt: "Runtime", i: "Insn") -> bool:
+    """Unnamed array-element load/store (`argc, slot`) — e.g. `Forms(i)`,
+    `Document(i)` of `Global Document() As New frmNotePad`."""
+    return i.op not in NAMES and len(i.operand) == 4 and (rt.opcode_id(i.op) or 0) & 0xFF in (0x0E, 0x0F)
+
+
 def objvar_kind(kind: str, w0: int, w1: int, w2: int) -> int | None:
     """Declared class kind of an object variable's data-image record, or None.
     Module-level `kind, 0, 0`; local `kind, frame offset, frame offset`
-    (negative); parameter `kind, bp offset` (positive). Kind 1 = Form,
+    (negative); parameter `kind, bp offset` (positive); a global used from
+    another module (loaded by FORM) `kind, global offset`. Kind 1 = Form,
     4 = Control (generic, late-bound), else a control class kind."""
     ok = lambda k: k in (1, 4) or k in CLASS_BY_KIND
+    if kind == "form" and 0 < w1 < 0x8000 and not w1 & 1 and ok(w0):
+        return w0
     if kind not in ("objvar", "control"):
         return None
     if w1 == w2 == 0 and ok(w0):
@@ -599,6 +612,16 @@ def resolve_symbols(segs: list[Segment], rt: "Runtime", res: dict[int, bytes]) -
             if base + slot + 6 > len(d):
                 return None
             w0, w1, w2 = struct.unpack_from("<HHH", d, base + slot)
+            if kind in ("objvar", "objarr") and w0 >> 8 == 0x80 and form_base is not None:
+                # `As New frmX` / form-typed: `0x8000|NN, frame or global offset`
+                k = (w0 & 0xFF) - form_base
+                if 0 <= k < len(forms):
+                    types[slot] = forms[k][0]
+                elif kind == "objarr" and (w0 & 0xFF) in BUILTIN_OBJECTS:
+                    types[slot] = BUILTIN_OBJECTS[w0 & 0xFF]
+                continue
+            if kind == "objarr":
+                continue
             tk = objvar_kind(kind, w0, w1, w2)
             if tk is not None:
                 types[slot] = {1: "Form", 4: "Control"}.get(tk) or CLASS_BY_KIND[tk]
@@ -639,9 +662,9 @@ def resolve_symbols(segs: list[Segment], rt: "Runtime", res: dict[int, bytes]) -
         uses_controls = "control" in refs[seg].values()
         cands = [seg_known[seg]] if seg_known.get(seg) is not None else range(fi, len(forms))
         for f in (cands if uses_controls else [-1]):
-            scored = [(len(g), -j, j, g) for j in range(ci, len(chunks))
+            scored = [(sum(k >= 0 for k in g), len(g), -j, j, g) for j in range(ci, len(chunks))
                       if (g := names_at(chunks[j], seg, f)) is not None]
-            got = max(scored)[2:] if scored else None  # most slots resolved, earliest on ties
+            got = max(scored)[3:] if scored else None  # most names, then typed variables, earliest
             if got:
                 names_at(chunks[got[0]], seg, f)  # leave OBJVAR_TYPES for the chosen image
                 got = (got[0], {k: v for k, v in got[1].items() if k >= 0})
@@ -697,6 +720,7 @@ def proc_names(segs: list[Segment], rt: "Runtime", res: dict[int, bytes]) -> dic
                     cls = d[at + 2:at + 2 + d[at + 1]].decode("latin-1")
             else:  # the form's own table: Form or MDIForm, by event count
                 ctl = cls = "MDIForm" if len(events.get("MDIForm", [])) == n != len(events.get("Form", [])) else "Form"
+                FORM_CLASS[names[0]] = cls
             evs = events.get(cls, [])
             if len(evs) != n:  # unknown class (e.g. a VBX control): don't guess names
                 evs = []
@@ -825,6 +849,27 @@ def late_bound_names(res1: bytes, rt: "Runtime") -> dict[int, str]:
     return out
 
 
+def late_bound_controls(res1: bytes, forms: list[list[str]]) -> dict[int, str]:
+    """Late-bound control names (`frmMDI.ActiveForm.Text1`: SUBOBJ 0x00nn)
+    share the late-bound numbering; each form's directory entry (`...
+    NAME.FRM\0`, forms in project order) ends with `u16 n, n x number,
+    n x index into the form's name table`."""
+    out: dict[int, str] = {}
+    for k, m in enumerate(re.finditer(rb"[\x20-\x7e]+\.FRM\x00", res1, re.I)):
+        q = m.end()
+        if k >= len(forms) or q + 2 > len(res1):
+            break
+        (n,) = struct.unpack_from("<H", res1, q)
+        if not 0 < n < 64 or q + 2 + 4 * n > len(res1):
+            continue
+        nums = struct.unpack_from(f"<{n}H", res1, q + 2)
+        idxs = struct.unpack_from(f"<{n}H", res1, q + 2 + 2 * n)
+        for num, idx in zip(nums, idxs):
+            if idx < len(forms[k]) and forms[k][idx]:
+                out.setdefault(num, forms[k][idx])
+    return out
+
+
 def ole_names(res3: bytes) -> dict[int, str]:
     """OLE Automation member names (late-bound on `As Object` variables):
     RT_RCDATA 3 is `u16 length, NUL-terminated names`; PGET/PSET 0x00nn and
@@ -848,7 +893,9 @@ class Symbols:
         self.seg_form = dict(SEG_FORM)
         self.late = late_bound_names(res.get(1, b""), rt)
         self.ole = ole_names(res.get(3, b""))
+        self.late_controls = late_bound_controls(res.get(1, b""), form_names(res))
         self.objvar_types = {k: dict(v) for k, v in OBJVAR_TYPES.items()}
+        self.form_class = dict(FORM_CLASS)
         self.classes = dict(blob_classes(res))  # blob records first (authoritative)
         for key, cls in CLASSES.items():
             if key[0] in self.tables:
@@ -869,7 +916,11 @@ class Symbols:
             elif n in ("PGET", "PSET", "PGET_IDX", "PSET_IDX") and len(i.operand) >= 2:
                 nn = struct.unpack_from("<H", i.operand, len(i.operand) - 2)[0]
                 props = self.rt.property_lists().get(cls, []) if cls else []
-                if nn >> 8 == 0xC0 and (nn & 0xFF) < len(props):
+                if nn == 0xC0FD:  # collection (Forms, Controls)
+                    text = f"{cls or '?'}.Count"
+                elif nn >> 8 == 0x80 and other and (nn & 0xFF) < len(other):
+                    text = f"{other[0]}!{other[nn & 0xFF]}"  # control array element: default property
+                elif nn >> 8 == 0xC0 and (nn & 0xFF) < len(props):
                     text = f"{cls}.{props[nn & 0xFF]}"
                 elif nn >> 8 == 0 and nn in self.ole and cls != "Control":  # OLE Automation
                     text = f"Object.{self.ole[nn]}"
@@ -879,7 +930,11 @@ class Symbols:
                 text = f"Object.{self.ole.get(struct.unpack_from('<H', i.operand, 2)[0], '?')}"
             elif n in ("CTLARRAY_OF", "SUBOBJ") and len(i.operand) >= 2:
                 idx = struct.unpack_from("<H", i.operand, len(i.operand) - 2)[0]
-                if other and idx & 0xC000 != 0xC000 and (idx & 0x3FFF) < len(other):
+                if idx == 0xC0FE:
+                    text = "Form.Controls"
+                elif idx >> 8 == 0 and idx in self.late_controls:  # late-bound control
+                    text = f"?!{self.late_controls[idx]}"
+                elif other and idx & 0xC000 != 0xC000 and (idx & 0x3FFF) < len(other):
                     text = f"{other[0]}!{other[idx & 0x3FFF]}"
                 elif idx & 0xC000 == 0xC000 and cls:
                     props = self.rt.property_lists().get(cls, [])
@@ -889,20 +944,31 @@ class Symbols:
             if n == "FORM":
                 target = text
                 other = self.tables.get(target)
-                cls = "Form" if target in self.tables else target
-            elif n in ("CONTROL", "CTLARRAY", "OBJVAR") and i.operand:
+                typed = self.objvar_types.get(seg, {}).get(
+                    struct.unpack_from("<H", i.operand, len(i.operand) - 2)[0]) if i.operand else None
+                cls = typed or (self.form_class.get(target, "Form") if target in self.tables else target)
+            elif (n in ("CONTROL", "CTLARRAY", "OBJVAR") or n is None and is_objarr(self.rt, i)) and i.operand:
                 slot = struct.unpack_from("<H", i.operand, len(i.operand) - 2)[0]
                 typed = self.objvar_types.get(seg, {}).get(slot)
-                cls = typed or (self.classes.get((form_of_seg, text)) if text else None)
-                other = self.tables.get(form_of_seg) if typed == "Form" else None
+                if typed in self.tables:  # As New frmX (variable or array element)
+                    cls, other = self.form_class.get(typed, "Form"), self.tables[typed]
+                elif n is None and (typed or sym.get(slot)) == "Forms":  # Forms(i)
+                    cls, other = "Form", None
+                else:
+                    cls = typed or (self.classes.get((form_of_seg, text)) if text else None)
+                    other = self.tables.get(form_of_seg) if typed == "Form" else None
             elif n in ("CTLARRAY_OF", "SUBOBJ"):
                 f, _, c = text.partition("!")
                 if c:
                     cls = self.classes.get((f, c))
+                elif text == "Form.Controls" or text.startswith("?!"):  # .Controls / .Controls(i) / late-bound
+                    cls = "Controls" if n == "SUBOBJ" and not text.startswith("?!") else "Control"
                 else:  # object-valued property (e.g. Data.Recordset)
                     cls = OBJECT_PROPERTY_CLASS.get(text.split(".")[-1])
+                other = None
             elif n in ("ME", "ME_IMPLICIT"):
-                cls = "Form"
+                cls = self.form_class.get(form_of_seg, "Form")
+                other = self.tables.get(form_of_seg)
             elif n in ("OBJ", "OBJ_SELF", "PGET", "PGET_IDX") or (n or "").startswith(("LOAD", "ALOAD")):
                 if n not in ("OBJ", "OBJ_SELF"):
                     cls = None  # object of unknown class (variable, property result)

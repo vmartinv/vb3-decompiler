@@ -101,7 +101,13 @@ image in `RT_RCDATA` 2 (see `RESOURCE_FORMAT.md`):
   `0x08` Forms, `0x32` Printer, `0x33` Screen, `0x34` Clipboard, `0x3D` App. A `FORM`
   slot without `0x80NN` is an object variable (`Dim x As Control`).
 - `CTLARRAY_OF`/`SUBOBJ` operand `0x80nn` = control `nn` of the form
-  pushed just before (`frmStatus!cmdTrain`).
+  pushed just before (`frmStatus!cmdTrain`); `0x00nn` = late-bound control
+  (below); `0xC0FE` = `.Controls` (`SUBOBJ`) / `.Controls(i)`
+  (`CTLARRAY_OF`). Separator as written: `4A57`/`4EA9` `!`, `4A63`/`4EB0`
+  `.` (150/150 in the samples).
+- Object arrays (`Forms(i)`, `Document(i)` of `Global Document() As New
+  frmNotePad`): unnamed handlers with interpreter ID `0x0E` (`4CD5`,
+  `4DEA`; store `0x0F`) and operand `u16 argc, u16 slot`.
 - Control class: slot kind byte (`0x1C/1D` Label, `0x1E/1F` TextBox,
   `0x22/23` CommandButton, `0x42/43` Image, … odd = control array; table in
   the tool), or the class byte of the control's record in the form blob.
@@ -118,21 +124,25 @@ against the corpus (e.g. Label `0x18` AutoSize, TextBox `0x0B` Text,
 ListBox `0x13` ListIndex). All 345 property accesses in `qrace.exe` are
 named.
 
-Validation against sample source (`tools/validate.py`): 1,366/1,393
-property accesses named correctly, 0 wrong (generated tests: 24/24). The
-27 left: `As New <form>` instances (13), the `Forms`/`Controls`
-collections (7), `ActiveForm` (2), `Me!control` (2), default properties
-(`FieldBoxes(3) = …`, 4) and one `As Frame` global. Object class is tracked per instruction: control class
-from the form blob's control record (records chained by `start + 1 +
-length`; class byte at +7, +9 for array elements, VBX class name after
-`0xFF`), `Form` for forms and `Me`, the built-in's own list for Printer/
-Screen/…, `Dynaset` for `Recordset`.
+Validation against sample source (`tools/validate.py`): 1,393/1,393
+property accesses named correctly (generated tests: 24/24). Object class
+is tracked per instruction: control class from the form blob's control
+record (records chained by `start + 1 + length`; class byte at +7, +9 for
+array elements, VBX class name after `0xFF`); `Form` or `MDIForm` (the
+form's own event-table size) for forms, `Me` and `Forms(i)`; the
+built-in's own list for Printer/Screen/…; `ActiveForm` → Form, `Recordset`
+→ Dynaset. `0xC0FD` = `.Count` of a collection (`Forms`, `Controls`).
+`PSET_IDX`/`PGET_IDX` with `0x80nn` = control-array element with its
+default property (`Form1.FieldBoxes(3) = x`).
 
 Late-bound properties (on `As Control`/`As Form` variables) use operand
 `0x00nn`: `nn` numbers such properties in first-use order across the
 project, and `RT_RCDATA` 1 stores, per class, each one's index in that
 class's property list (`58 <class#> 00 00, kind, kind, 47 00 00 | 47 03
 00 <VBX name>, u16 n, n × number, n × index`); names follow from the lists.
+Late-bound control names (`frmMDI.ActiveForm.Text1`, `Frm!lstForms`) share
+the numbering; each form's `RT_RCDATA` 1 entry (`… NAME.FRM\0`, project
+order) ends with `u16 n, n × number, n × name-table index`.
 
 OLE Automation (`As Object` variables) is late-bound by name: `RT_RCDATA`
 3 (present only when OLE is used) is `u16 length` + NUL-terminated member
@@ -144,12 +154,14 @@ Object-variable declared class, from the variable's data-image record
 (`kind` 1 = Form, 4 = Control, else a control class kind): module-level
 `kind, 0, 0`; local `kind, frame, frame` (negative offsets); parameter
 `kind, bp offset` (positive, e.g. `01 00 0a 00` = first of two `As Form`
-parameters).
+parameters); a global used from another module (loaded by `FORM`) `kind,
+global offset`. `As New frmX` variables and arrays: `0x80NN` (the form's
+NN), then the frame or global offset.
 
 `pcode_disasm.py` resolves these. A segment's form comes from its event
 procedures (below); its data image is the chunk resolving the most slots.
-Against sample source (`tools/validate.py`): 1,299/1,313 references
-correct, 5 wrong (`Forms` collection, one VBX), 9 object variables.
+Against sample source (`tools/validate.py`): 1,458/1,458 references
+correct, plus 9 object variables.
 
 ## Procedure names
 
@@ -188,11 +200,8 @@ tests), 0 differ, 0 unsupported.
 
 ## Next steps
 
-- Remaining property classes: `As New <form>` records, `Forms(i)` /
-  `ActiveForm` (→ Form), `Controls` collection, default properties
-  (control-array element assigned directly), `As Frame`.
-- Property names for custom (VBX) controls and `PGET_ME`/`PSET_ME`
-  (implicit-form properties; operand not decoded).
+- `PGET_ME`/`PSET_ME` (implicit-form properties, e.g. `Left + Width \ 10`;
+  operand not decoded).
 - Source emitter + round-trip check: decompile each sample, recompile with
   the IDE, compare p-code per procedure.
 - Pseudo-BASIC output: expression stack + control-flow structuring.

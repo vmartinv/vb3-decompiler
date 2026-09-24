@@ -86,12 +86,23 @@ def project(mak: Path, exe: Path, rt: P.Runtime, verbose: bool) -> Counter:
                             c["props_missing"] += 1
                             if verbose:
                                 print(f"   noprop {f.name}: {src!r}")
-                        elif note.split(".")[-1].lower() in members:
+                        elif note.split(".")[-1].lower() in members \
+                                or "." not in note and note.split("!")[-1].lower() in members:  # default property
                             c["props_ok"] += 1
                         else:
                             c["props_wrong"] += 1
                             if verbose:
                                 print(f"   prop {f.name}:{want}: {note} not in {src!r}")
+                for i in g:  # member separator: SUBOBJ/CTLARRAY_OF 4A57/4EA9 = `!`, 4A63/4EB0 = `.`
+                    ctl = notes.get(i.pc, "").partition("!")[2]
+                    if i.op in (0x4A57, 0x4EA9, 0x4A63, 0x4EB0) and ctl:
+                        found = re.findall(rf"([!.])\s*{re.escape(ctl)}\b", A.strip_comment(src), re.I)
+                        if found:
+                            c["sep_total"] += 1
+                            if (found[0] == "!") == (i.op in (0x4A57, 0x4EA9)):
+                                c["sep_ok"] += 1
+                            elif verbose:
+                                print(f"   sep {f.name}: {i.op:04x} {ctl} in {src!r}")
                 idents = {t.lower() for t in re.findall(r"[A-Za-z_]\w*", A.strip_comment(src))}
                 for i in g:
                     if P.NAMES.get(i.op) in ("CONTROL", "CTLARRAY", "FORM") and i.operand:
@@ -139,7 +150,8 @@ def main():
               f"  refs {c['refs_ok']}/{c['refs_total'] - c['refs_objvar']} (missing {c['refs_missing']}, wrong {c['refs_wrong']}; +{c['refs_objvar']} object vars)")
     print(f"TOTAL      procs {total['procs_ok']}/{total['procs_total']} (wrong {total['procs_wrong']}, false {total['procs_false']})"
           f"  refs {total['refs_ok']}/{total['refs_total'] - total['refs_objvar']} (missing {total['refs_missing']}, wrong {total['refs_wrong']}; +{total['refs_objvar']} object vars)"
-          f"  props {total['props_ok']}/{total['props_total']} (missing {total['props_missing']}, wrong {total['props_wrong']})")
+          f"  props {total['props_ok']}/{total['props_total']} (missing {total['props_missing']}, wrong {total['props_wrong']})"
+          f"  ! vs . {total['sep_ok']}/{total['sep_total']}")
 
 
 if __name__ == "__main__":
