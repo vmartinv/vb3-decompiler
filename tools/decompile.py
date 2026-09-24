@@ -29,7 +29,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-import pcode_disasm as P  # noqa: E402
+import pcode_disasm as P
+import formblob as FB  # noqa: E402
 from lift import lift  # noqa: E402
 from opcodes import NAMES  # noqa: E402
 from vbdecl import MOD_SIZE, GlobalImage, const_literal, word  # noqa: E402
@@ -199,6 +200,7 @@ def lt_hint(nxt: str) -> str:
 
 class Decompiler:
     def __init__(self, exe: Path, runtime: Path, vbx_dirs: list[Path]):
+        self.exe = exe
         self.rt = rt = P.Runtime(runtime)
         rt.vbx_dirs = [exe.parent, *vbx_dirs]
         self.segs = P.parse_ne(exe)
@@ -1377,9 +1379,16 @@ def write_project(d: Decompiler, out: Path, layout_from: Path | None, name: str)
     modules = [m["lines"] for m in mods if not m["form"]]
     originals = {f.name.upper(): f for f in layout_from.iterdir()} if layout_from else {}
     files = []
+    decoded = [] if layout_from else FB.forms(d.exe, d.rt)
     for k, form in enumerate(d.forms):
         fname = d.form_files[k] if k < len(d.form_files) else f"FORM{k + 1}.FRM"
         layout = ["VERSION 2.00", f"Begin Form {form[0]}", "End"]
+        if k < len(decoded):
+            frx = bytearray()
+            frx_name = Path(fname).with_suffix(".FRX").name
+            layout = ["VERSION 2.00"] + FB.form_text(decoded[k], frx, frx_name)
+            if frx:
+                (out / frx_name).write_bytes(frx)
         src = originals.get(fname.upper())
         if src:
             text = src.read_bytes().decode("latin-1").replace("\r", "").split("\n")

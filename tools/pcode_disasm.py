@@ -209,6 +209,16 @@ def parse_models(ds: bytes, mprops: list, mevents: list, min_ptr: int) -> dict[s
         # events (e.g. DirListBox's parent "ListBox"); prefer one with events.
         if cls not in found or (not found[cls][1] and evs):
             found[cls] = (props, evs)
+            MODEL_FLAGS[cls] = int.from_bytes(ds[r - 24:r - 20], "little")  # MODEL.fl
+            q, types, std = pl, [], []
+            while w(q) and len(types) < len(props):  # PROPINFO: name, fl (low byte = DT_ data type)
+                v = w(q)
+                types.append((MASTER_PROP_TYPES[0xFFFF - v] if 0xFFFF - v < len(MASTER_PROP_TYPES) else 0)
+                             if v >= 0xFF80 else ds[v + 2])
+                std.append(v >= 0xFF80)
+                q += 2
+            PROP_TYPES[cls] = types
+            PROP_STD[cls] = std
     return found
 
 
@@ -399,6 +409,7 @@ class Runtime:
                     k = m
                     while w(k) > 0x400 or (w(k) and name(w(w(k))) is None and k < m + 200):
                         props.append(name(w(w(k))))
+                        MASTER_PROP_TYPES.append(self.data[w(k) + 2] if w(k) + 2 < len(self.data) else 0)
                         k += 2
                 if not events and name(w(w(m))) == "Click" and name(w(w(m + 2))) == "DblClick" \
                         and name(w(w(m + 4))) == "DragDrop":
@@ -494,6 +505,10 @@ RECORD_FORM: dict[int, str] = {}  # procedure record -> form (from event tables)
 OBJVAR_TYPES: dict[int, dict[int, str]] = {}  # code segment -> {slot: declared class}
 SEG_IMAGE: dict[int, int] = {}  # code segment -> offset of its data image chunk in RT_RCDATA 2
 EVENT_TYPES: dict[tuple[str, str], tuple[int, ...]] = {}
+PROP_TYPES: dict[str, list[int]] = {}  # class -> PROPINFO data type per property-list entry
+MASTER_PROP_TYPES: list[int] = []
+MODEL_FLAGS: dict[str, int] = {}
+PROP_STD: dict[str, list[bool]] = {}  # class -> property-list entry is a standard (master) property
 MASTER_EVENT_TYPES: dict[str, tuple[int, ...]] = {}  # standard event -> parameter types
 MEPROPS: dict[int, dict[int, int]] = {}  # code segment -> {PGET_ME slot: property index}
 FORM_CLASS: dict[str, str] = {}  # form -> Form | MDIForm (from its own event table)

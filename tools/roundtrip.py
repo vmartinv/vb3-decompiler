@@ -13,8 +13,9 @@ work/ide/VBRUN300.DLL and work/ide for VBX files.
 Both builds go to work/rt/<project>/{orig,deco} (equal-length paths: the
 source path is embedded in the executable). Reported per project:
 procedures whose p-code is byte-identical, data images (RT_RCDATA 2) and
-procedure table (segment 3) equality. Form layouts are copied from the
-original source (--layout-from) until they are decoded.
+form blobs, procedure table (segment 3) equality. Form layouts are decoded
+from the executable (tools/formblob.py); --source-layout copies them from the
+original .frm files instead.
 """
 from __future__ import annotations
 
@@ -54,10 +55,13 @@ def compare(a: Path, b: Path, rt: P.Runtime, verbose: bool) -> dict:
     pa, pb = procs_code(a), procs_code(b)
     same = sum(x == y for x, y in zip(pa, pb))
     ra, rb = P.rcdata(a), P.rcdata(b)
+    fa = [ra[k] for k in sorted(ra) if ra[k][:2] == b"\xff\xcc"]
+    fb = [rb[k] for k in sorted(rb) if rb[k][:2] == b"\xff\xcc"]
     sa, sb = P.parse_ne(a), P.parse_ne(b)
     out = dict(procs=len(pa), same=same, count_ok=len(pa) == len(pb),
                image=ra.get(2) == rb.get(2), table=sa[2].data == sb[2].data,
-               identical=a.read_bytes() == b.read_bytes())
+               identical=a.read_bytes() == b.read_bytes(),
+               forms=len(fa), forms_same=sum(x == y for x, y in zip(fa, fb)))
     if verbose:
         for x, y in zip(pa, pb):
             if x != y:
@@ -65,7 +69,8 @@ def compare(a: Path, b: Path, rt: P.Runtime, verbose: bool) -> dict:
     return out
 
 
-def run(mak: Path, runtime: Path, vbx_dirs: list[Path], do_compile: bool, verbose: bool) -> dict | None:
+def run(mak: Path, runtime: Path, vbx_dirs: list[Path], do_compile: bool, verbose: bool,
+        source_layout: bool = False) -> dict | None:
     exe = find_exe(mak)
     if exe is None:
         print(f"{mak}: no compiled exe")
@@ -82,11 +87,12 @@ def run(mak: Path, runtime: Path, vbx_dirs: list[Path], do_compile: bool, verbos
                 f.unlink()
     d = Decompiler(exe, runtime, vbx_dirs)
     shutil.rmtree(deco, ignore_errors=True)
-    dmak = write_project(d, deco, mak.parent, mak.stem.lower())
+    dmak = write_project(d, deco, mak.parent if source_layout else None, mak.stem.lower())
     if do_compile:
         for m in ([orig / mak.name] if build_orig else []) + [dmak]:
-            if not compile_mak(m):
-                logs = [f for f in m.parent.iterdir() if f.suffix.lower() == ".log"]
+            ok = compile_mak(m)
+            logs = [f for f in m.parent.iterdir() if f.suffix.lower() == ".log"]  # load errors
+            if not ok or logs:
                 why = "; ".join(line for f in logs for line in f.read_text("latin-1").splitlines()[:3])
                 print(f"{mak.stem}: compile failed: {m.name}" + (f" ({why})" if why else
                       f" (see {m.with_suffix('.fail.png')})"), flush=True)
@@ -98,7 +104,7 @@ def run(mak: Path, runtime: Path, vbx_dirs: list[Path], do_compile: bool, verbos
     rt = P.Runtime(runtime)
     res = compare(a, b, rt, verbose)
     print(f"{mak.stem:10s} procs {res['same']}/{res['procs']}" + ("" if res["count_ok"] else " (count differs)")
-          + f"  image {'=' if res['image'] else '≠'}  table {'=' if res['table'] else '≠'}"
+          + f"  forms {res['forms_same']}/{res['forms']}  image {'=' if res['image'] else '≠'}  table {'=' if res['table'] else '≠'}"
           + ("  EXE IDENTICAL" if res["identical"] else ""), flush=True)
     return res
 
@@ -110,13 +116,15 @@ def main():
     ap.add_argument("--vbx-dir", type=Path, action="append", default=[])
     ap.add_argument("--no-compile", action="store_true", help="compare existing builds only")
     ap.add_argument("-v", action="store_true")
+    ap.add_argument("--source-layout", action="store_true",
+                    help="copy form descriptions from the original .frm files instead of decoding them")
     args = ap.parse_args()
     args.vbx_dir = args.vbx_dir or [REPO / "work/ide"]
     args.mak = args.mak or sorted((m for m in (REPO / "work/root/vb/samples").rglob("*")
                                    if m.suffix.lower() == ".mak" and find_exe(m)), key=lambda m: m.stem.lower())
     tot = [0, 0]
     for mak in args.mak:
-        r = run(mak, args.runtime, args.vbx_dir, not args.no_compile, args.v)
+        r = run(mak, args.runtime, args.vbx_dir, not args.no_compile, args.v, args.source_layout)
         if r:
             tot[0] += r["same"]
             tot[1] += r["procs"]

@@ -128,10 +128,11 @@ python3 tools/corpus.py examples work/corpus --runtime VBRUN300.DLL --exe some.e
 
 ## Status
 
-- Resources: form headers, captions and pictures decoded.
+- Resources: form layouts decoded to `.frm` text (`formblob.py`);
+  recompiled form resources are byte-identical on all samples.
 - P-code: fully decoded and named on the VB3 samples; statements lift
-  back to BASIC; `decompile.py` rebuilds compilable source (form layouts
-  still come from the original). See `OPCODES.md` → Next steps.
+  back to BASIC; `decompile.py` rebuilds compilable source. See
+  `OPCODES.md` → Next steps.
 
 ## License
 

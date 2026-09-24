@@ -295,6 +295,4 @@ still copied from the original source).
   vary one name at a time, `work/tests/rv_*`), then pad/shrink synthetic
   names per module (locals and labels are module-private; reusing short
   local names across procedures shrinks the total).
-- Form layouts (Begin Form ... End) from the form resources; the
-  round-trip still copies them from the original source.
 - DefType tables beyond `DefInt A-Z` (only form seen in the samples).
