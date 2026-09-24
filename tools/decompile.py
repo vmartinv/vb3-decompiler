@@ -951,8 +951,17 @@ class Decompiler:
             fsize, prev = {}, -22
             for x, o in negs:
                 fsize[x], prev = prev - o, o
-            x = mine[0]
+            # locals only: from the first local (negative BP offset or String number) on
+            frame_known = sorted(x for x in known if x in vars_ and vars_[x].scope in ("LOC", "REF")
+                                 and (self.value(base, x) < 0 or self.value(base, x) % 2 == 1)) or [mine[0]]
+            hi = min(hi, frame_known[-1])  # interior gaps only
+            records = [r for r, (kk2, _) in m["refs"].items()] + \
+                      [x2 for x2, v2 in vars_.items() if v2.obj or v2.glob is not None]
+            x = frame_known[0]
             while x < hi:
+                if any(r - 2 <= x < r + 6 for r in records):  # inside a control/object record
+                    x += 2
+                    continue
                 if x in known:
                     x += 2
                     continue
