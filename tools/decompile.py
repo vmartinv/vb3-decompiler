@@ -13,7 +13,7 @@ Recovery rules (see ../OPCODES.md, "Source recovery"):
   - variables, parameters, return values and controls share one slot
     numbering per module, assigned in source text order; a local's or
     parameter's slot holds its BP offset (the word 2 bytes past the slot):
-    > 0 parameter, < 0 local (sizes from the gaps), 1 String;
+    even >= 6 parameter, < 0 local (sizes from the gaps), odd String local;
   - Functions get the first slots (their record offsets), then the module
     declarations, then each procedure in text order;
   - code layout is the procedures sorted by name (case-insensitive), so
@@ -63,6 +63,7 @@ class Var:
     stored: bool = False
     udt: bool = False
     udt_type: int | None = None  # Type of an array's elements
+    obj: str | None = None  # object variable's class (As Control, As frmX, ...)
 
     def type(self) -> str:
         if not self.votes:
@@ -179,6 +180,19 @@ def stmt_column(rt: P.Runtime, op: int) -> int | None:
     return None
 
 
+def lt_hint(nxt: str) -> str:
+    """Long or String for a shared 4-byte load, from the handler consuming it."""
+    if nxt.startswith("CVT."):
+        src = nxt[4:].split(">")[0]
+        return src if src in ("L", "T") else ""
+    if nxt in ("ARG_STR", "CONCAT"):
+        return "T"
+    parts = nxt.split(".")
+    if len(parts) == 2 and parts[0] not in ("LOAD", "STORE", "ALOAD", "ASTORE", "ADDR_LOC") and parts[1] in ("L", "T"):
+        return parts[1]  # ADD.T, EQ.L, ...
+    return ""
+
+
 class Decompiler:
     def __init__(self, exe: Path, runtime: Path, vbx_dirs: list[Path]):
         self.rt = rt = P.Runtime(runtime)
@@ -224,6 +238,8 @@ class Decompiler:
         mods = [dict(kind="bas", image=c, form=None, seg=None, start=0x06) for c in lay["modules"]]
         mods += [dict(kind="frm", image=c, form=self.forms[k][0], seg=None, start=0x1A, ctl=cl)
                  for k, (c, cl) in enumerate(lay["forms"])]
+        for m in mods:  # declarations record: word before the image + 4 (+18 flags: 0x40 Option Explicit)
+            m["explicit"] = bool(word(self.table, word(self.image, m["image"] - 2) + 4 + 18) & 0x40)
         for m in mods:  # Function/Declare slots: record offsets (sorted by name)
             m["funcs"], s = [], m["start"]
             while self.is_record(self.value(m["image"], s, False)):
@@ -282,6 +298,15 @@ class Decompiler:
                     if td:
                         udt[last_udt] = td.g
                     last_udt = None
+                if n == "OBJVAR" and i.operand:  # object variable: record `kind, BP offset / 0`
+                    slot = struct.unpack_from("<H", i.operand, len(i.operand) - 2)[0]
+                    bp = self.value(base, slot)
+                    if bp != 0:  # parameter or local (module-level ones are declarations)
+                        v = vars_.setdefault(slot, Var(slot, "LOC"))
+                        v.obj = self.sym.objvar_types.get(seg, {}).get(slot) or "Control"
+                        if k not in v.procs:
+                            v.procs.append(k)
+                    continue
                 acc = var_access(n or "")
                 if not acc or not i.operand:
                     continue
@@ -305,8 +330,7 @@ class Decompiler:
                     t = TYPE_OF_SUFFIX[sfx]
                 elif t == "L/T":
                     nxt = NAMES.get(info.insns[j + 1].op, "") if j + 1 < len(info.insns) else ""
-                    t = "T" if (".T" in nxt or "T>" in nxt or nxt in ("ARG_STR", "CONCAT")) else \
-                        "L" if (".L" in nxt or "L>" in nxt) else ""
+                    t = lt_hint(nxt)
                 if t in SUFFIX:
                     v.votes[t] = v.votes.get(t, 0) + 1
 
@@ -353,7 +377,8 @@ class Decompiler:
             for s, v in m["vars"].items():
                 if v.scope == "GLB":
                     g = self.value(m["image"], s, False)
-                    u = uses.setdefault(g, dict(votes={}, stored=False, array=False))
+                    u = uses.setdefault(g, dict(votes={}, stored=False, array=False, mods=set()))
+                    u["mods"].add(id(m))
                     for t, c in v.votes.items():
                         u["votes"][t] = u["votes"].get(t, 0) + c
                     u["stored"] |= v.stored
@@ -441,13 +466,16 @@ class Decompiler:
                 for a, b in gl.type_extent:
                     if g < a < nxt:
                         nxt = a
-                u = uses.get(g, dict(votes={}, stored=False, array=False))
+                u = uses.get(g, dict(votes={}, stored=False, array=False, mods=set()))
                 size = nxt - g
                 t = max(u["votes"], key=u["votes"].get) if u["votes"] else \
                     {2: "I", 4: "L", 8: "D"}.get(size, "V")
                 name = f"G{g:X}"
                 raw = gl.raw(g, 8)
-                lit = const_literal(t, raw) if not u["stored"] and not u["array"] and any(raw[:MOD_SIZE[t]]) else None
+                # a constant: never assigned, and other modules don't read it as a global
+                # (they read a copy of a constant); zero values included
+                lit = const_literal(t, raw) if not u["stored"] and not u["array"] and t in "ILSDC" \
+                    and (any(raw[:MOD_SIZE[t]]) or not (u["mods"] - {id(m)})) else None
                 if u.get("udt") in gl.types:
                     t, lit = gl.types[u["udt"]].name, None
                 m["items"][k] = ("global", it[1], lit, g, t, name, u["array"])
@@ -463,10 +491,10 @@ class Decompiler:
             owner = owner or next((m for m in bas if not m["items"]), bas[0])
             owner.setdefault("types", []).append(td)
 
-    def inline_const(self, base: int, slot: int, t: str, room: int) -> str | None:
+    def inline_const(self, base: int, slot: int, t: str, room: int, zero: bool = False) -> str | None:
         n = MOD_SIZE.get(t, 0)
         raw = self.image[base + slot + 2:base + slot + 2 + n]
-        return const_literal(t, raw) if n and n <= room and any(raw) else None
+        return const_literal(t, raw) if n and n <= room and (zero or any(raw)) else None
 
     def declare_lines(self, m: dict) -> list[str]:
         out = []
@@ -589,11 +617,20 @@ class Decompiler:
         for s, v in vars_.items():
             if s in names:
                 continue
-            lit = self.inline_const(m["image"], s, v.type(), 16) if v.scope == "MOD" and s > m["first_owned"] \
-                and not v.stored and not v.array else None
-            if lit and (v.type(), lit) in gconst and m["kind"] == "frm" or lit and len(v.procs) > 1:
+            lit, gname = None, None
+            if v.scope == "MOD" and s > m["first_owned"] and not v.stored and not v.array:
+                for t in ([v.type()] if v.votes else []) + ["L", "I"]:  # untyped: shared Long/String handler
+                    lit = self.inline_const(m["image"], s, t, 16, zero=True)
+                    if lit and (t, lit) in gconst:
+                        gname = gconst[(t, lit)]
+                        break
+                if not gname:
+                    lit = self.inline_const(m["image"], s, v.type(), 16)
+            if gname and (m["kind"] == "frm" or len(v.procs) > 1):
                 # a Global Const used here: a slot with a copy of its value, at first use
-                names[s] = gconst.get((v.type(), lit), f"K{s:X}")
+                names[s] = gname
+            elif lit and len(v.procs) > 1:
+                names[s] = f"K{s:X}"
             elif lit:
                 names[s] = f"K{s:X}"  # Const inside a procedure
             elif v.scope == "GLB":
@@ -609,13 +646,34 @@ class Decompiler:
                 info.name, info.event = ev, True
         self.fit_names(m)
         base = m["image"]
+        owned_all = {s for s, v in vars_.items() if v.scope in ("LOC", "REF")} | {r - 2 for r in refs}
+        is_param = lambda s: self.value(base, s) >= 6 and self.value(base, s) % 2 == 0  # noqa: E731
         for k, info in enumerate(infos):
             mine = sorted(s for s, v in vars_.items() if v.procs and v.procs[0] == k and v.scope in ("LOC", "REF"))
-            if info.function and mine:
-                info.ret_slot = mine[0]
-                names[mine[0]] = info.name
-                mine = mine[1:]
-            info.params = [s for s in mine if self.value(base, s) > 1]
+            # parameters: even BP offsets >= 6 (String locals are numbered 1, 3, ...),
+            # consecutive after the return value; unused ones are found by walking the slots
+            ps = [s for s in mine if is_param(s)]
+            if ps or info.argwords:
+                lo = min(ps) if ps else (min(mine) if mine else None)
+                if lo is not None:
+                    while lo - 2 >= m["first_owned"] and lo - 2 not in owned_all and is_param(lo - 2):
+                        lo -= 2
+                    hi = max(ps) if ps else lo - 2
+                    s2 = hi + 2
+                    while s2 not in owned_all and is_param(s2) and self.value(base, s2) < self.value(base, hi):
+                        hi, s2 = s2, s2 + 2
+                    ps = [x for x in range(lo, hi + 2, 2) if is_param(x)]
+                    for x in ps:
+                        vars_.setdefault(x, Var(x, "REF", procs=[k]))
+                        names.setdefault(x, f"p{x:X}")
+            if info.function:
+                first = min(ps) if ps else (mine[0] if mine else None)
+                cand = [x for x in mine if x < first] if first is not None and ps else mine[:1]
+                r = (first - 2) if ps and not cand else (cand[0] if cand else None)
+                if r is not None:
+                    info.ret_slot = r
+                    names[r] = info.name
+            info.params = ps
         for info in infos:
             self.proc_name[info.proc.record] = info.name
         for _, r in m["funcs"]:
@@ -664,8 +722,10 @@ class Decompiler:
                 his += [fixed[x] for x in slot_order[j + 1:] if x in fixed]
             return max(los, key=str.lower, default=""), min(his, key=str.lower, default=None)
 
+        taken = {n.lower() for n in self.proc_name.values()} | {x.name.lower() for x in infos if x.name}
+
         def fits(c: str, lo: str, hi: str | None) -> bool:
-            return c.lower() > lo.lower() and (hi is None or c.lower() < hi.lower())
+            return c.lower() > lo.lower() and (hi is None or c.lower() < hi.lower()) and c.lower() not in taken
 
         k = 0
         while k < len(infos):
@@ -676,7 +736,7 @@ class Decompiler:
             while run[-1] + 1 < len(infos) and not infos[run[-1] + 1].name:
                 run.append(run[-1] + 1)
             base = next((x.name for x in reversed(infos[:k]) if x.name), "")
-            for prefix in ("Proc", "Sub", f"{base}_" if base else "A", f"{base}X"):
+            for prefix in ("Proc", "Sub", "Proc_", "Sub_", "ProcX", f"{base}_" if base else "A", f"{base}X"):
                 names = [f"{prefix}{n + 1:02d}" for n in range(len(run))]
                 ok = True
                 for kk, c in zip(run, names):
@@ -700,6 +760,7 @@ class Decompiler:
                         infos[kk].name = f"Proc{infos[kk].proc.record:X}"
             for kk in run:
                 self.proc_name[infos[kk].proc.record] = infos[kk].name
+                taken.add(infos[kk].name.lower())
             k = run[-1] + 1
 
     def emit_proc(self, info: ProcInfo, form: str | None, vars_: dict, names: dict, base: int | None) -> list[str]:
@@ -718,10 +779,20 @@ class Decompiler:
                 names[s] = d.split()[0]
             params = decl
         else:
+            # sizes from the BP offsets: ByRef 4 (far pointer), ByVal by type
+            offs = sorted(self.value(base, s) for s in info.params)
+            top = 6 + 2 * info.argwords
+            psize = {o: (offs[j + 1] if j + 1 < len(offs) else top) - o for j, o in enumerate(offs)}
             for s in info.params:
                 v = vars_[s]
-                t = v.type()
-                byval = v.scope == "LOC" and t != "T"
+                if v.obj:
+                    params.append(f"{names[s]} As {v.obj}")
+                    continue
+                size = psize.get(self.value(base, s), 4)
+                t = v.type() if v.votes else {2: "I", 8: "D", 16: "V"}.get(size, "V")
+                byval = size != 4 or (v.scope == "LOC" and t in "LS" and t != "")
+                if size == 2:
+                    t = "I"
                 pn = names[s]
                 params.append(("ByVal " if byval else "") + pn + ("()" if v.array else "") + f" As {TYPE_NAME[t]}")
         head = f"{kind} {info.name} ({', '.join(params)})"
@@ -763,14 +834,14 @@ class Decompiler:
         objtypes = self.sym.objvar_types.get(m["seg"], {}) if m["seg"] else {}
         for s in frame:
             v = vars_[s]
-            if objtypes.get(s):
-                t = objtypes[s]
+            if objtypes.get(s) or v.obj:
+                t = objtypes.get(s) or v.obj
                 decl = ("()" if v.array else "") + (f" As New {t}" if t in self.sym.tables else f" As {t}")
             elif v.udt:
                 td = self.gimg.by_size(size.get(s, 0))
                 decl = f"As {td.name}" if td else "As Variant"
             else:
-                t = v.type() if v.votes else ("T" if self.value(base, s) == 1 else
+                t = v.type() if v.votes else ("T" if self.value(base, s) % 2 == 1 else
                                               {2: "I", 4: "L", 8: "D"}.get(size.get(s), "V"))
                 decl = ("()" if v.array else "") + f" As {TYPE_NAME[t]}"
             items.append((s, "dim", names[s], decl, v))
@@ -778,7 +849,7 @@ class Decompiler:
             if v.scope == "MOD" and v.procs and v.procs[0] == k and s > m["first_owned"] \
                     and (v.procs == [k] or not names[s].startswith(("s", "K"))):
                 lit = None if v.stored or v.array else self.inline_const(base, s, v.type(), 16)
-                if lit and not names[s].startswith("K"):
+                if not names[s].startswith(("K", "s")):
                     items.append((s, "fixed", names[s], None, v))  # a Global Const's copy
                 elif lit:  # a Const inside the procedure: stored inline like a module one
                     items.append((s, "const", names[s], f"= {lit}", v))
@@ -816,7 +887,7 @@ class Decompiler:
             # reference), the variable was declared implicitly there
             pos = 0 if last == (-1, 0) else (last[0] if last[1] < 0 else last[0] + 1)
             if key is not None and key[0] < pos and kind == "dim" and not v.array and not v.udt \
-                    and key[:2] > last:
+                    and key[:2] > last and not m["explicit"]:
                 last = key[:2]
                 continue
             if key is not None and key[0] < pos:

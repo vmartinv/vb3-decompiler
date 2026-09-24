@@ -237,8 +237,8 @@ per procedure (`tools/pcode_diff.py` shows instruction diffs).
   length word before; FIELD_* operands are field record offsets); globals
   follow in declaration order with constant values inline; the global
   object table (`0x80NN, 0, 0`) ends it. Type/field names aren't stored.
-- **Locals and parameters**: a slot's value is its BP offset (> 0
-  parameter, < 0 local, 1 String); frame sizes give types of unused ones.
+- **Locals and parameters**: a slot's value is its BP offset (even
+  >= 6 parameter, < 0 local; odd = String local number); frame sizes give types of unused ones.
   `Const` inside a procedure is inline like a module one.
 - **Names not stored**: general Sub/Function (code layout = procedures
   sorted by name, case-insensitive; Function/Declare slots sorted too, so
