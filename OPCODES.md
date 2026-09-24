@@ -224,8 +224,9 @@ still copied from the original source).
   each .bas image, then each form image (16 zero bytes, form record at
   0x16) and its control list. Chunks are `u16 len, u16, u16 0x1E`; the word
   before a module's chunk + 4 is its declarations record (+18 flags: 0x40
-  Option Explicit, 0x800 Option Compare Text; +44 DefType table or 0xFFFF;
-  +50 line count).
+  Option Explicit, 0x800 Option Compare Text, 0x8000 the text contains a
+  tab; +30 name-table size, +34 the same in 16-byte units; +44 DefType
+  table or 0xFFFF; +50 line count).
 - **Slots**: one numbering per module, in compile order (source text
   order, but an assignment's target after its expression): Functions and
   Declares first (record offsets, sorted by name), the declarations
@@ -262,14 +263,38 @@ still copied from the original source).
   parentheses; literal radix (`3831`/`388A` hex, `3834`/`388D` decimal);
   a type suffix at a use (`b%`) selects another handler entry (ID `| type
   << 10`); `0768` `ReDim a$(...)`; `Left(` vs `Left$(` by `CVT.Ttmp>V`.
+- **Name-table size** (+30): 349 + Σ(len + 4) over the module's unique
+  identifiers (case-insensitive), computable from the source (all 61
+  sample modules fit). Counted: variables, constants, parameters,
+  procedure names (events included), labels (numeric too), properties,
+  referenced controls/forms, `Screen`/`App`/`Printer`/`Clipboard`,
+  object type names (`As Form`, `As Control`, `As CommandButton`),
+  `Compare` (Option Compare), `BF` (and `B`, which also adds `BF`), Type
+  and field names, Declare names (not the Alias). Not counted: keywords,
+  builtin functions/statements (Rnd, QBColor, Dir, Err, Timer, ...,
+  `Left`/`Width` only as functions/statements), methods (Show, Move,
+  Line, Print, EndDoc, SetText, FindFirst, MoveNext, ...), `Me`,
+  `Debug`, type suffixes, intrinsic types. Identifiers are at most 40
+  characters. The project record at table offset 12 (+30) sums global
+  names similarly.
+- **Name-dependent offsets**: procedure record +4, form declarations
+  record +0 and another project field also change when *other* names
+  change length (by −1/−2 for lengthened 2-/3-char names, +len for the
+  procedure's own name, +13/+16 splits for a Declare whose name equals
+  its alias), so they're not plain append offsets; they differ from the
+  original in 392/483 procedure records. Unused `Const`s are not neutral
+  padding: each changes declarations-record +6/+10/+14/+36.
 - **Event signatures** from EVENTINFO (1 Integer, 3 Single, 6 String,
   8 Control, + Index); **Declare parameters** from call-site conversions.
 
 ## Next steps
 
-- Whole-exe identity: data images still differ in 7 samples and every
-  module's declarations record (name-table size +30/+34: pad synthetic
-  names to the original total; one flag bit 0x8000 unexplained).
+- Whole-exe identity: data images still differ in 6 samples (names
+  of Types/fields, symbol-hash order); tables differ by names only.
+  Decode the name-dependent record offsets (procedure record +4 etc.;
+  vary one name at a time, `work/tests/rv_*`), then pad/shrink synthetic
+  names per module (locals and labels are module-private; reusing short
+  local names across procedures shrinks the total).
 - Form layouts (Begin Form ... End) from the form resources; the
   round-trip still copies them from the original source.
 - DefType tables beyond `DefInt A-Z` (only form seen in the samples).

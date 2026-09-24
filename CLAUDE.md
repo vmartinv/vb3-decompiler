@@ -12,6 +12,10 @@ Reusable VB3 reverse-engineering tools + findings. Companion to
 - Never commit VB3, `VBRUN300.DLL`, analyzed executables or anything
   extracted from them (see `.gitignore`). Findings about them (offsets,
   opcode meanings) are fine.
+- Tokens are expensive, wall-clock time is not. Prefer controlled
+  experiments (batch many cases into one generated project, compile, read
+  the result) over long manual analysis; runs may take as long as needed.
+  Keep tool output small (filter/summarize before printing).
 
 ## Key files
 

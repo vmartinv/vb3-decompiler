@@ -245,6 +245,7 @@ class Decompiler:
         for m in mods:  # declarations record: word before the image + 4 (+18 flags: 0x40 Option Explicit;
             rec = word(self.image, m["image"] - 2) + 4  # +44: DefType table, 0xFFFF if none)
             m["explicit"] = bool(word(self.table, rec + 18) & 0x40)
+            m["tabs"] = bool(word(self.table, rec + 18) & 0x8000)  # the code contains tab characters
             m["defint"] = word(self.table, rec + 44) != 0xFFFF  # the samples' only DefType: DefInt A-Z
         for m in mods:  # Function/Declare slots: record offsets (sorted by name)
             m["funcs"], s = [], m["start"]
@@ -682,7 +683,7 @@ class Decompiler:
             out += types[g].lines(gtypes)
         out = decl_lines + out
         # declarations record (the word before the module's image + 4):
-        # +18 flags (0x40 Option Explicit, 0x800 Option Compare Text), +50 line count
+        # +18 flags (0x40 Option Explicit, 0x800 Option Compare Text, 0x8000 tabs), +50 line count
         rec = word(self.image, m["image"] - 2) + 4
         flags, count = word(self.table, rec + 18), word(self.table, rec + 50)
         if flags & 0x0800:
@@ -695,6 +696,9 @@ class Decompiler:
         self.cur_mod = m
         for info in m["infos"]:
             out += self.emit_proc(info, m["form"], m["vars"], m["names"], m["image"])
+        if m["tabs"] and out and not any("\t" in s for s in out):
+            i = out.index("'") if "'" in out else 0  # flag 0x8000 needs a tab somewhere
+            out[i] = out[i] + ("\t" if out[i] == "'" else "\t'")
         return out
 
     def run(self) -> list[dict]:
@@ -949,7 +953,7 @@ class Decompiler:
                 break
             if info.function:
                 text = re.sub(r"\bExit Sub\b", "Exit Function", text)
-            lines.append(" " * col + text)
+            lines.append(("\t" * (col // 8) + " " * (col % 8) if self.cur_mod.get("tabs") else " " * col) + text)
         lines += [f"End {kind}", ""]
         return lines
 
