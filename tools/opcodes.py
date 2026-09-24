@@ -158,6 +158,11 @@ NAMES |= _row("ALOAD.GLB", "05f8 006a 0129 018a 0307 02ab 0425")
 NAMES |= _row("ASTORE.GLB", "064a 00cc 01e9 024a 03c4 0366 0481")
 NAMES |= _row("ALOAD.MOD", "0609 007e 013d 019e 031b 02bf 0439")
 NAMES |= _row("ASTORE.MOD", "065b 00e0 01fd 025e 03d8 037a 0495")
+# local arrays and array parameters: the two handlers before each GLB one
+NAMES |= _row("ALOAD.REF", "05d2 003f 00fe 015e 02db 027f 03f9")
+NAMES |= _row("ALOAD.LOC", "05e6 0055 0114 0175 02f2 0296 0410")
+NAMES |= _row("ASTORE.REF", "0624 00a1 01bd 021e 0398 033a 0455")
+NAMES |= _row("ASTORE.LOC", "0638 00b7 01d4 0235 03af 0351 046c")
 # 4-byte loads are shared by Long and String (a far pointer): note both.
 for _h in (0x2CC4, 0x2B6C, 0x2AA3):
     NAMES[_h] = NAMES[_h][:-1] + "L/T"

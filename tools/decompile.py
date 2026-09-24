@@ -1011,6 +1011,9 @@ class Decompiler:
             if v.scope == "MOD" and v.procs and v.procs[0] == k and x >= m["first_owned"]:
                 n = self.array_dims(base, x)[1] if v.array else MOD_SIZE.get(v.copy_type or v.type(), 2)
                 known.update(range(x, x + n, 2))
+        for x, v in vars_.items():  # a local array takes 6 bytes of slots
+            if v.array and v.scope == "LOC" and v.procs and v.procs[0] == k:
+                known.update((x + 2, x + 4))
         for x in skip:  # Variant return value / parameters take 4 bytes of slots too
             v = vars_.get(x)
             t = info.ret if x == info.ret_slot else (v.type() if v and v.votes else "V")
@@ -1107,10 +1110,11 @@ class Decompiler:
                         items.append((x, "dim", f"f{x:X}", f" As {vt}", Var(x, "LOC")))
                         x += step
                     continue
-                if o % 2 == 1 and 0 < o < 64:  # a String local
+                interior = x < frame_known[-1]  # nonzero values are locals only between known ones
+                if o % 2 == 1 and 0 < o < 64 and interior:  # a String local
                     items.append((x, "dim", f"f{x:X}", " As String", Var(x, "LOC")))
                     x += 2
-                elif o < 0:
+                elif o < 0 and interior:
                     t = {2: "I", 4: "L", 8: "D", 16: "V"}.get(fsize.get(x), "I")
                     items.append((x, "dim", f"f{x:X}", f" As {TYPE_NAME[t]}", Var(x, "LOC")))
                     x += 4 if t == "V" else 2
