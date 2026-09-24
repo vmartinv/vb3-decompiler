@@ -125,7 +125,7 @@ NAMES: dict[int, str] = {
     0x52AF: "Timer", 0x1A78: "Now", 0x750A: "InStr", 0x75BC: "Mid$",
     0x537B: "ChDir", 0x5381: "ChDrive", 0x2A73: "Cls", 0x742E: "Beep",
     0x37DF: "ARG_MISSING", 0x3844: "ARG_MISSING", 0x52F4: "MsgBox", 0x5308: "MsgBox.fn",
-    0x5291: "Time", 0x52D8: "InputBox", 0x1480: "IsDate", 0x148A: "CVDate", 0x7766: "Format$",
+    0x5291: "Time", 0x52D8: "InputBox$", 0x1480: "IsDate", 0x148A: "CVDate", 0x7766: "Format$",
     0x10A0: "CStr", 0x5340: "DoEvents", 0x1A6A: "Minute", 0x28DA: "RGB", 0x75F5: "Trim$",
     0x7594: "Len.T",
     # --- file I/O ------------------------------------------------------
@@ -182,7 +182,7 @@ METHODS = {
 # `lift.py infer` (search over the aligned corpus) and kept only where
 # they make the corpus lines lift exactly.
 SEM: dict[int, tuple[str, str, int]] = {
-    0x53CC: ("fn", "Dir", 1), 0x53C6: ("fn", "Dir", 0), 0x5314: ("fn", "DoEvents", 0),
+    0x53CC: ("fn", "Dir$", 1), 0x53C6: ("fn", "Dir$", 0), 0x5314: ("fn", "DoEvents", 0),
     0x75EF: ("fn", "Right$", 2), 0x3613: ("fn", "FreeFile", 0), 0x75B4: ("fn", "Mid$", 2),
     0x7690: ("fn", "String$", 2), 0x7684: ("fn", "String", 2), 0x3958: ("fn", "Abs", 1),
     0x7570: ("fn", "Len", 1), 0x7610: ("fn", "Str$", 1), 0x4841: ("fn", "IsNumeric", 1),

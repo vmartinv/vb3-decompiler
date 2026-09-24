@@ -166,20 +166,21 @@ def pool_name(image: bytes, pool: int, off: int) -> str:
     return image[p + 4:p + 4 + image[p + 3]].decode("latin-1")
 
 
-STMT_GROUPS = [0x494B, 0x4935, 0x491F, 0x4906, 0x48F0, 0x48D7, 0x48C1]  # columns 0, 4, 8, ...
+# Statement markers encode the line's indentation (the IDE regenerates the
+# text from p-code): entry point -> column, from compiling lines at columns
+# 0..40; 48AF takes the column as a u16 operand (25 and up); 4958 is a
+# statement after `:` on the same line.
+STMT_COLUMN = {op: c for c, op in enumerate([
+    0x494B, 0x4948, 0x4945, 0x4942, 0x4935, 0x4932, 0x492F, 0x492C, 0x491F, 0x491C, 0x4919, 0x4916,
+    0x4906, 0x4903, 0x4900, 0x48FD, 0x48F0, 0x48EA, 0x48E7, 0x48E4, 0x48D7, 0x48D4, 0x48D1, 0x48CE,
+    0x48ED])}
+STMT_WIDE, STMT_SAME_LINE = 0x48AF, 0x4958
 
 
-def stmt_column(rt: P.Runtime, op: int) -> int | None:
-    """A statement marker's entry point encodes the line's indentation
-    (the IDE regenerates source text from p-code): the countdown entries
-    above are columns 0, 4, 8, ...; the `mov ax, NN00` entries just before
-    each are columns (NN >> 2) + 1."""
-    if op in STMT_GROUPS:
-        return 4 * STMT_GROUPS.index(op)
-    c = rt.code
-    if c[op] == 0xB8 and c[op + 1] == 0:
-        return (c[op + 2] >> 2) + 1
-    return None
+def stmt_column(rt: P.Runtime, op: int, operand: bytes = b"") -> int | None:
+    if op == STMT_WIDE and len(operand) >= 2:
+        return struct.unpack_from("<H", operand)[0]
+    return STMT_COLUMN.get(op)
 
 
 def lt_hint(nxt: str) -> str:
@@ -357,13 +358,15 @@ class Decompiler:
         # other slots procedures allocate at first use: calls to functions of other
         # modules, object variables, and (in forms) references to globals
         func_slots = {x for x, _ in m["funcs"]}
-        for info in infos:
+        call_slots: dict[int, int] = {}  # slot -> first procedure (calls into other modules)
+        for k, info in enumerate(infos):
             for i in info.insns:
                 n = plain_handler(self.rt, i.op)[0] or ""  # suffixed accesses resolve to their plain handler
                 if n == "CALL_FN" and len(i.operand) >= 4:
                     x = struct.unpack_from("<H", i.operand, 2)[0]
                     if x not in func_slots:
                         owned.add(x)
+                        call_slots.setdefault(x, k)
                 elif m["kind"] == "frm" and i.operand and (n in ("OBJVAR", "FORM", "CONTROL", "CTLARRAY")
                                                           or (not n and P.is_objarr(self.rt, i))):
                     # records start at the operand; a form declares no global objects
@@ -374,7 +377,7 @@ class Decompiler:
         first_owned = min(owned | {r - 2 for r in refs} | {s for s, v in vars_.items() if v.scope == "GLB"
                                                and s >= m["decl_start"] and not self.is_global_slot(base, s)},
                           default=word(self.image, base) - 1 if not infos else 1 << 16)
-        m.update(infos=infos, vars=vars_, refs=refs, udt=udt, first_owned=first_owned)
+        m.update(infos=infos, vars=vars_, refs=refs, udt=udt, first_owned=first_owned, call_slots=call_slots)
 
     def is_global_slot(self, base: int, slot: int) -> bool:
         g = self.value(base, slot, False)
@@ -552,6 +555,7 @@ class Decompiler:
         if m is self.decl_home:  # Declare Subs have no slot: found from their calls
             recs += sorted(r for r in self.call_types if r not in self.by_record and r not in self.slotted
                            and self.is_declare(r))
+        recs.sort()  # records are allocated in order of first mention in the text
         for r in recs:
             if r in self.by_record:
                 continue
@@ -954,7 +958,10 @@ class Decompiler:
             # locals only: from the first local (negative BP offset or String number) on
             frame_known = sorted(x for x in known if x in vars_ and vars_[x].scope in ("LOC", "REF")
                                  and (self.value(base, x) < 0 or self.value(base, x) % 2 == 1)) or [mine[0]]
-            hi = min(hi, frame_known[-1])  # interior gaps only
+            owned_k = [x for x, v in vars_.items() if v.procs and v.procs[0] == k] + \
+                      [r - 2 for r, (kk2, _) in m["refs"].items() if kk2 == k] + \
+                      [x for x, kk2 in m.get("call_slots", {}).items() if kk2 == k]
+            hi = min(hi, max(owned_k + [frame_known[-1]]))  # up to the procedure's last slot
             records = [r for r, (kk2, _) in m["refs"].items()] + \
                       [x2 for x2, v2 in vars_.items() if v2.obj or v2.glob is not None]
             x = frame_known[0]
@@ -1016,25 +1023,37 @@ class Decompiler:
         """(indentation column, lifted text) per statement (marker to the
         next marker), with label lines."""
         out, cur, curn = [], [], []
-        col = [0]
+        col, marked = [0], [False]
 
         def flush():
             if cur and not all(NAMES.get(op, "") in ("RET", "TRAP", "OBJ_FREE") for op, _ in cur):
-                out.append((col[0], lift(cur, self.ids, names=curn, calls=calls)))
+                text = lift(cur, self.ids, names=curn, calls=calls)
+                if col[0] == -1 and out:
+                    out[-1] = (out[-1][0], out[-1][1] + ": " + text)
+                else:
+                    out.append((max(col[0], 0), text))
             cur.clear()
             curn.clear()
 
         for i, note in zip(info.insns, info.notes):
             if self.rt.is_stmt(i.op):
                 flush()
-                c = stmt_column(self.rt, i.op)
-                col[0] = 4 if c is None else c
+                if i.op == STMT_SAME_LINE:
+                    col[0] = -1  # joins the previous line with `:`
+                else:
+                    c = stmt_column(self.rt, i.op, i.operand)
+                    col[0] = 4 if c is None else c
+                marked[0] = True
                 continue
             if i.op == LABEL:
+                if not cur and marked[0]:  # an empty statement: a blank line kept before a label
+                    out.append((0, ""))
                 flush()
                 (num,) = struct.unpack_from("<I", i.operand)
                 out.append((0, f"L{i.pc:x}:" if num == 0xFFFFFFFF else f"{num}"))
+                marked[0] = False
                 continue
+            marked[0] = False
             cur.append((i.op, i.operand))
             curn.append(self.name_for(i, note, names))
         flush()
@@ -1049,8 +1068,8 @@ class Decompiler:
         n = NAMES.get(i.op) or ""
         slot = struct.unpack_from("<H", i.operand, len(i.operand) - 2)[0] if len(i.operand) >= 2 else None
         if n in ("PGET", "PSET", "PGET_IDX", "PSET_IDX"):
-            if "!" in note:
-                return ""  # default property of a control
+            if "!" in note:  # operand 0x80nn: control nn of the form object, default property
+                return note.rpartition("!")[2]
             return note.rpartition(".")[2] or None
         if n in ("PGET_ME", "PSET_ME"):
             return note.rpartition(".")[2] if note else None

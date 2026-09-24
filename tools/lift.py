@@ -37,7 +37,7 @@ FUNCS = {  # builtin -> arity
     "Rnd": 0, "Timer": 0, "Now": 0, "Err": 0, "Error$": 0,
     "Int": 1, "Fix": 1, "Abs": 1, "CInt": 1, "Str$": 1, "Val": 1, "Len": 1, "Chr$": 1, "Asc": 1,
     "UCase$": 1, "QBColor": 1, "IsDate": 1, "CVDate": 1, "CStr": 1, "Minute": 1, "Time": 0,
-    "Left$": 2, "Shell": 2, "Format$": 2, "InStr": 2, "Mid$": 3, "InputBox": 3,
+    "Left$": 2, "Shell": 2, "Format$": 2, "InStr": 2, "Mid$": 3, "InputBox$": 3,
     "RGB": 3, "Trim$": 1, "Format$.1": 1,
 }
 STATEMENT_FUNCS = {"MsgBox": 3, "DoEvents": 0, "Cls": 0, "Beep": 0, "ChDir": 1, "ChDrive": 1}
