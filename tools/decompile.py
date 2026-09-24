@@ -964,7 +964,7 @@ class Decompiler:
             if it[1] == "dim" and it[3].endswith("As Variant"):
                 known.add(it[0] + 2)  # a local Variant takes 4 bytes of slots
         for x, v in vars_.items():  # constants' copies / statics: inline, sized by type
-            if v.scope == "MOD" and v.procs and v.procs[0] == k:
+            if v.scope == "MOD" and v.procs and v.procs[0] == k and x >= m["first_owned"]:
                 n = MOD_SIZE.get(v.copy_type or v.type(), 2)
                 known.update(range(x, x + n, 2))
         for x in skip:  # Variant return value / parameters take 4 bytes of slots too
@@ -984,11 +984,11 @@ class Decompiler:
                 fsize[x], prev = prev - o, o
             # locals only: from the first local (negative BP offset or String number) on
             frame_known = sorted(x for x in known if x in vars_ and vars_[x].scope in ("LOC", "REF")
-                                 and (self.value(base, x) < 0 or self.value(base, x) % 2 == 1)) or [mine[0]]
+                                 and (self.value(base, x) < 0 or self.value(base, x) % 2 == 1)) or [1 << 30]
             owned_k = [x for x, v in vars_.items() if v.procs and v.procs[0] == k] + \
                       [r - 2 for r, (kk2, _) in m["refs"].items() if kk2 == k] + \
                       [x for x, kk2 in m.get("call_slots", {}).items() if kk2 == k]
-            hi = min(hi, max(owned_k + [frame_known[-1]]))  # up to the procedure's last slot
+            hi = min(hi, max(owned_k + [0]))  # up to the procedure's last slot
             records = [r for r, (kk2, _) in m["refs"].items()] + \
                       [x2 for x2, v2 in vars_.items() if v2.obj or v2.glob is not None]
             calls_here = set(m.get("call_slots", {}))  # external function slots: `0, record`
@@ -1010,17 +1010,24 @@ class Decompiler:
                         y += 2
                     prev_bp = min([self.value(base, z) for z in known if z < x and self.value(base, z) < 0] + [-22])
                     nxt_k = min((z for z in known if z >= y and self.value(base, z) < 0), default=None)
-                    nv = 0
+                    nv, extra = 0, 0
                     if nxt_k is not None:
                         v2 = vars_.get(nxt_k)
                         t2 = v2.type() if v2 is not None and v2.votes else "V"
                         fs2 = {"I": 2, "L": 4, "S": 4, "D": 8, "C": 8, "V": 16}.get(t2, 2)
-                        nv = max(0, min((prev_bp - self.value(base, nxt_k) - fs2) // 16, (y - x) // 4))
+                        extra = max(0, prev_bp - self.value(base, nxt_k) - fs2)
+                        nv = min(extra // 16, (y - x) // 4)
+                        extra -= 16 * nv
                     while x < y:
-                        vt = "Variant" if nv > 0 else "String"
+                        if nv > 0:
+                            vt, step, nv = "Variant", 4, nv - 1
+                        else:  # the rest of the frame gap: numeric; none left: String
+                            size = 8 if extra >= 8 else 4 if extra >= 4 else 2 if extra >= 2 else 0
+                            vt = {8: "Double", 4: "Long", 2: "Integer", 0: "String"}[size]
+                            extra -= size
+                            step = 2
                         items.append((x, "dim", f"f{x:X}", f" As {vt}", Var(x, "LOC")))
-                        x += 4 if nv > 0 else 2
-                        nv -= 1
+                        x += step
                     continue
                 if o % 2 == 1 and 0 < o < 64:  # a String local
                     items.append((x, "dim", f"f{x:X}", " As String", Var(x, "LOC")))
