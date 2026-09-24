@@ -1028,6 +1028,16 @@ class Decompiler:
             records = [r for r, (kk2, _) in m["refs"].items()] + \
                       [x2 for x2, v2 in vars_.items() if v2.obj or v2.glob is not None]
             calls_here = set(m.get("call_slots", {}))  # external function slots: `0, record`
+            if frame_known == [1 << 30] and owned_k:
+                # no used locals: unused ones are the zeros between the previous
+                # procedure's slots and this one's first (String fillers: no frame)
+                fo, pe = min(owned_k), self.prev_end(m, k)
+                # the procedure's own (unused) parameters come first: 2 slot bytes per
+                # ByRef parameter (4 argument bytes)
+                pe += 2 * (info.argwords // 2) + (2 if info.function else 0)
+                if pe < fo and all(self.value(base, z) == 0 for z in range(pe, fo, 2)):
+                    for z in range(pe, fo, 2):
+                        items.append((z, "dim", f"f{z:X}", " As String", Var(z, "LOC")))
             x = frame_known[0]
             # leading unused locals: zero slots from the end of the previous
             # procedure's allocations up to the first used local
@@ -1168,23 +1178,31 @@ class Decompiler:
         return spans
 
     def prev_end(self, m: dict, k: int) -> int:
-        """End of the slots allocated by the procedures before k (text order)."""
-        base, vars_, end = m["image"], m["vars"], m["first_owned"]
-        for x, v in vars_.items():
-            if v.procs and v.procs[0] < k and x >= m["first_owned"]:
-                if v.scope == "MOD":
-                    n = MOD_SIZE.get(v.copy_type or v.type(), 2)
-                else:
-                    n = 4 if (v.votes and v.type() == "V") or (x + 2 not in vars_ and
-                                                                self.value(base, x + 2, False) % 2 == 1) else 2
-                end = max(end, x + n)
-        for r, (kk, _) in m["refs"].items():
-            if kk < k:
-                end = max(end, r + (2 if word(self.image, base + r) >> 8 == 0x80 else 4))
-        for x, kk in m.get("call_slots", {}).items():
-            if kk < k:
-                end = max(end, x + 2)
-        return end
+        """End of the slots allocated by the procedures before k (text order),
+        each one's range starting with its parameters (2 slot bytes per ByRef
+        parameter, used or not) and its return value."""
+        if "ends" not in m:
+            base, vars_, ends, end = m["image"], m["vars"], [], m["first_owned"]
+            for kk, info in enumerate(m["infos"]):
+                e = end + 2 * (info.argwords // 2) + (2 if info.function else 0)
+                for x, v in vars_.items():
+                    if v.procs and v.procs[0] == kk and x >= m["first_owned"]:
+                        if v.scope == "MOD":
+                            n = MOD_SIZE.get(v.copy_type or v.type(), 2)
+                        else:
+                            n = 4 if (v.votes and v.type() == "V") or (
+                                x + 2 not in vars_ and self.value(base, x + 2, False) % 2 == 1) else 2
+                        e = max(e, x + n)
+                for r, (k2, _) in m["refs"].items():
+                    if k2 == kk:
+                        e = max(e, r + (2 if word(self.image, base + r) >> 8 == 0x80 else 4))
+                for x, k2 in m.get("call_slots", {}).items():
+                    if k2 == kk:
+                        e = max(e, x + 2)
+                ends.append(e)
+                end = e
+            m["ends"] = ends
+        return m["ends"][k - 1] if k > 0 else m["first_owned"]
 
     def statements(self, info: ProcInfo, names: dict, calls: list | None = None) -> list[tuple[int, str]]:
         """(indentation column, lifted text) per statement (marker to the
