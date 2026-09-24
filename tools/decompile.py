@@ -492,7 +492,10 @@ class Decompiler:
                     items.append(("dim", s, "As Integer", "filler"))
                 s += 2
             if all(len(it) == 4 and it[3] == "filler" for it in items):
-                items = []  # only zeros before the procedures: not declarations (compiler padding)
+                items = []  # only zeros before the procedures: not declarations
+                fv = m["vars"].get(m["first_owned"])
+                if items is not None and fv is not None and fv.scope in ("LOC", "REF"):
+                    m["first_owned"] = m["decl_start"]  # leading unused locals of the first procedure
             m["items"] = items
         # global declarations: sizes/types from the global image and the uses
         gs = sorted({it[3] for m in mods for it in m["items"] if it[0] == "global"})
@@ -577,9 +580,7 @@ class Decompiler:
         # that calls them (records follow text order), else the first .bas
         for r in sorted(r for r in self.call_types if r not in self.by_record and r not in self.slotted
                         and self.is_declare(r)):
-            homes = self.call_modules.get(r, set())
-            home = next(iter(homes)) if len(homes) == 1 else id(self.decl_home)
-            if home == id(m):
+            if self.declare_home(r) is m:
                 recs.append(r)
         recs.sort()  # records are allocated in order of first mention in the text
         for r in recs:
@@ -595,6 +596,20 @@ class Decompiler:
                 line += f" As {TYPE_NAME[RET_TYPE.get(t[r + 13], 'V')]}"
             out.append(line)
         return out
+
+    def declare_home(self, r: int) -> dict:
+        """The module a slotless Declare (a Declare Sub) is written in: records
+        are allocated in text order, module by module, so it's the module
+        whose records (procedures, slotted Declares) most closely precede it."""
+        after = []
+        for m in self.all_mods:
+            recs = [info.proc.record for info in m["infos"]] + [x for _, x in m["funcs"]]
+            if recs and min(recs) <= r <= max(recs):
+                return m  # among its module's records
+            if recs and min(recs) > r:
+                after.append((min(recs), id(m), m))
+        # declarations come first in a module's text: the next module's records follow
+        return min(after)[2] if after else self.decl_home
 
     def declare_params(self, r: int) -> list[str]:
         """DLL parameters from the argument types at call sites (arguments are
@@ -1000,6 +1015,11 @@ class Decompiler:
                       [x2 for x2, v2 in vars_.items() if v2.obj or v2.glob is not None]
             calls_here = set(m.get("call_slots", {}))  # external function slots: `0, record`
             x = frame_known[0]
+            # leading unused locals: zero slots from the end of the previous
+            # procedure's allocations up to the first used local
+            prev_end = self.prev_end(m, k)
+            if prev_end < x and all(self.value(base, z) == 0 and z not in known for z in range(prev_end, x, 2)):
+                x = prev_end
             while x < hi:
                 if any(r - 2 <= x < r + 6 for r in records) or x in calls_here:
                     x += 2  # inside a control/object record or an external function slot
@@ -1125,6 +1145,25 @@ class Decompiler:
             prev = end
         m["spans"] = spans
         return spans
+
+    def prev_end(self, m: dict, k: int) -> int:
+        """End of the slots allocated by the procedures before k (text order)."""
+        base, vars_, end = m["image"], m["vars"], m["first_owned"]
+        for x, v in vars_.items():
+            if v.procs and v.procs[0] < k and x >= m["first_owned"]:
+                if v.scope == "MOD":
+                    n = MOD_SIZE.get(v.copy_type or v.type(), 2)
+                else:
+                    n = 4 if (v.votes and v.type() == "V") or (x + 2 not in vars_ and
+                                                                self.value(base, x + 2, False) % 2 == 1) else 2
+                end = max(end, x + n)
+        for r, (kk, _) in m["refs"].items():
+            if kk < k:
+                end = max(end, r + (2 if word(self.image, base + r) >> 8 == 0x80 else 4))
+        for x, kk in m.get("call_slots", {}).items():
+            if kk < k:
+                end = max(end, x + 2)
+        return end
 
     def statements(self, info: ProcInfo, names: dict, calls: list | None = None) -> list[tuple[int, str]]:
         """(indentation column, lifted text) per statement (marker to the
