@@ -135,6 +135,11 @@ built-in's own list for Printer/Screen/…; `ActiveForm` → Form, `Recordset`
 `PSET_IDX`/`PGET_IDX` with `0x80nn` = control-array element with its
 default property (`Form1.FieldBoxes(3) = x`).
 
+`PGET_ME`/`PSET_ME` (unqualified name in form code) take a data-image slot:
+`u16 0x40xx, u16 0xC0nn` = the form's property `nn` (`Left`, `Width`), or
+a control record = that control's default property (`ReadOut = "0."`).
+102/102 in the samples.
+
 Late-bound properties (on `As Control`/`As Form` variables) use operand
 `0x00nn`: `nn` numbers such properties in first-use order across the
 project, and `RT_RCDATA` 1 stores, per class, each one's index in that
@@ -200,8 +205,6 @@ tests), 0 differ, 0 unsupported.
 
 ## Next steps
 
-- `PGET_ME`/`PSET_ME` (implicit-form properties, e.g. `Left + Width \ 10`;
-  operand not decoded).
 - Source emitter + round-trip check: decompile each sample, recompile with
   the IDE, compare p-code per procedure.
 - Pseudo-BASIC output: expression stack + control-flow structuring.

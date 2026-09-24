@@ -480,6 +480,7 @@ CLASSES: dict[tuple[str, str], str] = {}  # (form, control) -> class, as resolve
 SEG_FORM: dict[int, str] = {}  # code segment -> its form, as resolved
 RECORD_FORM: dict[int, str] = {}  # procedure record -> form (from event tables)
 OBJVAR_TYPES: dict[int, dict[int, str]] = {}  # code segment -> {slot: declared class}
+MEPROPS: dict[int, dict[int, int]] = {}  # code segment -> {PGET_ME slot: property index}
 FORM_CLASS: dict[str, str] = {}  # form -> Form | MDIForm (from its own event table)
 
 # Class byte in a form blob's control record (confirmed values only).
@@ -534,7 +535,7 @@ def _slot_refs(segs: list[Segment], rt: "Runtime") -> dict[int, dict[int, str]]:
     for p in find_procs(segs):
         for i in decode(rt, segs[p.segment - 1].data, p)[0]:
             kind = {"CONTROL": "control", "CTLARRAY": "control", "FORM": "form",
-                    "OBJVAR": "objvar"}.get(NAMES.get(i.op))
+                    "OBJVAR": "objvar", "PGET_ME": "meprop", "PSET_ME": "meprop"}.get(NAMES.get(i.op))
             if kind is None and is_objarr(rt, i):
                 kind = "objarr"
             if kind and not (kind == "objarr" and p.segment in out
@@ -607,7 +608,7 @@ def resolve_symbols(segs: list[Segment], rt: "Runtime", res: dict[int, bytes]) -
     code_segs = sorted({p.segment for p in find_procs(segs)})
 
     def names_at(base: int, seg: int, fi: int) -> dict[int, str] | None:
-        out, types = {}, {}
+        out, types, mep = {}, {}, {}
         for slot, kind in refs[seg].items():
             if base + slot + 6 > len(d):
                 return None
@@ -622,6 +623,11 @@ def resolve_symbols(segs: list[Segment], rt: "Runtime", res: dict[int, bytes]) -
                 continue
             if kind == "objarr":
                 continue
+            if kind == "meprop":  # PGET_ME/PSET_ME: form property `u16 0x40xx, u16 0xC0nn`,
+                if w0 >> 8 == 0x40 and w1 >> 8 == 0xC0:  # or a control (its default property)
+                    mep[slot] = w1 & 0xFF
+                    continue
+                kind = "control"
             tk = objvar_kind(kind, w0, w1, w2)
             if tk is not None:
                 types[slot] = {1: "Form", 4: "Control"}.get(tk) or CLASS_BY_KIND[tk]
@@ -642,7 +648,8 @@ def resolve_symbols(segs: list[Segment], rt: "Runtime", res: dict[int, bytes]) -
                 k = (w0 & 0xFF) - form_base if form_base is not None else -1
                 out[slot] = forms[k][0] if 0 <= k < len(forms) else BUILTIN_OBJECTS.get(w0 & 0xFF, f"obj#{w0 & 0xFF:#x}")
         OBJVAR_TYPES[seg] = types  # last evaluated candidate; the chosen one is re-evaluated
-        return {**out, **{-k - 1: t for k, t in types.items()}} if out or types else None
+        MEPROPS[seg] = mep
+        return {**out, **{-k - 1: t for k, t in types.items()}} if out or types or mep else None
 
     # Segments are modules (no controls) then forms with code, in project
     # order; forms without code have no segment, so each segment's form is
@@ -896,6 +903,7 @@ class Symbols:
         self.late_controls = late_bound_controls(res.get(1, b""), form_names(res))
         self.objvar_types = {k: dict(v) for k, v in OBJVAR_TYPES.items()}
         self.form_class = dict(FORM_CLASS)
+        self.meprops = {k: dict(v) for k, v in MEPROPS.items()}
         self.classes = dict(blob_classes(res))  # blob records first (authoritative)
         for key, cls in CLASSES.items():
             if key[0] in self.tables:
@@ -926,6 +934,14 @@ class Symbols:
                     text = f"Object.{self.ole[nn]}"
                 elif nn >> 8 == 0 and nn in self.late:  # late-bound (object variable)
                     text = f"?.{self.late[nn]}"
+            elif n in ("PGET_ME", "PSET_ME") and i.operand:  # implicit form: `Left`; control: `Label1`
+                slot = struct.unpack_from("<H", i.operand)[0]
+                idx = self.meprops.get(seg, {}).get(slot)
+                text = sym.get(slot, "")
+                fcls = self.form_class.get(form_of_seg, "Form")
+                props = self.rt.property_lists().get(fcls, [])
+                if idx is not None and idx < len(props) and props[idx]:
+                    text = f"{fcls}.{props[idx]}"
             elif n == "OLE_CALL" and len(i.operand) >= 4:
                 text = f"Object.{self.ole.get(struct.unpack_from('<H', i.operand, 2)[0], '?')}"
             elif n in ("CTLARRAY_OF", "SUBOBJ") and len(i.operand) >= 2:

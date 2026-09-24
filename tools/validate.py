@@ -78,7 +78,15 @@ def project(mak: Path, exe: Path, rt: P.Runtime, verbose: bool) -> Counter:
             notes = dict(zip((i.pc for i in insns), symbols.annotate(seg, insns)))
             for g, src in zip(groups, lines):
                 members = {t.lower() for t in re.findall(r"[.!]\s*([A-Za-z_]\w*)", A.strip_comment(src))}
+                bare = {t.lower() for t in re.findall(r"(?<![.!\w])\s*([A-Za-z_]\w*)", A.strip_comment(src))}
                 for i in g:
+                    if P.NAMES.get(i.op) in ("PGET_ME", "PSET_ME"):  # implicit-form property
+                        c["meprops_total"] += 1
+                        note = notes.get(i.pc, "")
+                        if note and note.split(".")[-1].lower() in bare:
+                            c["meprops_ok"] += 1
+                        elif verbose:
+                            print(f"   meprop {f.name}: {note or '?'} in {src!r}")
                     if P.NAMES.get(i.op) in ("PGET", "PSET", "PGET_IDX", "PSET_IDX"):
                         c["props_total"] += 1
                         note = notes.get(i.pc, "")
@@ -151,7 +159,7 @@ def main():
     print(f"TOTAL      procs {total['procs_ok']}/{total['procs_total']} (wrong {total['procs_wrong']}, false {total['procs_false']})"
           f"  refs {total['refs_ok']}/{total['refs_total'] - total['refs_objvar']} (missing {total['refs_missing']}, wrong {total['refs_wrong']}; +{total['refs_objvar']} object vars)"
           f"  props {total['props_ok']}/{total['props_total']} (missing {total['props_missing']}, wrong {total['props_wrong']})"
-          f"  ! vs . {total['sep_ok']}/{total['sep_total']}")
+          f"  ! vs . {total['sep_ok']}/{total['sep_total']}  Me props {total['meprops_ok']}/{total['meprops_total']}")
 
 
 if __name__ == "__main__":
