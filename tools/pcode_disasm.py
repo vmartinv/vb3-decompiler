@@ -195,6 +195,16 @@ def parse_models(ds: bytes, mprops: list, mevents: list, min_ptr: int) -> dict[s
         if len(props) < 5 or not ("Name" in props or "Left" in props):
             continue
         evs = entries(el, mevents) if el else []
+        q = el
+        while el and w(q) and (q - el) // 2 < len(evs):  # EVENTINFO: name, cParms, cwParms, npParmTypes
+            v, k = w(q), (q - el) // 2
+            if v >= 0xFF80:
+                types = MASTER_EVENT_TYPES.get(mevents[0xFFFF - v] if 0xFFFF - v < len(mevents) else None)
+            else:
+                types = tuple(w(w(v + 6) + 2 * j) for j in range(min(w(v + 2), 16)))
+            if types is not None and evs[k]:
+                EVENT_TYPES.setdefault((cls, evs[k]), types)
+            q += 2
         # A misaligned read of another MODEL can yield this class name with no
         # events (e.g. DirListBox's parent "ListBox"); prefer one with events.
         if cls not in found or (not found[cls][1] and evs):
@@ -395,6 +405,8 @@ class Runtime:
                     k = m
                     while name(w(w(k))):
                         events.append(name(w(w(k))))
+                        v = w(k)  # EVENTINFO: name, cParms, cwParms, npParmTypes
+                        MASTER_EVENT_TYPES[events[-1]] = tuple(w(w(v + 6) + 2 * j) for j in range(min(w(v + 2), 16)))
                         k += 2
             self._mst = (props, events)
         return self._mst
@@ -480,6 +492,9 @@ CLASSES: dict[tuple[str, str], str] = {}  # (form, control) -> class, as resolve
 SEG_FORM: dict[int, str] = {}  # code segment -> its form, as resolved
 RECORD_FORM: dict[int, str] = {}  # procedure record -> form (from event tables)
 OBJVAR_TYPES: dict[int, dict[int, str]] = {}  # code segment -> {slot: declared class}
+SEG_IMAGE: dict[int, int] = {}  # code segment -> offset of its data image chunk in RT_RCDATA 2
+EVENT_TYPES: dict[tuple[str, str], tuple[int, ...]] = {}
+MASTER_EVENT_TYPES: dict[str, tuple[int, ...]] = {}  # standard event -> parameter types  # (class, event) -> EVENTINFO parameter types
 MEPROPS: dict[int, dict[int, int]] = {}  # code segment -> {PGET_ME slot: property index}
 FORM_CLASS: dict[str, str] = {}  # form -> Form | MDIForm (from its own event table)
 
@@ -677,6 +692,7 @@ def resolve_symbols(segs: list[Segment], rt: "Runtime", res: dict[int, bytes]) -
                 got = (got[0], {k: v for k, v in got[1].items() if k >= 0})
             if got:
                 ci, result[seg] = got[0] + 1, got[1]
+                SEG_IMAGE[seg] = chunks[got[0]]
                 if f >= 0:
                     SEG_FORM[seg] = forms[f][0]
                     fi = f + 1

@@ -1,0 +1,117 @@
+#!/usr/bin/env python3
+"""
+Round-trip check: decompile a compiled sample, recompile the result in the
+VB3 IDE (under Wine) and compare it with the original source recompiled
+the same way.
+
+  python3 tools/roundtrip.py <project.mak> [...] --runtime VBRUN300.DLL [--vbx-dir DIR]
+          [--no-compile] [-v]
+
+Both builds go to work/rt/<project>/{orig,deco} (equal-length paths: the
+source path is embedded in the executable). Reported per project:
+procedures whose p-code is byte-identical, data images (RT_RCDATA 2) and
+procedure table (segment 3) equality. Form layouts are copied from the
+original source (--layout-from) until they are decoded.
+"""
+from __future__ import annotations
+
+import argparse
+import os
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import pcode_disasm as P  # noqa: E402
+from decompile import Decompiler, write_project  # noqa: E402
+
+REPO = Path(__file__).resolve().parent.parent
+WORK = REPO / "work" / "rt"
+
+
+def find_exe(mak: Path) -> Path | None:
+    hits = [f for f in mak.parent.iterdir() if f.suffix.lower() == ".exe" and f.stem.lower() == mak.stem.lower()]
+    return hits[0] if hits else None
+
+
+def compile_mak(mak: Path) -> bool:
+    env = {**os.environ, "DISPLAY": os.environ.get("RT_DISPLAY", ":99")}
+    r = subprocess.run([sys.executable, str(REPO / "tools/vb3ide/compile_project.py"), str(mak)],
+                       env=env, capture_output=True, text=True, timeout=300)
+    return r.returncode == 0 and mak.with_suffix(".exe").exists()
+
+
+def procs_code(exe: Path) -> list[tuple[int, int, bytes]]:
+    segs = P.parse_ne(exe)
+    return [(p.segment, p.start, segs[p.segment - 1].data[p.start:p.end]) for p in P.find_procs(segs)]
+
+
+def compare(a: Path, b: Path, rt: P.Runtime, verbose: bool) -> dict:
+    pa, pb = procs_code(a), procs_code(b)
+    same = sum(x == y for x, y in zip(pa, pb))
+    ra, rb = P.rcdata(a), P.rcdata(b)
+    sa, sb = P.parse_ne(a), P.parse_ne(b)
+    out = dict(procs=len(pa), same=same, count_ok=len(pa) == len(pb),
+               image=ra.get(2) == rb.get(2), table=sa[2].data == sb[2].data,
+               identical=a.read_bytes() == b.read_bytes())
+    if verbose:
+        for x, y in zip(pa, pb):
+            if x != y:
+                print(f"    seg{x[0]}@{x[1]}: {len(x[2])} vs {len(y[2])} bytes")
+    return out
+
+
+def run(mak: Path, runtime: Path, vbx_dirs: list[Path], do_compile: bool, verbose: bool) -> dict | None:
+    exe = find_exe(mak)
+    if exe is None:
+        print(f"{mak}: no compiled exe")
+        return None
+    root = WORK / mak.stem.lower()
+    orig, deco = root / "orig", root / "deco"
+    if do_compile:
+        shutil.rmtree(root, ignore_errors=True)
+        shutil.copytree(mak.parent, orig)
+        for f in orig.iterdir():
+            if f.suffix.lower() == ".exe":
+                f.unlink()
+    d = Decompiler(exe, runtime, vbx_dirs)
+    shutil.rmtree(deco, ignore_errors=True)
+    dmak = write_project(d, deco, mak.parent, mak.stem.lower())
+    if do_compile:
+        for m in (orig / mak.name, dmak):
+            if not compile_mak(m):
+                print(f"{mak.stem}: compile failed: {m}")
+                return None
+    a = orig / (mak.stem + ".exe")
+    b = dmak.with_suffix(".exe")
+    if not a.exists() or not b.exists():
+        print(f"{mak.stem}: missing build")
+        return None
+    rt = P.Runtime(runtime)
+    res = compare(a, b, rt, verbose)
+    print(f"{mak.stem:10s} procs {res['same']}/{res['procs']}" + ("" if res["count_ok"] else " (count differs)")
+          + f"  image {'=' if res['image'] else '≠'}  table {'=' if res['table'] else '≠'}"
+          + ("  EXE IDENTICAL" if res["identical"] else ""))
+    return res
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("mak", type=Path, nargs="+")
+    ap.add_argument("--runtime", type=Path, required=True)
+    ap.add_argument("--vbx-dir", type=Path, action="append", default=[])
+    ap.add_argument("--no-compile", action="store_true", help="compare existing builds only")
+    ap.add_argument("-v", action="store_true")
+    args = ap.parse_args()
+    tot = [0, 0]
+    for mak in args.mak:
+        r = run(mak, args.runtime, args.vbx_dir, not args.no_compile, args.v)
+        if r:
+            tot[0] += r["same"]
+            tot[1] += r["procs"]
+    print(f"TOTAL procs {tot[0]}/{tot[1]}")
+
+
+if __name__ == "__main__":
+    main()
