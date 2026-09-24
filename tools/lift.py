@@ -72,6 +72,8 @@ def result_type(name: str) -> str:
         return "&" + (suf if suf in ("V", "T") else "")
     if fam == "PUSH":
         return {"B": "I", "R8": "D"}.get(suf.split(" ")[0], suf.split(" ")[0])
+    if name.startswith("LOAD.UDT"):
+        return "&"  # a Type variable: passed by reference (DLL: `As Any`)
     if fam == "BYVAL":
         return "*"  # `ByVal x` passed to an `As Any` parameter
     if fam.startswith(("PGET", "PGET_ME")):
@@ -223,7 +225,7 @@ def lift(code: list[tuple[int, bytes]], ids: dict[int, int] | None = None,
             n, rec = struct.unpack_from("<HH", operand)
             args = [pop() for _ in range(n)][::-1]
             if calls is not None:
-                calls.append((name, operand, [a.t for a in args]))
+                calls.append((name, operand, [a.t for a in args], [a.text for a in args]))
             fn = nm(f"proc{rec & 0xFFF8:x}")
             if name == "CALL_FN":
                 st.append(E(f"{fn}({', '.join(a.text for a in args)})"))
@@ -322,7 +324,7 @@ def lift(code: list[tuple[int, bytes]], ids: dict[int, int] | None = None,
             n = struct.unpack_from("<H", operand)[0]
             idx = [pop() for _ in range(n)][::-1]
             st.append(E(f"{nm(f'glb{slot_of(operand):x}')}({', '.join(i.text for i in idx)})"))
-        elif name == "LOAD.UDT":
+        elif name in ("LOAD.UDT", "LOAD.UDT_LOC"):
             st.append(E(nm(f"u{slot_of(operand):x}")))
         elif name.startswith("FIELD_SET"):
             rec, v = pop(), pop()

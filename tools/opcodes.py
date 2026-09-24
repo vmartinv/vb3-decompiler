@@ -141,7 +141,7 @@ NAMES: dict[int, str] = {
     0x70D5: "FIELD_GET.T",
     0x6D00: "FIELD_SET.I", 0x6BD2: "FIELD_GET.I", 0x6D9B: "FIELD_SET.V", 0x6C6C: "FIELD_GET.V",
     0x70EE: "FIELD_SET.T", 0x6C52: "FIELD_GET.D", 0x6D1C: "FIELD_SET.L", 0x6D7F: "FIELD_SET.D",
-    0x6BF1: "FIELD_GET.L", 0x31B0: "LOAD.UDT",
+    0x6BF1: "FIELD_GET.L", 0x31B0: "LOAD.UDT", 0x31EE: "LOAD.UDT_LOC",
 }
 
 # Variables: load (id 0x0B) / store (id 0x0C) by storage x type.

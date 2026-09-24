@@ -49,6 +49,7 @@ EVENT_PARAMS = {  # conventional parameter names (the IDE's templates)
     "PictureDblClick": "ListIndex",
 }
 LABEL = 0x4965
+OBJ_KINDS = {1: "Form", 2: "MDIForm", 4: "Control", 0x14: "Object"}  # object variable kinds besides control classes
 VAR_FAMILIES = ("LOAD", "STORE", "ADDR_LOC", "ALOAD", "ASTORE", "ADDR", "AADDR")
 SIZE_TYPES = {2: "I", 4: "L", 8: "D", 16: "V"}  # filler declarations for unused slots
 
@@ -64,6 +65,7 @@ class Var:
     udt: bool = False
     udt_type: int | None = None  # Type of an array's elements
     obj: str | None = None  # object variable's class (As Control, As frmX, ...)
+    glob: int | None = None  # global offset, for a reference to a global object array
 
     def type(self) -> str:
         if not self.votes:
@@ -286,9 +288,12 @@ class Decompiler:
                 n, sfx = plain_handler(self.rt, i.op)
                 if n is None and P.is_objarr(self.rt, i):
                     n = "ALOAD.MOD.V"  # object array element (typed separately)
-                if n == "LOAD.UDT" and i.operand:
+                    x = struct.unpack_from("<H", i.operand, len(i.operand) - 2)[0]
+                    if word(self.image, base + x) >> 8 == 0x80:  # `0x80NN, global offset`: a global As New array
+                        vars_.setdefault(x, Var(x, "MOD")).glob = word(self.image, base + x + 2)
+                if n in ("LOAD.UDT", "LOAD.UDT_LOC") and i.operand:
                     last_udt = struct.unpack_from("<H", i.operand)[0]
-                    v = vars_.setdefault(last_udt, Var(last_udt, "MOD"))
+                    v = vars_.setdefault(last_udt, Var(last_udt, "LOC" if n.endswith("LOC") else "MOD"))
                     v.udt = True
                     if k not in v.procs:
                         v.procs.append(k)
@@ -303,7 +308,9 @@ class Decompiler:
                     bp = self.value(base, slot)
                     if bp != 0:  # parameter or local (module-level ones are declarations)
                         v = vars_.setdefault(slot, Var(slot, "LOC"))
-                        v.obj = self.sym.objvar_types.get(seg, {}).get(slot) or "Control"
+                        kind = word(self.image, base + slot)  # record: kind, BP offset
+                        v.obj = self.sym.objvar_types.get(seg, {}).get(slot) or OBJ_KINDS.get(kind) \
+                            or P.CLASS_BY_KIND.get(kind) or "Control"
                         if k not in v.procs:
                             v.procs.append(k)
                     continue
@@ -347,10 +354,26 @@ class Decompiler:
                     refs.setdefault(slot, (k, note.rpartition(".")[2]))
 
         owned = {s for s, v in vars_.items() if v.scope in ("LOC", "REF")}
+        # other slots procedures allocate at first use: calls to functions of other
+        # modules, object variables, and (in forms) references to globals
+        func_slots = {x for x, _ in m["funcs"]}
+        for info in infos:
+            for i in info.insns:
+                n = plain_handler(self.rt, i.op)[0] or ""  # suffixed accesses resolve to their plain handler
+                if n == "CALL_FN" and len(i.operand) >= 4:
+                    x = struct.unpack_from("<H", i.operand, 2)[0]
+                    if x not in func_slots:
+                        owned.add(x)
+                elif m["kind"] == "frm" and i.operand and (n in ("OBJVAR", "FORM", "CONTROL", "CTLARRAY")
+                                                          or (not n and P.is_objarr(self.rt, i))):
+                    # records start at the operand; a form declares no global objects
+                    owned.add(struct.unpack_from("<H", i.operand, len(i.operand) - 2)[0] - 2)
+        if m["kind"] == "frm":
+            owned |= {s for s, v in vars_.items() if v.scope == "GLB"}
         # control/property operands point at their record, 2 bytes past a variable's slot
         first_owned = min(owned | {r - 2 for r in refs} | {s for s, v in vars_.items() if v.scope == "GLB"
                                                and s >= m["decl_start"] and not self.is_global_slot(base, s)},
-                          default=word(self.image, base) - 2 if not infos else 1 << 16)
+                          default=word(self.image, base) - 1 if not infos else 1 << 16)
         m.update(infos=infos, vars=vars_, refs=refs, udt=udt, first_owned=first_owned)
 
     def is_global_slot(self, base: int, slot: int) -> bool:
@@ -409,6 +432,12 @@ class Decompiler:
                         step = (td.size + 1) // 2 * 2 if td else 16
                         s = nxt if step <= nxt - s <= step + 4 else s + step + 2
                         continue
+                    w1 = word(self.image, m["image"] + s + 4)
+                    if not v.stored and not v.array and not v.votes.keys() - {"T", "L"} and nxt - s == 4 \
+                            and w1 >= 0x100:  # a String constant: descriptor, text assigned below
+                        items.append(("const", s, "\0str"))
+                        s += 4
+                        continue
                     if not v.stored and not v.array and (lit := self.inline_const(m["image"], s, t, nxt - s)):
                         items.append(("const", s, lit))
                     elif v.udt_type in gl.types:
@@ -429,13 +458,17 @@ class Decompiler:
                     s = r + 6
                     continue
                 prev_g = max((it[3] for it in items if it[0] == "global"), default=None)
-                if v is None and (kind in P.CLASS_BY_KIND or kind in (1, 4)) and 6 <= g2 < self.globals_end \
-                        and not any(gl.raw(g2, 4)) and (prev_g is None or kind <= prev_g or kind in (1, 4)):
-                    cls = {1: "Form", 4: "Control"}.get(kind) or P.CLASS_BY_KIND[kind]
+                fbase = 0x46 + len(P.vbx_entries(self.res.get(1, b"")))  # form numbers (object kind of `As frmX`)
+                formk = {fbase + j: f[0] for j, f in enumerate(self.forms)}
+                if v is None and (kind in P.CLASS_BY_KIND or kind in OBJ_KINDS or kind in formk) \
+                        and 6 <= g2 < self.globals_end and not any(gl.raw(g2, 4)) \
+                        and (prev_g is None or kind <= prev_g or kind in OBJ_KINDS or kind in formk):
+                    cls = OBJ_KINDS.get(kind) or formk.get(kind) or P.CLASS_BY_KIND[kind]
                     items.append(("global", s, None, g2, cls))  # `Global x As <class>`: kind, global offset
                     s += 4
                     continue
-                if (v is not None and v.scope == "GLB") or (v is None and self.is_global_slot(m["image"], s)
+                if m["kind"] == "bas" and (v is not None and v.scope == "GLB") or (
+                        m["kind"] == "bas" and v is None and self.is_global_slot(m["image"], s)
                                                           and self.value(m["image"], s, False) not in
                                                           {x[3] for x in items if x[0] == "global"}):
                     g = self.value(m["image"], s, False)
@@ -453,6 +486,12 @@ class Decompiler:
             m["items"] = items
         # global declarations: sizes/types from the global image and the uses
         gs = sorted({it[3] for m in mods for it in m["items"] if it[0] == "global"})
+        # String constants: a descriptor in the global image; the texts are records
+        # `u16 size, u16 length, text, 0` in RT_RCDATA 2 before the global image,
+        # in declaration order
+        head = self.image[:gl.base or 0]
+        texts = [x.group(3).decode("latin-1") for x in re.finditer(rb"(?s)(..)(..)([\x20-\x7e]+)\x00", head)
+                 if struct.unpack("<H", x.group(2))[0] == len(x.group(3))]
         for m in mods:
             for k, it in enumerate(m["items"]):
                 if it[0] != "global":
@@ -478,8 +517,34 @@ class Decompiler:
                     and (any(raw[:MOD_SIZE[t]]) or not (u["mods"] - {id(m)})) else None
                 if u.get("udt") in gl.types:
                     t, lit = gl.types[u["udt"]].name, None
+                w0, w1 = gl.w(g), gl.w(g + 2)
+                if size == 4 and not u["stored"] and w1 >= 0x100 and set(u["votes"]) <= {"T", "L"}:
+                    t, lit = "T", "\0str"  # string descriptor, text assigned below
                 m["items"][k] = ("global", it[1], lit, g, t, name, u["array"])
                 self.global_name[g] = name
+        pending = [(mi, k) for mi, m in enumerate(mods) for k, it in enumerate(m["items"])
+                   if it[0] in ("const", "global") and len(it) > 2 and it[2] == "\0str"]
+        for (mi, k), text in zip(pending, texts):
+            it = mods[mi]["items"][k]
+            mods[mi]["items"][k] = it[:2] + ('"' + text + '"',) + it[3:]
+        for mi, k in pending[len(texts):]:  # no text found: keep a placeholder string
+            it = mods[mi]["items"][k]
+            mods[mi]["items"][k] = it[:2] + ('""',) + it[3:]
+        # a header "constant" equal to another module's Global Const and used by
+        # procedures is that constant's copy, allocated at first use: the
+        # declarations end there
+        gconst = {}
+        for m in mods:
+            for it in m["items"]:
+                if it[0] == "global" and it[2]:
+                    gconst.setdefault(it[2], id(m))
+        for m in mods:
+            for j, it in enumerate(m["items"]):
+                v = m["vars"].get(it[1])
+                if it[0] == "const" and v is not None and v.procs and gconst.get(it[2], id(m)) != id(m):
+                    m["items"] = m["items"][:j]
+                    m["first_owned"] = it[1]
+                    break
         # Types: in the module whose globals surround them, else the first .bas
         bas = [m for m in mods if m["kind"] == "bas"] or mods
         for td in gl.types.values():
@@ -617,8 +682,11 @@ class Decompiler:
         for s, v in vars_.items():
             if s in names:
                 continue
+            if v.glob is not None and v.glob in self.global_name:
+                names[s] = self.global_name[v.glob]
+                continue
             lit, gname = None, None
-            if v.scope == "MOD" and s > m["first_owned"] and not v.stored and not v.array:
+            if v.scope == "MOD" and s >= m["first_owned"] and not v.stored and not v.array:
                 for t in ([v.type()] if v.votes else []) + ["L", "I"]:  # untyped: shared Long/String handler
                     lit = self.inline_const(m["image"], s, t, 16, zero=True)
                     if lit and (t, lit) in gconst:
@@ -626,7 +694,7 @@ class Decompiler:
                         break
                 if not gname:
                     lit = self.inline_const(m["image"], s, v.type(), 16)
-            if gname and (m["kind"] == "frm" or len(v.procs) > 1):
+            if gname:
                 # a Global Const used here: a slot with a copy of its value, at first use
                 names[s] = gname
             elif lit and len(v.procs) > 1:
@@ -646,9 +714,10 @@ class Decompiler:
                 info.name, info.event = ev, True
         self.fit_names(m)
         base = m["image"]
-        owned_all = {s for s, v in vars_.items() if v.scope in ("LOC", "REF")} | {r - 2 for r in refs}
-        is_param = lambda s: self.value(base, s) >= 6 and self.value(base, s) % 2 == 0  # noqa: E731
+        owned_all = {s for s, v in vars_.items() if v.scope in ("LOC", "REF")} | {r - 2 for r in refs} | set(refs)
         for k, info in enumerate(infos):
+            top = 6 + 2 * info.argwords  # parameters lie in [6, top)
+            is_param = lambda s, top=top: 6 <= self.value(base, s) < top and self.value(base, s) % 2 == 0  # noqa: E731
             mine = sorted(s for s, v in vars_.items() if v.procs and v.procs[0] == k and v.scope in ("LOC", "REF"))
             # parameters: even BP offsets >= 6 (String locals are numbered 1, 3, ...),
             # consecutive after the return value; unused ones are found by walking the slots
@@ -695,7 +764,12 @@ class Decompiler:
             for info in m["infos"]:
                 calls = []
                 self.statements(info, m["names"], calls)
-                for name, operand, types in calls:
+                by_name = {n.lower(): x for x, n in m["names"].items()}
+                for name, operand, types, texts in calls:
+                    for j, (t, tx) in enumerate(zip(types, texts)):
+                        v = m["vars"].get(by_name.get(tx.lower(), -1))
+                        if t == "&" and v is not None and v.votes:  # ByRef argument: the variable's type
+                            types[j] = "&" + v.type()
                     (rec,) = struct.unpack_from("<H", operand, 2)
                     if name == "CALL_FN":
                         rec = self.value(m["image"], rec, False)
@@ -775,8 +849,12 @@ class Decompiler:
             decl = [f"{pn} As {EVENT_TYPE.get(t, 'Integer')}" for pn, t in zip(pnames, types)]
             if info.argwords > 2 * len(types):  # control array element
                 decl = ["Index As Integer"] + decl
-            for s, d in zip(info.params, decl):
-                names[s] = d.split()[0]
+            # names by BP offset: ByRef parameters, 4 bytes each, the last one at +6
+            bp_name = {6 + 4 * (len(decl) - 1 - j): d.split()[0] for j, d in enumerate(decl)}
+            k = self.cur_mod["infos"].index(info)
+            for s, v in vars_.items():
+                if v.procs and v.procs[0] == k and v.scope in ("LOC", "REF") and self.value(base, s) in bp_name:
+                    names[s] = bp_name[self.value(base, s)]
             params = decl
         else:
             # sizes from the BP offsets: ByRef 4 (far pointer), ByVal by type
@@ -789,7 +867,10 @@ class Decompiler:
                     params.append(f"{names[s]} As {v.obj}")
                     continue
                 size = psize.get(self.value(base, s), 4)
-                t = v.type() if v.votes else {2: "I", 8: "D", 16: "V"}.get(size, "V")
+                j = info.params.index(s)
+                seen = [c[j].lstrip("&") for c in self.call_types.get(info.proc.record, []) if j < len(c) and c[j]]
+                t = v.type() if v.votes else {2: "I", 8: "D", 16: "V"}.get(size) or \
+                    (seen[0] if seen and seen[0] in TYPE_NAME else "V")  # unused: as the callers pass it
                 byval = size != 4 or (v.scope == "LOC" and t in "LS" and t != "")
                 if size == 2:
                     t = "I"
@@ -838,7 +919,8 @@ class Decompiler:
                 t = objtypes.get(s) or v.obj
                 decl = ("()" if v.array else "") + (f" As New {t}" if t in self.sym.tables else f" As {t}")
             elif v.udt:
-                td = self.gimg.by_size(size.get(s, 0))
+                td = self.gimg.types.get(m["udt"].get(s)) or next(
+                    (t for t in self.gimg.types.values() if 0 <= size.get(s, 0) - t.size <= 2), None)
                 decl = f"As {td.name}" if td else "As Variant"
             else:
                 t = v.type() if v.votes else ("T" if self.value(base, s) % 2 == 1 else
@@ -846,7 +928,7 @@ class Decompiler:
                 decl = ("()" if v.array else "") + f" As {TYPE_NAME[t]}"
             items.append((s, "dim", names[s], decl, v))
         for s, v in vars_.items():
-            if v.scope == "MOD" and v.procs and v.procs[0] == k and s > m["first_owned"] \
+            if v.scope == "MOD" and v.procs and v.procs[0] == k and s >= m["first_owned"] \
                     and (v.procs == [k] or not names[s].startswith(("s", "K"))):
                 lit = None if v.stored or v.array else self.inline_const(base, s, v.type(), 16)
                 if not names[s].startswith(("K", "s")):
@@ -855,7 +937,7 @@ class Decompiler:
                     items.append((s, "const", names[s], f"= {lit}", v))
                 else:
                     items.append((s, "static", names[s], ("()" if v.array else "") + f" As {TYPE_NAME[v.type()]}", v))
-            elif v.scope == "GLB" and v.procs and v.procs[0] == k and s > m["first_owned"]:
+            elif v.scope == "GLB" and v.procs and v.procs[0] == k and s >= m["first_owned"]:
                 items.append((s, "fixed", names[s], None, v))
         for s, (kk, n) in m["refs"].items():
             if kk == k:
@@ -918,11 +1000,16 @@ class Decompiler:
             if i.op == LABEL:
                 flush()
                 (num,) = struct.unpack_from("<I", i.operand)
-                out.append((0, f"L{i.pc}:" if num == 0xFFFFFFFF else f"{num}"))
+                out.append((0, f"L{i.pc:x}:" if num == 0xFFFFFFFF else f"{num}"))
                 continue
             cur.append((i.op, i.operand))
             curn.append(self.name_for(i, note, names))
         flush()
+        numbered = {i.pc: struct.unpack_from("<I", i.operand)[0] for i in info.insns
+                    if i.op == LABEL and struct.unpack_from("<I", i.operand)[0] != 0xFFFFFFFF}
+        if numbered:  # line-number labels: jumps name them by number
+            out = [(c, re.sub(r"\bL([0-9a-f]+)\b", lambda x: str(numbered.get(int(x.group(1), 16), x.group(0))), t))
+                   for c, t in out]
         return out
 
     def name_for(self, i, note: str, names: dict) -> str | None:
@@ -943,7 +1030,7 @@ class Decompiler:
             base = 0x46 + len(P.vbx_entries(self.res.get(1, b"")))
             if 0 <= slot - base < len(nforms):
                 return nforms[slot - base][0]
-            return {1: "Form", 4: "Control"}.get(slot) or P.CLASS_BY_KIND.get(slot)
+            return OBJ_KINDS.get(slot) or P.CLASS_BY_KIND.get(slot)
         if n == "OLE_CALL":
             return note.rpartition(".")[2] or None
         if n in ("CALL", "CALL_FN"):
