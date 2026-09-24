@@ -378,6 +378,20 @@ class Decompiler:
         first_owned = min(owned | {r - 2 for r in refs} | {s for s, v in vars_.items() if v.scope == "GLB"
                                                and s >= m["decl_start"] and not self.is_global_slot(base, s)},
                           default=word(self.image, base) - 1 if not infos else 1 << 16)
+        # unused leading parameters also hold 0: the first procedure's parameters
+        # start before its first used one (ByRef: 4 argument bytes, 2 slot bytes each)
+        for k, info in enumerate(infos):
+            ps = [(x, self.value(base, x)) for x, v in vars_.items() if v.procs and v.procs[0] == k
+                  and v.scope in ("LOC", "REF") and 6 <= self.value(base, x) < 6 + 2 * info.argwords
+                  and self.value(base, x) % 2 == 0]
+            if ps:
+                x, bp = min(ps)
+                j = (6 + 2 * info.argwords - bp - 4) // 4  # index among ByRef parameters
+                if j > 0 and info.proc.record in self.events:
+                    first_owned = min(first_owned, x - 2 * j)
+                break
+            if any(v.procs and v.procs[0] == k for v in vars_.values()) or any(kk == k for kk, _ in refs.values()):
+                break
         m.update(infos=infos, vars=vars_, refs=refs, udt=udt, first_owned=first_owned, call_slots=call_slots)
 
     def is_global_slot(self, base: int, slot: int) -> bool:
@@ -1017,8 +1031,15 @@ class Decompiler:
             x = frame_known[0]
             # leading unused locals: zero slots from the end of the previous
             # procedure's allocations up to the first used local
+            # only with evidence: the module's first procedure (zeros after the
+            # declarations), or frame space the first local doesn't account for
             prev_end = self.prev_end(m, k)
-            if prev_end < x and all(self.value(base, z) == 0 and z not in known for z in range(prev_end, x, 2)):
+            first_bp = self.value(base, x)
+            v1 = vars_.get(x)
+            fs1 = {"I": 2, "L": 4, "S": 4, "D": 8, "C": 8, "V": 16}.get(v1.type() if v1 and v1.votes else "V", 2)
+            evidence = prev_end == m["first_owned"] or (first_bp < 0 and -22 - first_bp - fs1 >= 16)
+            if evidence and prev_end < x and all(self.value(base, z) == 0 and z not in known
+                                                 for z in range(prev_end, x, 2)):
                 x = prev_end
             while x < hi:
                 if any(r - 2 <= x < r + 6 for r in records) or x in calls_here:
