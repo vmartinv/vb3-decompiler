@@ -66,6 +66,7 @@ class Var:
     udt_type: int | None = None  # Type of an array's elements
     obj: str | None = None  # object variable's class (As Control, As frmX, ...)
     glob: int | None = None  # global offset, for a reference to a global object array
+    copy_type: str | None = None  # a Global Const's copy: its type (its size in the slots)
 
     def type(self) -> str:
         if not self.votes:
@@ -443,11 +444,15 @@ class Decompiler:
                         continue
                     if not v.stored and not v.array and (lit := self.inline_const(m["image"], s, t, nxt - s)):
                         items.append(("const", s, lit))
-                    elif v.udt_type in gl.types:
-                        items.append(("dim", s, f"() As {gl.types[v.udt_type].name}"))
+                    elif v.array:
+                        dims, size = self.array_dims(m["image"], s)
+                        tn = gl.types[v.udt_type].name if v.udt_type in gl.types else TYPE_NAME[t]
+                        items.append(("dim", s, f"({dims}) As {tn}"))
+                        s += size
+                        continue
                     else:
-                        items.append(("dim", s, ("()" if v.array else "") + f" As {TYPE_NAME[t]}"))
-                    s += MOD_SIZE[t] if not v.array else max(2, nxt - s)
+                        items.append(("dim", s, f" As {TYPE_NAME[t]}"))
+                    s += MOD_SIZE[t]
                     continue
                 kind, g2 = self.value(m["image"], s, False), self.value(m["image"], s + 2, False)
                 newobj = self.sym.objvar_types.get(m["seg"], {}) if m["seg"] else {}
@@ -484,8 +489,10 @@ class Decompiler:
                 if any(val):
                     items.append(("const", s, const_literal("I", val)))
                 else:
-                    items.append(("dim", s, "As Integer"))
+                    items.append(("dim", s, "As Integer", "filler"))
                 s += 2
+            while items and len(items[-1]) == 4 and items[-1][3] == "filler":
+                items.pop()  # trailing zeros before the procedures aren't declarations
             m["items"] = items
         # global declarations: sizes/types from the global image and the uses
         gs = sorted({it[3] for m in mods for it in m["items"] if it[0] == "global"})
@@ -543,6 +550,20 @@ class Decompiler:
                     owner = m
             owner = owner or next((m for m in bas if not m["items"]), bas[0])
             owner.setdefault("types", []).append(td)
+
+    def array_dims(self, base: int, slot: int, absolute: int | None = None) -> tuple[str, int]:
+        """An array's descriptor (inline, from slot + 2): word +2 is 0x4000 |
+        dimensions for a fixed-size array, whose last words are (count, lower
+        bound) per dimension, last dimension first; size 18 + 4 per dimension.
+        A dynamic array reserves 8 dimensions (50 bytes)."""
+        d = base + slot + 2 if absolute is None else absolute
+        w = word(self.image, d + 2)
+        if not w & 0x4000:
+            return "", 50
+        n = w & 0xFF
+        pairs = [(word(self.image, d + 18 + 4 * j), word(self.image, d + 20 + 4 * j, True)) for j in range(n)]
+        dims = [f"{lo + cnt - 1}" if lo == 0 else f"{lo} To {lo + cnt - 1}" for cnt, lo in reversed(pairs)]
+        return ", ".join(dims), 18 + 4 * n
 
     def inline_const(self, base: int, slot: int, t: str, room: int, zero: bool = False) -> str | None:
         n = MOD_SIZE.get(t, 0)
@@ -608,8 +629,9 @@ class Decompiler:
                 while pending and pending[0] < it[3]:
                     out += types[pending.pop(0)].lines(gtypes)
                 _, s, lit, g, t, name, arr = it
+                dims = self.array_dims(0, 0, self.gimg.base + 2 + g)[0] if arr else ""
                 out.append(f"Global Const {name} = {lit}" if lit else
-                           f"Global {name}" + ("()" if arr else "") + f" As {TYPE_NAME.get(t, t)}")
+                           f"Global {name}" + (f"({dims})" if arr else "") + f" As {TYPE_NAME.get(t, t)}")
             elif it[0] == "typeref":
                 continue
             elif it[0] == "newobj":
@@ -682,6 +704,7 @@ class Decompiler:
                     lit = self.inline_const(m["image"], s, t, 16, zero=True)
                     if lit and (t, lit) in gconst:
                         gname = gconst[(t, lit)]
+                        v.copy_type = t
                         break
                 if not gname:
                     lit = self.inline_const(m["image"], s, v.type(), 16)
@@ -940,6 +963,10 @@ class Decompiler:
         for it in items:
             if it[1] == "dim" and it[3].endswith("As Variant"):
                 known.add(it[0] + 2)  # a local Variant takes 4 bytes of slots
+        for x, v in vars_.items():  # constants' copies / statics: inline, sized by type
+            if v.scope == "MOD" and v.procs and v.procs[0] == k:
+                n = MOD_SIZE.get(v.copy_type or v.type(), 2)
+                known.update(range(x, x + n, 2))
         for x in skip:  # Variant return value / parameters take 4 bytes of slots too
             v = vars_.get(x)
             t = info.ret if x == info.ret_slot else (v.type() if v and v.votes else "V")
@@ -964,16 +991,38 @@ class Decompiler:
             hi = min(hi, max(owned_k + [frame_known[-1]]))  # up to the procedure's last slot
             records = [r for r, (kk2, _) in m["refs"].items()] + \
                       [x2 for x2, v2 in vars_.items() if v2.obj or v2.glob is not None]
+            calls_here = set(m.get("call_slots", {}))  # external function slots: `0, record`
             x = frame_known[0]
             while x < hi:
-                if any(r - 2 <= x < r + 6 for r in records):  # inside a control/object record
-                    x += 2
+                if any(r - 2 <= x < r + 6 for r in records) or x in calls_here:
+                    x += 2  # inside a control/object record or an external function slot
                     continue
                 if x in known:
                     x += 2
                     continue
                 o = self.value(base, x)
-                if (o % 2 == 1 and 0 < o < 64) or o == 0:  # unused String locals aren't numbered (0)
+                if o == 0:
+                    # a run of unused locals (value 0): unused Variants still take 16 bytes of
+                    # frame (2 slots), unused Strings none (1 slot); split by the frame gap
+                    y = x
+                    while y < hi and y not in known and self.value(base, y) == 0 \
+                            and not any(r - 2 <= y < r + 6 for r in records) and y not in calls_here:
+                        y += 2
+                    prev_bp = min([self.value(base, z) for z in known if z < x and self.value(base, z) < 0] + [-22])
+                    nxt_k = min((z for z in known if z >= y and self.value(base, z) < 0), default=None)
+                    nv = 0
+                    if nxt_k is not None:
+                        v2 = vars_.get(nxt_k)
+                        t2 = v2.type() if v2 is not None and v2.votes else "V"
+                        fs2 = {"I": 2, "L": 4, "S": 4, "D": 8, "C": 8, "V": 16}.get(t2, 2)
+                        nv = max(0, min((prev_bp - self.value(base, nxt_k) - fs2) // 16, (y - x) // 4))
+                    while x < y:
+                        vt = "Variant" if nv > 0 else "String"
+                        items.append((x, "dim", f"f{x:X}", f" As {vt}", Var(x, "LOC")))
+                        x += 4 if nv > 0 else 2
+                        nv -= 1
+                    continue
+                if o % 2 == 1 and 0 < o < 64:  # a String local
                     items.append((x, "dim", f"f{x:X}", " As String", Var(x, "LOC")))
                     x += 2
                 elif o < 0:
