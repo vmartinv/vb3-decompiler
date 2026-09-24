@@ -530,21 +530,6 @@ class Decompiler:
         for mi, k in pending[len(texts):]:  # no text found: keep a placeholder string
             it = mods[mi]["items"][k]
             mods[mi]["items"][k] = it[:2] + ('""',) + it[3:]
-        # a header "constant" equal to another module's Global Const and used by
-        # procedures is that constant's copy, allocated at first use: the
-        # declarations end there
-        gconst = {}
-        for m in mods:
-            for it in m["items"]:
-                if it[0] == "global" and it[2]:
-                    gconst.setdefault(it[2], id(m))
-        for m in mods:
-            for j, it in enumerate(m["items"]):
-                v = m["vars"].get(it[1])
-                if it[0] == "const" and v is not None and v.procs and gconst.get(it[2], id(m)) != id(m):
-                    m["items"] = m["items"][:j]
-                    m["first_owned"] = it[1]
-                    break
         # Types: in the module whose globals surround them, else the first .bas
         bas = [m for m in mods if m["kind"] == "bas"] or mods
         for td in gl.types.values():
@@ -635,9 +620,11 @@ class Decompiler:
             out += types[g].lines(gtypes)
         out = decl_lines + out
         # declarations record (the word before the module's image + 4):
-        # +18 flags (0x40 Option Explicit), +50 line count incl. comments
+        # +18 flags (0x40 Option Explicit, 0x800 Option Compare Text), +50 line count
         rec = word(self.image, m["image"] - 2) + 4
         flags, count = word(self.table, rec + 18), word(self.table, rec + 50)
+        if flags & 0x0800:
+            out.insert(0, "Option Compare Text")
         if flags & 0x40:
             out.insert(0, "Option Explicit")
         out = ["'"] * max(0, count - len(out) - 1) + out + [""] if count else out
@@ -942,6 +929,43 @@ class Decompiler:
         for s, (kk, n) in m["refs"].items():
             if kk == k:
                 items.append((s, "fixed", n, None, None))
+        items.sort(key=lambda it: (it[0], it[1]))
+        # unused locals leave gaps in the slot numbering: declare fillers
+        # (odd value: String local; negative: BP offset, size from the frame)
+        known = {it[0] for it in items} | skip
+        for it in items:
+            if it[1] == "dim" and it[3].endswith("As Variant"):
+                known.add(it[0] + 2)  # a local Variant takes 4 bytes of slots
+        for x in skip:  # Variant return value / parameters take 4 bytes of slots too
+            v = vars_.get(x)
+            t = info.ret if x == info.ret_slot else (v.type() if v and v.votes else "V")
+            if t == "V":
+                known.add(x + 2)
+        mine = sorted(known)
+        if mine:
+            later = [x for kk2, other in enumerate(m["infos"]) if kk2 > k
+                     for x in [min((ss for ss, vv in vars_.items() if vv.procs and vv.procs[0] == kk2), default=None)]
+                     if x is not None]
+            hi = min([x for x in later if x > mine[-1]] + [mine[-1] + 2])
+            negs = sorted((x, self.value(base, x)) for x in range(mine[0], hi, 2) if self.value(base, x) < 0)
+            fsize, prev = {}, -22
+            for x, o in negs:
+                fsize[x], prev = prev - o, o
+            x = mine[0]
+            while x < hi:
+                if x in known:
+                    x += 2
+                    continue
+                o = self.value(base, x)
+                if (o % 2 == 1 and 0 < o < 64) or o == 0:  # unused String locals aren't numbered (0)
+                    items.append((x, "dim", f"f{x:X}", " As String", Var(x, "LOC")))
+                    x += 2
+                elif o < 0:
+                    t = {2: "I", 4: "L", 8: "D", 16: "V"}.get(fsize.get(x), "I")
+                    items.append((x, "dim", f"f{x:X}", f" As {TYPE_NAME[t]}", Var(x, "LOC")))
+                    x += 4 if t == "V" else 2
+                else:
+                    x += 2
         items.sort(key=lambda it: (it[0], it[1]))
 
         texts = [re.sub(r'"[^"]*"', lambda x: " " * len(x.group(0)), t or "") for _, t in body]

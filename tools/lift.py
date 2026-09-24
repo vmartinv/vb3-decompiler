@@ -354,8 +354,10 @@ def lift(code: list[tuple[int, bytes]], ids: dict[int, int] | None = None,
             st.append(E(f"Len({pop().text})"))
         elif name == "FIELD_GET.T" or name.startswith("FIELD_GET"):
             st.append(E(f"{pop().text}.{nm(f'f{slot_of(operand):x}')}"))
-        elif name == "PUSH.L":
-            st.append(E(str(struct.unpack_from("<i", operand)[0])))
+        elif name == "PUSH.L":  # the entry point keeps the literal's radix: 388A hex, 388D decimal
+            v = struct.unpack_from("<i", operand)[0]
+            st.append(E(f"&H{v & 0xFFFFFFFF:X}&" if op == 0x388A else
+                        f"{v}&" if -32768 <= v <= 32767 else str(v), t="L"))
         elif name == "DO":
             out.append("Do")
         elif name == "LOCAL":
@@ -450,7 +452,8 @@ def lift(code: list[tuple[int, bytes]], ids: dict[int, int] | None = None,
             elif name == "PUSH.R8":
                 st.append(E(repr(struct.unpack_from("<d", operand)[0])))
             else:
-                st.append(E(str(struct.unpack_from("<h", operand)[0])))
+                v = struct.unpack_from("<h", operand)[0]
+                st.append(E(f"&H{v & 0xFFFF:X}" if op == 0x3831 else str(v)))  # 3831: hex literal
         elif fam in BINOPS:
             b, a = pop(), pop()
             t, p = BINOPS[fam]
