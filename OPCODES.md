@@ -213,63 +213,63 @@ tests), 0 differ, 0 unsupported.
 
 `tools/decompile.py` rebuilds the project from the exe; `tools/roundtrip.py`
 recompiles it in the IDE next to the original source and compares p-code
-per procedure (`tools/pcode_diff.py` shows instruction diffs).
+per procedure (`tools/pcode_diff.py` shows instruction diffs). **All 483
+procedures of the 22 samples recompile p-code-identical** (form layouts
+still copied from the original source).
 
-- **RT_RCDATA 2 layout**: a header, the global image, the name pool
-  (`u16 size, 0, 0x1A`, 32-bucket hash, entries `u16 link, u8, u8 len,
-  name`, offsets from its start + 2; DLL/`Declare` names), then each .bas
-  image, then each form image (16 zero bytes, form record at 0x16) and its
-  control list. Chunks are `u16 len, u16, u16 0x1E`, some with a 2-byte
-  prefix. All 22 samples enumerate exactly their .mak modules and forms.
-- **Slots**: variables, parameters, return values, constants, Type/class
-  references, controls and globals share one slot numbering per module,
-  assigned in source text order. A slot's value/storage starts 2 bytes past
-  it (control and object records start at the operand itself). Order:
-  Functions and Declares (record offsets, sorted by name), then the
-  declarations section, then each procedure.
-- **Declarations section**: a module variable/constant is inline (size by
-  type: I 2, L/S/T 4, D/C 8, V 16, Type size + 2; constants hold their
-  value); a `Global` is a 2-byte slot holding its global offset; `Global
-  x As <class>` a 4-byte `kind, global offset`; `x() As New frmX` a
-  class reference plus `0x80NN, global offset`.
+- **RT_RCDATA 2 layout**: a header (with the String constants' texts,
+  `u16 size, u16 len, text, 0`, in declaration order), the global image,
+  the name pool (`u16 size, 0, 0x1A`, 32-bucket hash, entries `u16 link,
+  u8, u8 len, name`, offsets from its start + 2; DLL/`Declare` names), then
+  each .bas image, then each form image (16 zero bytes, form record at
+  0x16) and its control list. Chunks are `u16 len, u16, u16 0x1E`; the word
+  before a module's chunk + 4 is its declarations record (+18 flags: 0x40
+  Option Explicit, 0x800 Option Compare Text; +44 DefType table or 0xFFFF;
+  +50 line count).
+- **Slots**: one numbering per module, in compile order (source text
+  order, but an assignment's target after its expression): Functions and
+  Declares first (record offsets, sorted by name), the declarations
+  section, then each procedure: its parameters, return value, locals,
+  and the controls/forms/globals/constants it's first to use. A slot's
+  value starts 2 bytes past it (control/object records at the operand).
+  Sizes: control and form-property records 6, form/object records 4,
+  local Variant 4 (second word: its number), local array 6, others 2;
+  inline module storage by type (I 2, L/S/T 4, D/C 8, V 16, Type size + 2,
+  arrays 18 + 4 per dimension, dynamic 50).
+- **Locals**: value = BP offset (< 0), String number (odd: Strings and
+  Variants share one numbering 1, 3, ...), or 0 when unused (an unused
+  Variant still takes 16 bytes of frame). Parameters: even BP offsets >= 6,
+  4 argument bytes each ByRef; unused ones hold 0 too.
+- **Declarations**: a `Global` is a slot holding its global offset
+  (`Global x As <class>/<form>`: `kind or form number, global offset`;
+  `x() As New frmX`: class reference + `0x80NN, global offset`); array
+  descriptors give fixed bounds (`0x4000 | dims`, then `(count, lower)`
+  per dimension, last first). A `Global Const` used in another module gets
+  a copy slot there (first use); equal-valued constants need distinct names
+  (one slot each). Records follow text order, so `Declare`s are emitted in
+  record order, in the module whose records surround theirs.
 - **Global image**: offset 4 heads the Type chain (`name, next, size,
   first field`; field `name, next, type, offset`, fixed strings with a
   length word before; FIELD_* operands are field record offsets); globals
-  follow in declaration order with constant values inline; the global
-  object table (`0x80NN, 0, 0`) ends it. Type/field names aren't stored.
-- **Locals and parameters**: a slot's value is its BP offset (even
-  >= 6 parameter, < 0 local; odd = String local number); frame sizes give types of unused ones.
-  `Const` inside a procedure is inline like a module one.
-- **Names not stored**: general Sub/Function (code layout = procedures
-  sorted by name, case-insensitive; Function/Declare slots sorted too, so
-  synthetic names are fitted between the stored ones), variables, labels.
-- **Event signatures**: EVENTINFO parameter types (1 Integer, 3 Single, 6
-  String, 8 Control) from VBRUN300/VBX; `Index` when the argument words
-  exceed them.
-- **Declare parameters**: arguments are converted to the declared type at
-  the call site (`CVT.V>I` → `ByVal Integer`, `ByVal x` → `As Any`).
-- **Statement markers encode indentation**: `494B 4935 491F 4906 48F0
-  48D7 48C1` are columns 0, 4, … 24; the `mov ax, NN00` entries before each
-  are column `(NN >> 2) + 1` (the IDE regenerates source from p-code).
-- **Type suffix at a use** (`b% = 3`) selects another entry of the
-  variable handler, interpreter ID `| type << 10`; `Dim b%` doesn't.
-- `Left(` vs `Left$(`: the Variant form ends with `CVT.Ttmp>V`.
-- **Parentheses are compiled**: `49CE` (`PAREN`) marks every explicit
-  `( … )` of the source, so the lifter emits exactly those and no others
-  (parenthesis structure matches 3,330/3,335 corpus lines; the rest are
-  `DoEvents()` vs `DoEvents`).
-- `4FA6` releases a local object variable at procedure exit (epilogue).
-- A `Global Const` used from another module gets a slot there holding a
-  copy of its value (first use); any Global Const of the same type and
-  value compiles identically.
-- Project: `.VBX` files and Title from RT_RCDATA 1; executable name =
-  its first 9 bytes after `03 20 81 80 FF FF`.
+  follow in declaration order with constant values inline (String: a
+  descriptor); the global object table (`0x80NN, 0, 0`) ends it.
+- **Names not stored**: general Sub/Function (code layout and Function
+  slots are sorted by name, so synthetic names are fitted between the
+  stored ones), variables, Types/fields, labels.
+- **Encoded source details**: statement markers give the indentation
+  column (table in `decompile.py`; `48AF` + u16 for 25+, `4958` a `:`
+  statement; a marker before a `LABEL` is a blank line); `49CE` explicit
+  parentheses; literal radix (`3831`/`388A` hex, `3834`/`388D` decimal);
+  a type suffix at a use (`b%`) selects another handler entry (ID `| type
+  << 10`); `0768` `ReDim a$(...)`; `Left(` vs `Left$(` by `CVT.Ttmp>V`.
+- **Event signatures** from EVENTINFO (1 Integer, 3 Single, 6 String,
+  8 Control, + Index); **Declare parameters** from call-site conversions.
 
 ## Next steps
 
-- Round-trip every sample (current results in the commit log); fix what
-  the IDE rejects or compiles differently.
-- Declarations-section record (line count, `Option Explicit` flag) and
-  per-form metadata so whole executables match, not only p-code.
+- Whole-exe identity: data images still differ in 7 samples and every
+  module's declarations record (name-table size +30/+34: pad synthetic
+  names to the original total; one flag bit 0x8000 unexplained).
 - Form layouts (Begin Form ... End) from the form resources; the
   round-trip still copies them from the original source.
+- DefType tables beyond `DefInt A-Z` (only form seen in the samples).
