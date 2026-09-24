@@ -1050,7 +1050,7 @@ class Decompiler:
                 pe = max([pe] + [x + 2 for x in skip])
                 if pe < fo and all(self.value(base, z) == 0 for z in range(pe, fo, 2)):
                     for z in range(pe, fo, 2):
-                        items.append((z, "dim", f"f{z:X}", " As String", Var(z, "LOC")))
+                        items.append((z, "static", f"f{z:X}", " As Integer", Var(z, "MOD")))
             x = frame_known[0]
             # leading unused locals: zero slots from the end of the previous
             # procedure's allocations up to the first used local
@@ -1109,12 +1109,17 @@ class Decompiler:
                             vt, step, nv = "Variant", 4, nv - 1
                         elif ns > 0:
                             vt, step, ns = "String", 2, ns - 1
-                        else:  # the rest of the frame gap: numeric; otherwise not numbered
+                        elif extra >= 2:  # the rest of the frame gap: numeric locals
                             size = 8 if extra >= 8 else 4 if extra >= 4 else 2
                             vt = {8: "Double", 4: "Long", 2: "Integer"}[size]
                             extra -= size
                             step = 2
-                        items.append((x, "dim", f"f{x:X}", f" As {vt}", Var(x, "LOC")))
+                        else:  # no frame, no number: a Static (module storage) keeps both
+                            vt, step = "Static", 2
+                        if vt == "Static":
+                            items.append((x, "static", f"f{x:X}", " As Integer", Var(x, "MOD")))
+                        else:
+                            items.append((x, "dim", f"f{x:X}", f" As {vt}", Var(x, "LOC")))
                         x += step
                     continue
                 interior = x < frame_known[-1]  # nonzero values are locals only between known ones
@@ -1143,12 +1148,12 @@ class Decompiler:
             end, start = self.prev_end(m, k + 1), min(own(k + 1))
             if end < start and all(self.value(base, z) == 0 for z in range(end, start, 2)):
                 for z in range(end, start, 2):
-                    items.append((z, "dim", f"f{z:X}", " As String", Var(z, "LOC")))
+                    items.append((z, "static", f"f{z:X}", " As Integer", Var(z, "MOD")))
         if k == len(m["infos"]) - 1:  # zeros after every procedure's slots: unused locals too
             end, n = self.prev_end(m, k + 1), word(self.image, base)
             if end < n - 1 and all(self.value(base, z) == 0 for z in range(end, n - 1, 2)):
                 for z in range(end, n - 1, 2):
-                    items.append((z, "dim", f"f{z:X}", " As Integer", Var(z, "LOC")))
+                    items.append((z, "static", f"f{z:X}", " As Integer", Var(z, "MOD")))
         items.sort(key=lambda it: (it[0], it[1]))
 
         texts = [re.sub(r'"[^"]*"', lambda x: " " * len(x.group(0)), t or "") for _, t in body]
