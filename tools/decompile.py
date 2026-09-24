@@ -242,8 +242,10 @@ class Decompiler:
         mods = [dict(kind="bas", image=c, form=None, seg=None, start=0x06) for c in lay["modules"]]
         mods += [dict(kind="frm", image=c, form=self.forms[k][0], seg=None, start=0x1A, ctl=cl)
                  for k, (c, cl) in enumerate(lay["forms"])]
-        for m in mods:  # declarations record: word before the image + 4 (+18 flags: 0x40 Option Explicit)
-            m["explicit"] = bool(word(self.table, word(self.image, m["image"] - 2) + 4 + 18) & 0x40)
+        for m in mods:  # declarations record: word before the image + 4 (+18 flags: 0x40 Option Explicit;
+            rec = word(self.image, m["image"] - 2) + 4  # +44: DefType table, 0xFFFF if none)
+            m["explicit"] = bool(word(self.table, rec + 18) & 0x40)
+            m["defint"] = word(self.table, rec + 44) != 0xFFFF  # the samples' only DefType: DefInt A-Z
         for m in mods:  # Function/Declare slots: record offsets (sorted by name)
             m["funcs"], s = [], m["start"]
             while self.is_record(self.value(m["image"], s, False)):
@@ -685,6 +687,8 @@ class Decompiler:
         flags, count = word(self.table, rec + 18), word(self.table, rec + 50)
         if flags & 0x0800:
             out.insert(0, "Option Compare Text")
+        if m["defint"]:
+            out.insert(0, "DefInt A-Z")
         if flags & 0x40:
             out.insert(0, "Option Explicit")
         out = ["'"] * max(0, count - len(out) - 1) + out + [""] if count else out
@@ -1116,6 +1120,14 @@ class Decompiler:
 
         texts = [re.sub(r'"[^"]*"', lambda x: " " * len(x.group(0)), t or "") for _, t in body]
 
+        def compile_order(t: str) -> str:
+            """An assignment's target gets its slot after the expression is compiled."""
+            mt = re.match(r"^(\s*)(Set\s+|Let\s+)?([A-Za-z_][\w.!$%&#@]*(?:\([^=]*\))?)\s*=\s*(.*)$", t)
+            if mt and not re.match(r"^\s*(If|ElseIf|For|Select|Case|Do|Loop|While)\b", t, re.I):
+                return mt.group(1) + mt.group(4) + " " + mt.group(3)
+            return t
+        texts = [compile_order(t) for t in texts]
+
         def appear(name: str):
             base_name = re.escape(name.rstrip("%&!#@$"))
             pat = re.compile(rf"(?<![\w.!]){base_name}(?![\w])", re.I)
@@ -1138,8 +1150,9 @@ class Decompiler:
             # past the first use (same statement as a preceding control
             # reference), the variable was declared implicitly there
             pos = 0 if last == (-1, 0) else (last[0] if last[1] < 0 else last[0] + 1)
+            implicit_type = "Integer" if m["defint"] else "Variant"
             if key is not None and key[0] < pos and kind == "dim" and not v.array and not v.udt \
-                    and key[:2] > last and not m["explicit"]:
+                    and key[:2] > last and not m["explicit"] and (decl.strip() == f"As {implicit_type}" or key[2]):
                 last = key[:2]
                 continue
             if key is not None and key[0] < pos:
