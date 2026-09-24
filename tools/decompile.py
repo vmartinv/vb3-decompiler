@@ -1084,27 +1084,34 @@ class Decompiler:
                         y += 2
                     prev_bp = min([self.value(base, z) for z in known if z < x and self.value(base, z) < 0] + [-22])
                     nxt_k = min((z for z in known if z >= y and self.value(base, z) < 0), default=None)
-                    nv, extra = 0, 0
-                    if nxt_k is not None:
+                    # frame gap (unused Variants take 16 bytes, numerics their size) and
+                    # numbering (Variants and Strings share 1, 3, ...) of the next locals
+                    nv, ns, extra, framed = 0, 0, 0, nxt_k is not None
+                    if framed:
                         v2 = vars_.get(nxt_k)
                         t2 = v2.type() if v2 is not None and v2.votes else "V"
                         fs2 = {"I": 2, "L": 4, "S": 4, "D": 8, "C": 8, "V": 16}.get(t2, 2)
                         extra = max(0, prev_bp - self.value(base, nxt_k) - fs2)
                         nv = min(extra // 16, (y - x) // 4)
                         extra -= 16 * nv
-                    if nv == 0:  # the numbering (Strings, Variants: 1, 3, ...) of the next local
-                        nxt_s = min((z for z in known if z >= y and self.value(base, z) > 0
-                                     and self.value(base, z) % 2 == 1 and z in vars_), default=None)
-                        if nxt_s is not None:
-                            prior = sum(1 for z in known if z < x and self.value(base, z) > 0
-                                        and self.value(base, z) % 2 == 1 and self.value(base, z) < 200)
-                            nv = max(0, min((self.value(base, nxt_s) - 1) // 2 - prior, (y - x) // 4))
+                    nxt_s = min((z for z in known if z >= y and self.value(base, z) > 0
+                                 and self.value(base, z) % 2 == 1 and z in vars_), default=None)
+                    if nxt_s is not None:
+                        prior = sum(1 for z in known if z < x and self.value(base, z) > 0
+                                    and self.value(base, z) % 2 == 1 and self.value(base, z) < 200)
+                        numbered = max(0, (self.value(base, nxt_s) - 1) // 2 - prior)
+                        if framed:
+                            ns = max(0, numbered - nv)  # the other numbered ones: Strings
+                        else:
+                            nv = min(numbered, (y - x) // 4)
                     while x < y:
                         if nv > 0:
                             vt, step, nv = "Variant", 4, nv - 1
-                        else:  # the rest of the frame gap: numeric; none left: String
-                            size = 8 if extra >= 8 else 4 if extra >= 4 else 2 if extra >= 2 else 0
-                            vt = {8: "Double", 4: "Long", 2: "Integer", 0: "String"}[size]
+                        elif ns > 0:
+                            vt, step, ns = "String", 2, ns - 1
+                        else:  # the rest of the frame gap: numeric; otherwise not numbered
+                            size = 8 if extra >= 8 else 4 if extra >= 4 else 2
+                            vt = {8: "Double", 4: "Long", 2: "Integer"}[size]
                             extra -= size
                             step = 2
                         items.append((x, "dim", f"f{x:X}", f" As {vt}", Var(x, "LOC")))
@@ -1137,6 +1144,11 @@ class Decompiler:
             if end < start and all(self.value(base, z) == 0 for z in range(end, start, 2)):
                 for z in range(end, start, 2):
                     items.append((z, "dim", f"f{z:X}", " As String", Var(z, "LOC")))
+        if k == len(m["infos"]) - 1:  # zeros after every procedure's slots: unused locals too
+            end, n = self.prev_end(m, k + 1), word(self.image, base)
+            if end < n - 1 and all(self.value(base, z) == 0 for z in range(end, n - 1, 2)):
+                for z in range(end, n - 1, 2):
+                    items.append((z, "dim", f"f{z:X}", " As Integer", Var(z, "LOC")))
         items.sort(key=lambda it: (it[0], it[1]))
 
         texts = [re.sub(r'"[^"]*"', lambda x: " " * len(x.group(0)), t or "") for _, t in body]
