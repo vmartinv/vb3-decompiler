@@ -276,16 +276,21 @@ def lift(code: list[tuple[int, bytes]], ids: dict[int, int] | None = None,
                 out.append(f"{o}PSet " + ", ".join(parts))
             else:
                 out.append(f"{o}Scale")
-        elif name in ("PRINT_NL", "PRINT_COMMA"):
-            print_items.append(pop().text)
-            if name == "PRINT_COMMA":
-                continue
+        elif name in ("PRINT_TAB", "PRINT_SPC"):
+            st.append(E(f"{'Tab' if name == 'PRINT_TAB' else 'Spc'}({pop().text})"))
+        elif name in ("PRINT_SEMI", "PRINT_COMMA"):  # untyped ones also stand alone (`Print , x`)
+            item = pop().text if len(st) > (gfx[-1][1] if gfx else 0) else ""
+            print_items.append(item + ("; " if name == "PRINT_SEMI" else ", "))
+        elif name in ("PRINT_NL", "PRINT_END"):
             o, mark = gfx.pop() if gfx else ("", len(st))
+            if len(st) > mark:  # the last item (PRINT_END: a trailing Tab/Spc)
+                print_items.append(pop().text)
             del st[mark:]
+            items = "".join(print_items).rstrip()
             if o.startswith("\0file"):
-                out.append(f"Print {o[5:]}, " + ", ".join(print_items))
+                out.append(f"Print {o[5:]}," + (f" {items}" if items else ""))
             else:
-                out.append(f"{o}Print " + ", ".join(print_items))
+                out.append(f"{o}Print" + (f" {items}" if items else ""))
             print_items.clear()
         elif name in ("TEXTWIDTH", "TEXTHEIGHT", "POINT"):
             o, mark = gfx.pop() if gfx else ("", len(st))

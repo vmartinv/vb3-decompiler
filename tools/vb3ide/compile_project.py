@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-Compiles existing VB3 projects (.mak) to EXE through the real IDE, via
-xdotool: opens the project, File > Make EXE File..., accepts the default
-output name, then renames the result to <project>.exe next to the .mak.
+Compiles existing VB3 projects (.mak) to EXE through the real IDE's
+command line, `VB.EXE /MAKE <project>`, then renames the result to
+<project>.exe next to the .mak.
 
 Prerequisites: same as compile_snippet.py (Xvfb + openbox on $DISPLAY,
 working $WINEPREFIX, VB.EXE in $IDE_DIR). For the VB3 sample projects,
@@ -32,10 +32,6 @@ def to_winpath(path: Path) -> str:
     return "Z:" + str(path.resolve()).replace("/", "\\")
 
 
-def xdo(*args: str) -> None:
-    subprocess.run(["xdotool", *args], env=ENV, check=True)
-
-
 def crashed() -> bool:
     """Wine's crash dialog: the IDE died (e.g. while building a large project)."""
     r = subprocess.run(["xdotool", "search", "--name", "Wine Debugger|Program Error"],
@@ -43,43 +39,43 @@ def crashed() -> bool:
     return bool(r.stdout.strip())
 
 
-def compile_mak(mak: Path, load_wait: float = 8, build_wait: float = 10) -> bool:
+def dialog_open() -> bool:
+    """A compile error: a message box titled plainly `Microsoft Visual Basic`."""
+    r = subprocess.run(["xdotool", "search", "--name", "^Microsoft Visual Basic$"],
+                       env=ENV, capture_output=True, text=True)
+    return bool(r.stdout.strip())
+
+
+def compile_mak(mak: Path, timeout: float = 120) -> bool:
+    """`VB.EXE /MAKE`: builds and exits (about 2 s); on a compile error it
+    stays open on the error dialog, which is screenshotted to <mak>.fail.png.
+    (Builds via the Make EXE dialog differ in one word of resource 1, so
+    compare /MAKE builds with /MAKE builds.)"""
     exe = mak.with_suffix(".exe")
     exe.unlink(missing_ok=True)
+    mak.with_suffix(".fail.png").unlink(missing_ok=True)
     before = {p: p.stat().st_mtime for p in mak.parent.glob("*.[eE][xX][eE]")}
     subprocess.run(["wineserver", "-k"], env=ENV, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    time.sleep(2)
-    subprocess.Popen(["wine", "VB.EXE", to_winpath(mak)], cwd=IDE_DIR, env=ENV,
-                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    time.sleep(load_wait)
-    xdo("mousemove", "--sync", "17", "41", "click", "1")      # File menu
-    time.sleep(1.5)
-    xdo("mousemove", "--sync", "60", "343", "click", "1")     # Make EXE File...
-    time.sleep(2)
-    xdo("mousemove", "--sync", "696", "221", "click", "1")    # OK (default name)
-    for _ in range(int(build_wait)):
-        time.sleep(1)
-        if crashed():
-            return False
-        new = [p for p in mak.parent.glob("*.[eE][xX][eE]") if before.get(p) != p.stat().st_mtime]
-        if new:
-            # VB writes the EXE progressively (resources last): wait until
-            # its size has been stable for a few seconds.
-            size, stable = -1, 0
-            while stable < 4:
-                time.sleep(1)
-                if crashed():  # IDE died mid-write: the EXE is truncated
-                    new[0].unlink(missing_ok=True)
-                    return False
-                cur = new[0].stat().st_size
-                stable = stable + 1 if cur == size else 0
-                size = cur
-            new[0].rename(exe)  # several projects can share a directory
-            return True
-    # no EXE: keep a screenshot of the IDE (compile errors are dialogs)
-    subprocess.run(["import", "-window", "root", str(mak.with_suffix(".fail.png"))], env=ENV,
-                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    return False
+    proc = subprocess.Popen(["wine", "VB.EXE", "/MAKE", to_winpath(mak)], cwd=IDE_DIR, env=ENV,
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    t0, seen = time.time(), 0
+    while proc.poll() is None and time.time() - t0 < timeout:
+        time.sleep(0.5)
+        seen = seen + 1 if time.time() - t0 > 3 and (dialog_open() or crashed()) else 0
+        if seen >= 4:
+            break
+    ok = proc.poll() is not None
+    if not ok:
+        subprocess.run(["import", "-window", "root", str(mak.with_suffix(".fail.png"))], env=ENV,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        subprocess.run(["wineserver", "-k"], env=ENV, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        proc.wait()
+        return False
+    new = [p for p in mak.parent.glob("*.[eE][xX][eE]") if before.get(p) != p.stat().st_mtime]
+    if not new:
+        return False
+    new[0].rename(exe)  # several projects can share a directory
+    return True
 
 
 def main():
@@ -89,7 +85,7 @@ def main():
     args = ap.parse_args()
     maks = list(args.paths) + (sorted(args.all.rglob("*.mak")) if args.all else [])
     for mak in maks:
-        ok = compile_mak(mak) or compile_mak(mak, load_wait=15, build_wait=20)
+        ok = compile_mak(mak)
         print(f"{'OK  ' if ok else 'FAIL'} {mak}", flush=True)
     subprocess.run(["wineserver", "-k"], env=ENV, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 

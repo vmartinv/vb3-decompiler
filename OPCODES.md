@@ -277,22 +277,42 @@ still copied from the original source).
   `Debug`, type suffixes, intrinsic types. Identifiers are at most 40
   characters. The project record at table offset 12 (+30) sums global
   names similarly.
-- **Name-dependent offsets**: procedure record +4, form declarations
-  record +0 and another project field also change when *other* names
-  change length (by −1/−2 for lengthened 2-/3-char names, +len for the
-  procedure's own name, +13/+16 splits for a Declare whose name equals
-  its alias), so they're not plain append offsets; they differ from the
-  original in 392/483 procedure records. Unused `Const`s are not neutral
-  padding: each changes declarations-record +6/+10/+14/+36.
+- **Print** (all targets alike): one op per item type (% & ! # @ $ V)
+  and following separator: newline / `;` / `,`. `0x610A` ends a
+  statement without newline (trailing separator, empty Print). Tab(n) /
+  Spc(n) have their own ops, followed by untyped `;`/`,` ops, which also
+  stand alone (`Print , x`).
+- **Code segment → module**: a module's procedure records follow its
+  declarations record (the word before its image + 4) in the table, so
+  each segment belongs to the module whose record precedes its records.
+- **Compile-time name pool** (procedure record +4): the offset of the
+  procedure's name in the IDE's project-wide name pool (same layout as
+  the exe's pool: 90-byte header, entries `len + 4`). Order: per module,
+  code modules (`.bas`/`.glo`) first, then forms, each in project order:
+  the module file's **full path** as the IDE saw it (under Wine
+  `Z:\home\...\NAME.FRM`), then every procedure/Declare name the module
+  enters first, at its definition or a call statement (first word or
+  after `Call`; a Function called inside an expression isn't entered
+  there). Names are shared: the same name in two modules has one entry.
+  Controls, variables, comments and form properties don't take entries.
+  The exe keeps only the Declare names, but the offsets give each unstored
+  name's length and each module path's length (`Decompiler.pool_lengths`;
+  the original build directory's length follows from any form boundary).
+  The model predicts all 483 sample records. The project record (table
+  offset 12, +30) is the pool end + 259 + the global names.
+- Unused `Const`s are not neutral padding: each changes
+  declarations-record +6/+10/+14/+36.
 - **Event signatures** from EVENTINFO (1 Integer, 3 Single, 6 String,
   8 Control, + Index); **Declare parameters** from call-site conversions.
 
 ## Next steps
 
 - Whole-exe identity: data images still differ in 6 samples (names
-  of Types/fields, symbol-hash order); tables differ by names only.
-  Decode the name-dependent record offsets (procedure record +4 etc.;
-  vary one name at a time, `work/tests/rv_*`), then pad/shrink synthetic
-  names per module (locals and labels are module-private; reusing short
-  local names across procedures shrinks the total).
+  of Types/fields, symbol-hash order). Procedure names now take their
+  original lengths from the name pool; still to size: variable/label
+  names (per-module name table +30, table offset 76 record +30), the last
+  pool entry, Declare aliases.
 - DefType tables beyond `DefInt A-Z` (only form seen in the samples).
+- Batteries (`tools/battery.py`, 554/695): builtins 68/125 (unmapped
+  builtin ops: probe `builtins`), statements 41/68, names 22/35, types
+  50/62, deftype 49/56, expressions 86/91, print 238/238.

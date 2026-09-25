@@ -163,6 +163,62 @@ def image_layout(image: bytes, nforms: int) -> dict:
     return out
 
 
+NAME_CHARS = "0123456789abcdefghijklmnopqrstuvwxyz"  # ASCII order, case-folded
+RESERVED = None
+
+
+def mod_name(slot: int) -> str:
+    """Synthetic module variable name; `mE` would be the keyword Me."""
+    return f"m{slot:X}" if slot != 0xE else "m0E"
+
+
+def name_between(lo: str, hi: str | None, n: int, taken: set[str]) -> str | None:
+    """The smallest name of exactly n characters with lo < name < hi
+    (case-insensitive), not taken, not a keyword/builtin and not shaped
+    like the decompiler's synthetic variable names (letter + hex)."""
+    global RESERVED
+    if RESERVED is None:
+        import namesize
+        RESERVED = namesize.KEYWORDS | namesize.BUILTINS
+    lo = lo.lower()
+    base = "".join(c for c in lo if c in NAME_CHARS or c == "_")  # `_` only kept from lo: its order vs letters is unknown
+    if len(base) < n:
+        cur = list(base + "0" * (n - len(base)))  # the smallest longer name with lo as prefix
+    else:
+        cur = _next_name(list(base[:n]))
+    if cur and not cur[0].isalpha():
+        cur = ["a"] + ["0"] * (n - 1)
+    for _ in range(200000):
+        if cur is None:
+            return None
+        c = "".join(cur)
+        if hi is not None and c >= hi.lower():
+            return None
+        if (c[0].isalpha() and c > lo and c not in taken and c not in RESERVED
+                and not re.fullmatch(r"[a-z][0-9a-f]+", c)):
+            return c[0].upper() + c[1:]
+        cur = _next_name(cur)
+    return None
+
+
+def _next_name(cur: list[str]) -> list[str] | None:
+    cur = cur[:]
+    k = len(cur) - 1
+    while k >= 0:
+        if cur[k] == "_":  # (from lo) next in ASCII order: `a`
+            cur[k] = "a"
+            return cur
+        i = NAME_CHARS.index(cur[k])
+        if i + 1 < len(NAME_CHARS):
+            cur[k] = NAME_CHARS[i + 1]
+            if k == 0 and not cur[0].isalpha():
+                cur[0] = "a"
+            return cur
+        cur[k] = NAME_CHARS[0]
+        k -= 1
+    return None
+
+
 def pool_name(image: bytes, pool: int, off: int) -> str:
     p = pool + 2 + off
     return image[p + 4:p + 4 + image[p + 3]].decode("latin-1")
@@ -257,8 +313,17 @@ class Decompiler:
             m["decl_start"] = s
         segs = sorted({p.segment for p in self.procs})
         free = [m for m in mods if m["kind"] == "bas"]
+        # a module's procedure records follow its declarations record in the table
+        starts = sorted((word(self.image, m["image"] - 2) + 4, k) for k, m in enumerate(mods))
         for seg in segs:
             recs = {p.record for p in self.procs if p.segment == seg}
+            own = {max((k for r0, k in starts if r0 < r), default=None) for r in recs}
+            if len(own) == 1 and None not in own and mods[k := own.pop()]["seg"] is None:
+                mods[k]["seg"] = seg
+                P.SEG_IMAGE[seg] = mods[k]["image"]
+                if mods[k] in free:
+                    free.remove(mods[k])
+                continue
             form = self.sym.seg_form.get(seg) or next((P.RECORD_FORM[r] for r in recs if r in P.RECORD_FORM), None)
             if form:
                 m = next((m for m in mods if m["form"] == form), None)
@@ -397,6 +462,7 @@ class Decompiler:
                 break
             if any(v.procs and v.procs[0] == k for v in vars_.values()) or any(kk == k for kk, _ in refs.values()):
                 break
+        first_owned = min(first_owned, word(self.image, base) - 1)  # nothing owned: the image's end
         m.update(infos=infos, vars=vars_, refs=refs, udt=udt, first_owned=first_owned, call_slots=call_slots)
 
     def is_global_slot(self, base: int, slot: int) -> bool:
@@ -680,7 +746,7 @@ class Decompiler:
             elif it[0] == "const":
                 out.append(f"Const {m['names'].get(it[1], f'K{it[1]:X}')} = {it[2]}")
             else:
-                out.append(f"Dim {m['names'].get(it[1], f'm{it[1]:X}')}{it[2] if it[2][0] in '( ' else ' ' + it[2]}")
+                out.append(f"Dim {m['names'].get(it[1], mod_name(it[1]))}{it[2] if it[2][0] in '( ' else ' ' + it[2]}")
         for g in pending:
             out += types[g].lines(gtypes)
         out = decl_lines + out
@@ -712,6 +778,8 @@ class Decompiler:
             self.analyze_module(m)
         self.declarations(mods)
         self.all_mods = mods
+        self.decl_home = next((m for m in mods if m["kind"] == "bas"), mods[0])
+        self.pool_lengths(mods)
         for m in mods:
             self.name_module(m)
         self.collect_calls(mods)
@@ -722,6 +790,107 @@ class Decompiler:
         self._mods = mods
         return mods
 
+    def pool_lengths(self, mods: list[dict]) -> None:
+        """Procedure record +4 is an offset in the IDE's compile-time name
+        pool: a 90-byte header, then per module (code modules, then forms,
+        in project order) its file's full path, then each procedure/Declare
+        name the module enters first (at its definition or a call
+        statement), len + 4 each, shared project-wide. The gaps between the
+        offsets give the unstored names' lengths (self.name_len) and the
+        code modules' path lengths (self.bas_path_len), with D the length of
+        the original build directory (form paths: D + 1 + file name)."""
+        t = self.table
+        recs = sorted(set(self.by_record) | {r for r in range(0, len(t) - 55, 8) if self.is_declare(r)})
+        block_of = {}
+        for b, m in enumerate(mods):
+            for info in m["infos"]:
+                block_of[info.proc.record] = b
+        for r in recs:
+            if r not in block_of:
+                block_of[r] = mods.index(self.declare_home(r))
+        at: dict[int, list[int]] = {}
+        for r in recs:
+            at.setdefault(word(t, r + 4), []).append(r)
+        offs = sorted(at)
+        blk = [min(block_of[r] for r in at[o]) for o in offs]
+        length: list = []
+        for o in offs:
+            known = None
+            for r in at[o]:
+                if r in self.events:
+                    known = len(self.events[r])
+                elif r not in self.by_record:  # Declare: its DLL function name (no Alias assumed)
+                    known = len(pool_name(self.image, self.pool, word(t, r + 46)))
+            length.append(known)
+        files = {b: self.form_files[k] if k < len(self.form_files) else None
+                 for k, b in enumerate(b for b, m in enumerate(mods) if m["kind"] == "frm")}
+        bas_len: dict[int, int | None] = {b: None for b, m in enumerate(mods) if m["kind"] == "bas"}
+        D: list = [None]
+
+        def path(b):  # (known length or None, which unknown)
+            if b in bas_len:
+                return (bas_len[b], ("bas", b))
+            f = files.get(b)
+            return (None if D[0] is None or f is None else D[0] + 1 + len(f), ("D", b))
+
+        eqs = []  # (lhs, name-length index or None, blocks whose paths are summed)
+        if offs:
+            eqs.append((offs[0] - 90, None, list(range(0, blk[0] + 1))))
+        for i in range(len(offs) - 1):
+            eqs.append((offs[i + 1] - offs[i] - 4, i, list(range(blk[i] + 1, blk[i + 1] + 1))))
+        for final in (False, True):
+            if final and D[0] is None:
+                D[0] = getattr(self, "build_dir_len", None)
+            changed = True
+            while changed:
+                changed = False
+                for lhs, i, blocks in eqs:
+                    rest, unknown = lhs, []
+                    if i is not None:
+                        if length[i] is None:
+                            unknown.append(("len", i))
+                        else:
+                            rest -= length[i]
+                    for b in blocks:
+                        v, u = path(b)
+                        if v is None:
+                            unknown.append(u)
+                        else:
+                            rest -= v + 4
+                    if len(unknown) != 1:
+                        if final and D[0] is not None and unknown and all(k in ("bas", "len") for k, _ in unknown):
+                            # only the sum is observable: module paths get 7-character
+                            # stems, a name the remainder (else the paths share it)
+                            paths = [x for k, x in unknown if k == "bas"]
+                            names = [x for k, x in unknown if k == "len"]
+                            each = D[0] + 1 + 7 + 4
+                            if names and 1 <= rest - len(paths) * (each + 4) <= 40:
+                                length[names[0]] = rest - len(paths) * (each + 4)
+                                for x in paths:
+                                    bas_len[x] = each
+                            elif not names:
+                                q, r_ = divmod(rest - 4 * len(paths), len(paths))
+                                for j_, x in enumerate(paths):
+                                    bas_len[x] = q + (j_ < r_)
+                            else:
+                                continue
+                            changed = True
+                        continue
+                    kind, x = unknown[0]
+                    if kind == "len":
+                        length[x] = rest
+                    elif kind == "bas":
+                        bas_len[x] = rest - 4
+                    elif files.get(x):
+                        D[0] = rest - 4 - 1 - len(files[x])
+                    else:
+                        continue
+                    changed = True
+        self.name_len = {r: length[k] for k, o in enumerate(offs) for r in at[o]
+                         if length[k] is not None and 0 < length[k] <= 40}
+        self.bas_path_len = {b: v for b, v in bas_len.items() if v is not None}
+        self.orig_dir_len = D[0]
+
     def name_module(self, m: dict) -> None:
         vars_, refs, infos = m["vars"], m["refs"], m["infos"]
         names: dict[int, str] = {}
@@ -729,7 +898,7 @@ class Decompiler:
             if it[0] in ("dim", "const"):
                 names[it[1]] = f"{'K' if it[0] == 'const' else 'm'}{it[1]:X}"
             elif it[0] == "newobj":
-                names[it[1]] = f"G{it[3]:X}" if m["kind"] == "bas" else f"m{it[1]:X}"
+                names[it[1]] = f"G{it[3]:X}" if m["kind"] == "bas" else mod_name(it[1])
                 self.global_name[it[3]] = names[it[1]]
         gconst = {}  # (type, literal) -> Global Const names (each copy slot needs its own)
         for mm in self.all_mods:
@@ -864,6 +1033,14 @@ class Decompiler:
         def fits(c: str, lo: str, hi: str | None) -> bool:
             return c.lower() > lo.lower() and (hi is None or c.lower() < hi.lower()) and c.lower() not in taken
 
+        lens = getattr(self, "name_len", {})
+        for k, info in enumerate(infos):  # exact original lengths (compile-time name pool)
+            if not info.name and info.proc.record in lens:
+                c = name_between(*bounds(k), lens[info.proc.record], taken)
+                if c:
+                    info.name = c
+                    self.proc_name[info.proc.record] = c
+                    taken.add(c.lower())
         k = 0
         while k < len(infos):
             if infos[k].name:
@@ -1371,9 +1548,35 @@ class Decompiler:
         return note or None
 
 
+def wine_path(p: Path) -> str:
+    """How the IDE (under Wine, drive Z: = /) sees a directory."""
+    return "Z:" + str(p.resolve()).replace("/", "\\")
+
+
+def bas_stems(d: Decompiler, mods: list[dict], n: int, dir_len: int, used: set[str]) -> list[str]:
+    """Code module file names: their full paths are compile-time name pool
+    entries, so each stem keeps its original length (the original build
+    directory's length when known, else dir_len, the output's)."""
+    paths = getattr(d, "bas_path_len", {})
+    bas = [b for b, m in enumerate(mods) if not m["form"]]
+    out = []
+    for k in range(n):
+        want = paths.get(bas[k]) if k < len(bas) else None
+        size = want - (getattr(d, "orig_dir_len", None) or dir_len) - 1 - 4 if want is not None else None
+        stem = f"MODULE{k + 1}"
+        if size is not None and 1 <= size <= 8:
+            base = f"M{k + 1}" if size >= len(f"M{k + 1}") else ""
+            stem = next((c for c in ([base.ljust(size, "X")] if base else []) +
+                         [chr(65 + j) * size for j in range(26)] if c not in used), stem)
+        used.add(stem)
+        out.append(stem)
+    return out
+
+
 def write_project(d: Decompiler, out: Path, layout_from: Path | None, name: str) -> Path:
     """Writes the module files and a .mak named after the executable; returns the .mak."""
     out.mkdir(parents=True, exist_ok=True)
+    d.build_dir_len = len(wine_path(out))
     mods = d.run()
     code = {m["form"]: m["lines"] for m in mods if m["form"]}
     modules = [m["lines"] for m in mods if not m["form"]]
@@ -1409,8 +1612,9 @@ def write_project(d: Decompiler, out: Path, layout_from: Path | None, name: str)
         body = code.get(form[0], [])
         (out / fname).write_bytes(("\r\n".join(layout + body) + "\r\n").encode("latin-1"))
         files.append(fname)
+    stems = bas_stems(d, mods, len(modules), len(wine_path(out)), {Path(f).stem.upper() for f in files})
     for k, lines in enumerate(modules):
-        fname = f"MODULE{k + 1}.BAS"
+        fname = f"{stems[k]}.BAS"
         (out / fname).write_bytes(("\r\n".join(lines) + "\r\n").encode("latin-1"))
         files.append(fname)
     # project directory (RT_RCDATA 1): 9-byte executable name, u16, u16, title

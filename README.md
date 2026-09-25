@@ -27,12 +27,14 @@ tools/
   decompile.py           rebuilds a project (.mak/.frm/.bas) from an exe
   vbdecl.py              declarations from the data images (Types, globals)
   roundtrip.py           recompiles decompiled samples in the IDE, compares p-code
+  battery.py             feature batteries (batteries/*.py): generated cases, round-tripped
+  opprobe.py             opcode discovery probes (probes/*.py)
   pcode_diff.py          instruction-level diff of two builds
   vb3ide/
     kwaj_extract.py      decompresses VB3 setup-disk files (libmspack via ctypes)
     restore_install.py   rebuilds the install tree (incl. sample projects)
     compile_snippet.py   drives the real VB3 IDE to compile test programs
-    compile_project.py   compiles whole .mak projects through the IDE
+    compile_project.py   compiles .mak projects with `VB.EXE /MAKE`
 ```
 
 All Python, standard library only except `vb3ide/kwaj_extract.py` (needs

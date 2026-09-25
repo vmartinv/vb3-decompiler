@@ -57,7 +57,12 @@ NAMES: dict[int, str] = {
     0x27E8: "SCALE",
     0x296C: "TEXTWIDTH", 0x28FF: "TEXTHEIGHT", 0x2A69: "POINT",
     0x3764: "DEBUG", 0x2124: "PRINT_BEGIN",
-    0x6132: "PRINT_NL", 0x60A4: "PRINT_NL", 0x60DE: "PRINT_NL", 0x6012: "PRINT_COMMA",
+    # Print items, one op per item type (% & ! # @ $ Variant) and what follows it:
+    # end of statement (newline), `;` or `,`. PRINT_END closes a statement ending in `;`/`,` or empty.
+    **{o: "PRINT_NL" for o in (0x60DE, 0x608F, 0x609D, 0x60AE, 0x60B5, 0x6132, 0x60A4)},
+    **{o: "PRINT_SEMI" for o in (0x6045, 0x604B, 0x6059, 0x6069, 0x607F, 0x6104, 0x6085, 0x60FD)},
+    **{o: "PRINT_COMMA" for o in (0x6032, 0x6039, 0x6024, 0x602B, 0x603F, 0x614D, 0x6012, 0x6146)},
+    0x610A: "PRINT_END", 0x613F: "PRINT_TAB", 0x6138: "PRINT_SPC",  # Tab(n)/Spc(n), then 60FD `;` / 6146 `,`
     0x0DEA: "RET_SLOT", 0x67A2: "BYVAL",                        # reserves a call's return value (method used as a value)
     0x4A08: "PUSH_NOTHING", 0x4F3A: "IS", 0x4A3A: "TYPEOF_IS",
     # --- calls ---------------------------------------------------------
@@ -97,6 +102,15 @@ NAMES: dict[int, str] = {
     0x40DF: "ADD.V", 0x38D3: "ADD.I", 0x3B6E: "ADD.R8", 0x3D47: "ADD.T",
     0x416A: "SUB.V", 0x38E1: "SUB.I",
     0x4160: "MUL.V", 0x38EF: "MUL.I", 0x3B80: "MUL.R8",
+    # from probes/typeops (one statement per line: `a = b` per type pair, `v = x op y` per type)
+    0x0E9D: "CVT.I>C", 0x0EC5: "CVT.L>I", 0x0ED9: "CVT.L>R8", 0x0EED: "CVT.L>C", 0x0EFD: "CVT.R8>C",
+    0x1060: "CVT.V>L", 0x10D7: "CVT.V>C", 0x110E: "CVT.C>I", 0x1125: "CVT.C>L", 0x1139: "CVT.C>R8",
+    0x1156: "CVT.C>V",
+    0x3A63: "MUL.L", 0x3AA0: "NOT.L", 0x3AAF: "NEG.L", 0x3AE8: "EQV.L", 0x3AF2: "IMP.L", 0x3B36: "GE.L",
+    0x3BD6: "NEG.R8",
+    0x3C86: "ADD.C", 0x3C8C: "SUB.C", 0x3C92: "NEG.C", 0x3D1D: "MUL.C",
+    0x3CB0: "EQ.C", 0x3CD7: "LE.C", 0x3CE9: "GE.C", 0x3CFC: "LT.C", 0x3D0D: "GT.C",
+    0x3DD2: "GE.T", 0x3DDB: "GT.T", 0x3DE4: "LT.T", 0x3DED: "LE.T",
     0x4241: "DIV.V", 0x3B89: "DIV.R8",
     0x390B: "NEG",
     0x4468: "EQ.V", 0x396D: "EQ.I", 0x3DF6: "EQ.T", 0x3C17: "EQ.R8", 0x3B51: "EQ.L",
