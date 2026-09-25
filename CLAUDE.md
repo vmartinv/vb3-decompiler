@@ -62,11 +62,41 @@ Reusable VB3 reverse-engineering tools + findings. Companion to
   order can legitimately differ from a renamed reconstruction's text
   order even though each procedure's own p-code matches. This technique
   has a real limit, though: once it shows the mismatch depends on exact
-  string content (a hash-bucket-style structure, not a length sum),
-  further bisection just keeps reconfirming "it's naming" without
-  producing a fix, since a foreign target never gives you true names to
-  substitute — stop there and record it as the same open problem as the
-  name-length items, not chase the single "culprit" name.
+  *string content* (not decomposable into "this one name" via more
+  bisection), that's the signal to stop guessing black-box and switch to
+  reading VB.EXE's own logic (next bullet) — splicing tells you *that*
+  naming matters and roughly how, not the actual mechanism.
+- **VB.EXE's own logic is readable, and often the faster path once
+  black-box testing finds something naming/order-related** (a
+  hash/bucket structure, an emission rule) rather than a pure sum:
+  decompile the relevant segment with Ghidra instead of guessing further
+  from input/output pairs. Ghidra is installed (`pacman -S ghidra`,
+  official `extra` repo — `pacman` is aliased to `yay` here, so AUR
+  works too if something's not in `extra`). It decompiles a raw NE
+  segment cleanly once imported as `x86:LE:16:Real Mode` with the plain
+  binary loader at base 0 (segment bytes are already one contiguous
+  blob once pulled via `pcode_disasm.parse_ne(...)[n].data`) — far more
+  legible than manually walking capstone output, which is fine for a
+  short handler body (as `pcode_disasm.py` already does for
+  VBRUN300.DLL) but not for tracing control flow through a real
+  compiler. Headless recipe:
+  `analyzeHeadless <proj-dir> <name> -import <segment.bin> -processor
+  "x86:LE:16:Real Mode" -loader BinaryLoader -loader-baseAddr 0`
+  to import + auto-analyze once, then re-run against the saved project
+  with a script to decompile specific addresses:
+  `analyzeHeadless <proj-dir> <name> -process <segment.bin>
+  -noanalysis -scriptPath <dir> -postScript <Script>.java` — write the
+  script as a Java `GhidraScript` (a `.py` one needs PyGhidra, which
+  isn't enabled by default here), using `DecompInterface` +
+  `getFunctionContaining(addr)` + `getDecompiledFunction().getC()` per
+  address of interest. Segment 53 alone (VB.EXE's compile-time symbol
+  table code, ~35KB) took Ghidra ~25s to auto-analyze; whole-binary
+  import wasn't tried. A far call with segment `0xFFFF` in the raw
+  bytes is an unresolved NE relocation, not a real target — the plain
+  `BinaryLoader` import here doesn't see the NE relocation table at all
+  (it's outside the raw segment blob), so don't assume Ghidra resolved
+  it either; check `Segment.relocs` from `pcode_disasm.parse_ne(...)`
+  for the real fixup if one of those matters.
 
 ## Key files
 

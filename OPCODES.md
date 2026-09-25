@@ -371,6 +371,37 @@ still copied from the original source).
   per identifier in first-appearance order (`namesize.name_offsets`;
   fits 120/120 random probe procedures). `Decompiler.fit_frees` picks
   generated name lengths that reproduce the original order.
+- The same lookup also has a **module-level table with 16 buckets**
+  (seg53:0x78c3 `and ax, 0x1e`, fixed base `di = 4`; the procedure
+  table's entry is 0x78ce `and ax, 0xe`, `di = [0x37ea]`; both share the
+  walk from 0x78d5, `es:[0x36da]`). Bucket = (name-table offset >> 1) &
+  15, same offset model as the procedure case but over the *module's*
+  first-appearance order. Confirmed by Ghidra decompilation (see below)
+  and empirically against `timecard`'s `Card` form: a 2-byte swap in the
+  per-form chunk of `RT_RCDATA(2)` right after each form's own image
+  (the boundary `image_layout` already tracks, contents not yet
+  interpreted) tracks the *length* of the module's Dim'd variables, not
+  their spelling — padding synthetic names to the true lengths (keeping
+  fake spelling) removes the swap. The effect is non-monotonic in a
+  length-correction prefix, consistent with mod-16 collisions among
+  identifiers declared *after* the point being corrected (plausibly
+  controls, referenced later in the module, whose own offset depends on
+  every earlier Dim).
+  - Ruled out as the consumer: the obvious walker of this table
+    (seg53:0x86fd/0x8707, same 806A/8097 iterator and the same
+    object/Type filter `and dx,0x70f; cmp dx,0x609` as the OBJ_FREE
+    emitter) decompiles cleanly to the IDE's own in-memory cleanup — for
+    each matching entry it dispatches (via a type-indexed jump-table
+    thunk, `FUN_0000_2bf2`) to a destructor, run when a form/module is
+    closed in the IDE. Not exe output.
+  - Not yet found: which routine actually produces the exe bytes from
+    this table. The next lead is `FUN_0000_6edb` (seg53:0x6edb), the
+    core identifier lookup/insert used while parsing — large and
+    densely flag-driven, not yet mapped. Until it's found, there's no
+    way to read a target bucket order back from a foreign exe (unlike
+    the procedure case, where the target OBJ_FREE sequence is directly
+    in the p-code), so this isn't fixable yet, only diagnosed.
+    (Ghidra headless-decompile recipe: see CLAUDE.md.)
 - Name-table size (+30) is fitted by resizing the last-appearing
   generated names (`fit_size`; Globals first, `fit_globals`).
 - Line counts: procedure record +50 counts its lines, not the blank lines
