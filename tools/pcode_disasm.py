@@ -523,7 +523,8 @@ def reset_state() -> None:
 CLASS_BY_BLOB = {0x00: "PictureBox", 0x01: "Label", 0x02: "TextBox", 0x04: "CommandButton",
                  0x05: "CheckBox", 0x06: "OptionButton", 0x07: "ComboBox", 0x08: "ListBox", 0x09: "HScrollBar",
                  0x0B: "Timer", 0x10: "DriveListBox", 0x11: "DirListBox", 0x12: "FileListBox",
-                 0x13: "Menu", 0x18: "Image"}  # 0xFF: VBX custom control
+                 0x13: "Menu", 0x18: "Image", 0x03: "Frame", 0x0A: "VScrollBar", 0x16: "Shape", 0x17: "Line",
+                 0x25: "Data"}  # 0xFF: VBX custom control
 _CTL_RECORD = re.compile(rb"[\x01\x03](..)\x00\x00(.)\x00(.)\xff", re.S)
 _CTL_RECORD_ANY = re.compile(rb"(?=[\x01-\x03]..(?:\x00\x00.\x00.|\x00\x80..\x00\x00.)"
                              rb"(?:[\x00-\x2f\xff]?\xff|(?<=\xff)[\x01-\x20][A-Za-z]))", re.S)
@@ -751,8 +752,13 @@ def proc_names(segs: list[Segment], rt: "Runtime", res: dict[int, bytes]) -> dic
             if not any(ents) or not all(e == 0 or (e & 1 and e & ~1 in records) for e in ents):
                 continue
             end = p + 1 + 2 * n
-            hdr = next((q for q in range(p - 3, max(0, p - 1024), -1)
-                        if d[q] in (1, 2, 3) and q + 2 + struct.unpack_from("<H", d, q + 1)[0] in (end, end + 1)), None)
+            def is_hdr(q: int) -> bool:  # a control record's header (not bytes inside another's properties)
+                if d[q] not in (1, 2, 3) or q + 2 + struct.unpack_from("<H", d, q + 1)[0] not in (end, end + 1):
+                    return False
+                at = q + (9 if struct.unpack_from("<H", d, q + 3)[0] & 0x8000 else 7)
+                return d[q + 5] < len(names) and bool(names[d[q + 5]]) and at < len(d) \
+                    and (d[at] in CLASS_BY_BLOB or d[at] == 0xFF)
+            hdr = next((q for q in range(p - 3, max(0, p - 1024), -1) if is_hdr(q)), None)
             if hdr is not None:
                 flags = struct.unpack_from("<H", d, hdr + 3)[0]
                 idx = d[hdr + 5]

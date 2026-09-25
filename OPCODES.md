@@ -313,9 +313,13 @@ still copied from the original source).
   names (per-module name table +30, table offset 76 record +30), the last
   pool entry, Declare aliases.
 - DefType tables beyond `DefInt A-Z` (only form seen in the samples).
-- Batteries (`tools/battery.py`, 681/682): types 68/69 (object vars:
+- Batteries (`tools/battery.py`, 717/718): types 68/69 (object vars:
   free order, see below); builtins, expressions, print, statements,
-  names, deftype complete.
+  names, deftype, controls complete.
+- Form blob class bytes: 03 Frame, 0A VScrollBar, 16 Shape, 17 Line,
+  25 Data (besides those in formblob.CLASS_IDS). A stored font with
+  default values comes from an attribute the control drops (FontItalic
+  on a DirListBox): emitting it reproduces the record.
 - Type array fields: field "next" | 1, descriptor after the field (see
   vbdecl.py). FIELD_ALOAD/ASTORE per element type: ID 0x13 / 0x14.
 - REDIM_AS second word: the text column of `As`; generated names are

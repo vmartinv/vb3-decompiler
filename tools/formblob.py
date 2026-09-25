@@ -224,6 +224,10 @@ def text_props(c: Control, frx: bytearray, frx_name: str) -> list[tuple[str, str
             f = p["_FontFlags"]
             out += [("FontBold", str(-(f & 1))), ("FontItalic", str(-(f >> 1 & 1))),
                     ("FontStrikethru", str(-(f >> 3 & 1))), ("FontUnderline", str(-(f >> 2 & 1)))]
+            if p.get("FontName") == "MS Sans Serif" and v == 8.25 and f & 0xF == 1:
+                # a stored font with default values: an attribute the control drops (FontItalic
+                # on a DirListBox) still makes the IDE store it; resetting it doesn't
+                out[-3] = ("FontItalic", "-1")
     if "_GFlags" in p:
         g = p["_GFlags"]
         out += [("AutoRedraw", str(-(g >> 5 & 1))), ("FontTransparent", str(-(g >> 1 & 1)))]

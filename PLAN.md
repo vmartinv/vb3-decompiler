@@ -1,7 +1,7 @@
 # Plan: complete the VB3 decompiler
 
 ## Context
-The decompiler already round-trips every sample: 483/483 procedures and every form are byte-identical (`/MAKE` build vs `/MAKE` build). It passes 681 of 682 generated battery cases.
+The decompiler already round-trips every sample: 483/483 procedures and every form are byte-identical (`/MAKE` build vs `/MAKE` build). It passes 717 of 718 generated battery cases.
 
 "Complete" means three things:
 1. Every VB3 language feature has a battery.
@@ -32,7 +32,7 @@ The DefType letter table itself is still undecoded (declarations record +44 is o
 
 ## Phase 2: batteries for uncovered features
 Build one battery per item, each probed first:
-1. **controls:** every standard control class, with every design-time property at a non-default value, and every event handler signature. This also exercises `formblob.py`.
+1. **controls: done (36/36).** every standard control class, with every design-time property at a non-default value, and every event handler signature. This also exercises `formblob.py`.
 2. **ctlarrays:** indexed controls, `Index` parameters in events, and `Load`/`Unload` of array elements.
 3. **menus:** nested menus, shortcuts, checked/disabled/invisible items, separators, menu control arrays.
 4. **forms:** MDI parent/child, startup form vs `Sub Main`, a .bas-only project, form properties (BorderStyle, icons, etc.).
