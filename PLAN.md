@@ -50,10 +50,20 @@ picking per item based on how many unknowns and constraints it has.
    resolving it to the real Type name was reverted: it regressed
    `calldlls` by shifting the global image / record allocation order
    relative to a Global in the same module.
-4. **timecard**: two words of a module list swapped (declaration
-   order) — 2 bytes, `rc2.Card` region. Not yet root-caused; control
-   declaration order in the .frm text was checked and ruled out (orig
-   and deco match exactly there).
+4. **timecard**: two words swapped in an undocumented per-form chunk
+   in `RT_RCDATA(2)` (right after each form's own image, tracked but not
+   interpreted by `image_layout()`) — 2 bytes, `rc2.Card`. Isolated by
+   splicing hybrid `.frm`s (original text with pieces swapped in from
+   the reconstruction) and recompiling each: control/property order and
+   text isn't it (ruled out directly); it's specifically the *module-level
+   variable* names (`RowFlag`, `DailyHrs`, ...) — substituting the true
+   original spellings back in fixes it, procedure names don't need to
+   be right. Same shape as item 1 (outcome depends on exact string
+   content, not decomposable into "this one name"), just a mechanism
+   nobody had connected to it before (a hash-bucket-style structure, not
+   a length sum) and in a place OPCODES.md says plain variables normally
+   never enter a name pool at all — worth understanding structurally
+   (what this chunk actually is) even without recovering the names.
 5. **biblio**: data image diff, 3121 bytes — the largest remaining.
    Not yet broken down by place.
 6. **Phase 4 final pass**: once the above settle, run every battery

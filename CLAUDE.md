@@ -50,6 +50,23 @@ Reusable VB3 reverse-engineering tools + findings. Companion to
   when more than one source is active in the same module — check it
   against another independent field, or another way, before applying it
   broadly; a wrong attribution can cost a p-code match, not just a byte.
+- For a *sample* with known original source (unlike a foreign target
+  exe), localize a mismatch by splicing hybrid `.frm`/`.bas` files —
+  original text with one aspect swapped in from the reconstruction
+  (comments, identifier names, explicit types, control/property order,
+  half the procedures, ...) — recompiling each, and diffing against the
+  true original with `exediff.py`. This narrows *which kind* of
+  difference matters fast. Get the true slot/record <-> name
+  correspondence from `tools/align_source.py` (matches by first-mention
+  order + p-code), not by guessing from file position: procedure record
+  order can legitimately differ from a renamed reconstruction's text
+  order even though each procedure's own p-code matches. This technique
+  has a real limit, though: once it shows the mismatch depends on exact
+  string content (a hash-bucket-style structure, not a length sum),
+  further bisection just keeps reconfirming "it's naming" without
+  producing a fix, since a foreign target never gives you true names to
+  substitute — stop there and record it as the same open problem as the
+  name-length items, not chase the single "culprit" name.
 
 ## Key files
 
