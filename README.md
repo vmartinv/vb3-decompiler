@@ -13,6 +13,7 @@ p-code). Findings: [`OPCODES.md`](OPCODES.md) (p-code) and
 
 ```
 tools/
+  vb3decompile.py        entry point: exe -> project (.mak/.frm/.bas/.frx), --verify
   ne_parser.py           NE header + resource table parser
   extract_bitmaps.py     pulls embedded BMPs out of raw RCDATA dumps
   parse_form_headers.py  decodes form captions/control names
@@ -24,9 +25,11 @@ tools/
   corpus.py              builds/queries the aligned corpus (names handlers)
   validate.py            scores recovered names against sample source
   lift.py                lifts statements to BASIC; scores against the corpus
-  decompile.py           rebuilds a project (.mak/.frm/.bas) from an exe
+  decompile.py           rebuilds a project (.mak/.frm/.bas) from an exe (used by vb3decompile.py)
+  formblob.py            decodes form/control resources (.frm layout, .frx)
   vbdecl.py              declarations from the data images (Types, globals)
   roundtrip.py           recompiles decompiled samples in the IDE, compares p-code
+  exediff.py             whole-exe diff by structure (record/segment/resource)
   battery.py             feature batteries (batteries/*.py): generated cases, round-tripped
   opprobe.py             opcode discovery probes (probes/*.py)
   pcode_diff.py          instruction-level diff of two builds
@@ -42,9 +45,15 @@ All Python, standard library only except `vb3ide/kwaj_extract.py` (needs
 step.
 
 ```sh
+# reconstruct a project from a compiled exe
+python3 tools/vb3decompile.py some.exe src/
+
+# ... and check the reconstruction by rebuilding it with a real VB3 IDE
+# (needs the Setup below) and diffing the result against some.exe
+python3 tools/vb3decompile.py some.exe src/ --verify
+
 python3 tools/pcode_disasm.py some.exe --runtime VBRUN300.DLL --check
 python3 tools/pcode_disasm.py some.exe --runtime VBRUN300.DLL --out listing.lst
-python3 tools/decompile.py some.exe --runtime VBRUN300.DLL --out src/
 ```
 
 ## Setup
