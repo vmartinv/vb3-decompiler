@@ -133,7 +133,7 @@ python3 tools/corpus.py examples work/corpus --runtime VBRUN300.DLL --exe some.e
 - Resources: form layouts decoded to `.frm` text (`formblob.py`);
   recompiled form resources are byte-identical on all samples.
 - P-code: decompiles to source that recompiles to identical p-code on
-  all samples and on 717/718 generated feature cases (`battery.py`).
+  all samples and on 742/743 generated feature cases (`battery.py`).
 
 "Complete" means: every language feature has a battery, every case
 round-trips to identical p-code and form resources, and, with names

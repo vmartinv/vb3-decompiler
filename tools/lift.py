@@ -136,6 +136,7 @@ def lift(code: list[tuple[int, bytes]], ids: dict[int, int] | None = None,
     prefix = ""
     local = ""
     obj_at: list[int] = []  # stack depth just after a method's object was pushed
+    call_at: list[int] = []  # len(obj_at) at each open call (ARGS)
     ret_value: list[int] = []  # a pending method call is used as a value
     gfx: list[tuple[str, int]] = []  # (object prefix, stack mark) for graphics/Print methods
     print_items: list[str] = []
@@ -204,6 +205,8 @@ def lift(code: list[tuple[int, bytes]], ids: dict[int, int] | None = None,
             st[-1].t = result_type(name)
         if name == "CVT.Ttmp>V" and st and is_call(st[-1].text):
             st[-1].text = re.sub(r"^(\w+)\$", r"\1", st[-1].text)  # Variant form: Left(...), not Left$(...)
+        if name == "ARGS":  # a call's start: its method object is the first object marked after it
+            call_at.append(len(obj_at))
         if fam.startswith("CVT") or name in ("ARGS", "ARGS_FREE", "END_CALL", "TRAP", "LABEL", "LABEL_WIDE", "NARGS",
                                              "ARG_STR", "ARG_V", "ARG_S", "ARG_D", "ARGS_DLL",
                                              "ARG_T_BYREF", "ARG_PAREN", "ARG_TEMP", "ARG_FIX", "ARG_FIX_BACK") or fam in STATEMENT_PREFIX:
@@ -222,7 +225,12 @@ def lift(code: list[tuple[int, bytes]], ids: dict[int, int] | None = None,
             st.append(E(""))
             obj_at.append(len(st))
         elif name == "METHOD":
-            base = obj_at.pop() if obj_at else len(st)
+            mark = call_at.pop() if call_at else None
+            if mark is not None and len(obj_at) > mark + 1:  # object arguments marked too (`PopupMenu mPop`)
+                base = obj_at[mark]
+                del obj_at[mark:]
+            else:
+                base = obj_at.pop() if obj_at else len(st)
             args = st[base:]
             del st[base:]
             o = pop()
@@ -242,6 +250,8 @@ def lift(code: list[tuple[int, bytes]], ids: dict[int, int] | None = None,
             args = [pop() for _ in range(n)][::-1]
             out.append(f"{o.text}.{nm(f'm{slot_of(operand):x}')} {', '.join(a.text for a in args)}".rstrip())
         elif name in ("CALL", "CALL_FN"):
+            if call_at:
+                call_at.pop()
             n, rec = struct.unpack_from("<HH", operand)
             args = [pop() for _ in range(n)][::-1]
             if calls is not None:
@@ -255,6 +265,11 @@ def lift(code: list[tuple[int, bytes]], ids: dict[int, int] | None = None,
                 out.append((fn + " " + ", ".join(a.text for a in args)).rstrip())
         elif name == "CTLARRAY":
             st.append(E(f"{nm(var_name(name, operand))}({pop().text})"))
+        elif name == "CTLARRAY_GET":
+            st.append(E(f"{nm(var_name(name, operand))}({pop().text})"))
+        elif name == "CTLARRAY_SET":
+            i, v = pop(), pop()
+            out.append(f"{nm(var_name(name, operand))}({i.text}) = {v.text}")
         elif name == "CTLARRAY_OF":
             o, i = pop(), pop()
             sep = "!" if op == 0x4EA9 else "."  # 4EA9 `a!b(i)`, 4EB0 `a.b(i)`

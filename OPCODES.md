@@ -313,9 +313,13 @@ still copied from the original source).
   names (per-module name table +30, table offset 76 record +30), the last
   pool entry, Declare aliases.
 - DefType tables beyond `DefInt A-Z` (only form seen in the samples).
-- Batteries (`tools/battery.py`, 717/718): types 68/69 (object vars:
+- Batteries (`tools/battery.py`, 742/743): types 68/69 (object vars:
   free order, see below); builtins, expressions, print, statements,
-  names, deftype, controls complete.
+  names, deftype, controls, ctlarrays, menus complete.
+- 4D51/4CFD: a control array element's default property, `c(i)` /
+  `c(i) = v` (u16 dims, u16 slot). METHOD 0x2A PopupMenu. A method's
+  object is the first object marked after the call's ARGS (object
+  arguments are marked too). Menu records have type byte 5.
 - Form blob class bytes: 03 Frame, 0A VScrollBar, 16 Shape, 17 Line,
   25 Data (besides those in formblob.CLASS_IDS). A stored font with
   default values comes from an attribute the control drops (FontItalic

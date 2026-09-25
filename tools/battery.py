@@ -12,8 +12,12 @@ A battery is `batteries/<name>.py` defining `cases`, a list of dicts:
   controls  form description lines between `Begin Form` and its `End`
   props     extra form property lines
   extra     more modules: a list of dicts with code/bas/controls/props
+            (mdi: True makes a form an MDIForm)
+  solo      True: in a project of its own
+  nostart   True: no START form (the case's first module starts the program)
 
-`@SELF@` in code stands for the module's own (form) name.
+`@SELF@` in code stands for the module's own (form) name, `@M<j>@` for the
+case's j-th module's.
 
 Cases are packed into projects of up to --chunk modules (one IDE run
 each) under work/battery/<battery>/<id>/{orig,deco}. Each project is
@@ -35,6 +39,7 @@ A summary line per battery; details for failures only.
 from __future__ import annotations
 
 import argparse
+import re
 import shutil
 import sys
 import traceback
@@ -77,19 +82,27 @@ def write_case_project(d: Path, stem: str, cases: list[tuple[int, dict]]) -> Pat
     shutil.rmtree(d, ignore_errors=True)
     d.mkdir(parents=True)
     files = []
-    start = "START"
-    (d / f"{start}.FRM").write_bytes(FORM.format(name=start, props="", controls="").replace("\n", "\r\n").encode())
-    files.append(f"{start}.FRM")
+    if not any(c.get("nostart") for _, c in cases):  # else the case's first module starts the program
+        start = "START"
+        (d / f"{start}.FRM").write_bytes(FORM.format(name=start, props="", controls="").replace("\n", "\r\n").encode())
+        files.append(f"{start}.FRM")
     for i, c in cases:
-        for j, m in enumerate(modules(c)):
-            n = f"{'M' if m.get('bas') else 'F'}{i:03d}{chr(97 + j)}"
-            code = m.get("code", "").strip("\n").replace("@SELF@", n) + "\n"
+        mods = modules(c)
+        mnames = [f"{'M' if m.get('bas') else 'F'}{i:03d}{chr(97 + j)}" for j, m in enumerate(mods)]
+        for j, m in enumerate(mods):
+            n = mnames[j]
+            code = m.get("code", "").strip("\n").replace("@SELF@", n)
+            for jj, nn in enumerate(mnames):
+                code = code.replace(f"@M{jj}@", nn)
+            code += "\n"
             if m.get("bas"):
                 text = code
                 fn = n + ".BAS"
             else:
                 props = "".join(f"   {ln}\n" for ln in m.get("props", []))
                 text = FORM.format(name=n, props=props, controls=m.get("controls", "")) + code
+                if m.get("mdi"):  # an MDIForm: no Scale* properties
+                    text = re.sub(r"   Scale(Height|Width) .*\n", "", text.replace("Begin Form", "Begin MDIForm", 1))
                 fn = n + ".FRM"
             (d / fn).write_bytes(text.replace("\r\n", "\n").replace("\n", "\r\n").encode("latin-1"))
             files.append(fn)
@@ -223,6 +236,9 @@ def main():
         size = 0
         for i in sel:
             n = len(modules(cases[i]))
+            if cases[i].get("solo") or cases[i].get("nostart"):  # a project of its own
+                (r.check if a.check else r.run)([i])
+                continue
             if chunk and size + n > a.chunk:
                 (r.check if a.check else r.run)(chunk)
                 chunk, size = [], 0

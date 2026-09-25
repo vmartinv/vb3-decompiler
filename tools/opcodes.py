@@ -96,7 +96,8 @@ NAMES: dict[int, str] = {
     0x4A7F: "OBJVAR",
     0x4BA3: "PGET_ME", 0x4C14: "PSET_ME",    # property of the implicit form
     0x4C09: "PGET", 0x4C72: "PSET",          # operand 0xC0nn: class property nn
-    0x4A63: "SUBOBJ", 0x4A57: "SUBOBJ", 0x4CA8: "CTLARRAY", 0x4EB0: "CTLARRAY_OF", 0x4EA9: "CTLARRAY_OF",  # 4A57/4EA9 `!`, 4A63/4EB0 `.`
+    0x4A63: "SUBOBJ", 0x4A57: "SUBOBJ", 0x4CA8: "CTLARRAY", 0x4D51: "CTLARRAY_GET", 0x4CFD: "CTLARRAY_SET",  # `c(i)` / `c(i) = v`: default property of an element (u16 dims, u16 slot)
+    0x4EB0: "CTLARRAY_OF", 0x4EA9: "CTLARRAY_OF",  # 4A57/4EA9 `!`, 4A63/4EB0 `.`
     0x4EC7: "PGET_IDX", 0x4EDD: "PSET_IDX",   # indexed property: u16 index count, u16 0xC0nn
     0x3357: "OLE_CALL",                      # OLE Automation method: u16 argc, u16 name (RT_RCDATA 3 offset)
     0x4A23: "UNLOAD", 0x4A2A: "LOAD",
@@ -213,7 +214,7 @@ METHODS = {
     0x19: "CommitTrans", 0x1A: "CreateDynaset", 0x1B: "ExecuteSQL", 0x1C: "Rollback",
     0x1D: "AddNew", 0x1E: "Edit", 0x1F: "MoveFirst", 0x20: "MoveLast", 0x21: "MoveNext",
     0x22: "MovePrevious", 0x24: "BeginTrans", 0x25: "Update", 0x26: "Append",
-    0x27: "FieldSize", 0x28: "GetChunk", 0x2D: "OpenTable", 0x2F: "ListTables",
+    0x27: "FieldSize", 0x28: "GetChunk", 0x2A: "PopupMenu", 0x2D: "OpenTable", 0x2F: "ListTables",
     0x32: "CreateSnapshot", 0x33: "OpenQueryDef", 0x34: "CreateQueryDef", 0x39: "Execute",
     0x3A: "Seek", 0x3B: "Clone", 0x07: "LinkExecute", 0x35: "FindFirst",
     0x01: "LinkSend", 0x05: "LinkPoke", 0x06: "LinkRequest", 0x08: "GetText", 0x0A: "SetText",

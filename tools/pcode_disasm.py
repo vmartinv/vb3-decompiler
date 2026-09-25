@@ -571,7 +571,8 @@ def _slot_refs(segs: list[Segment], rt: "Runtime") -> dict[int, dict[int, str]]:
     out: dict[int, dict[int, str]] = {}
     for p in find_procs(segs):
         for i in decode(rt, segs[p.segment - 1].data, p)[0]:
-            kind = {"CONTROL": "control", "CTLARRAY": "control", "FORM": "form",
+            kind = {"CONTROL": "control", "CTLARRAY": "control", "CTLARRAY_GET": "control", "CTLARRAY_SET": "control",
+                    "FORM": "form",
                     "OBJVAR": "objvar", "PGET_ME": "meprop", "PSET_ME": "meprop"}.get(NAMES.get(i.op))
             if kind is None and is_objarr(rt, i):
                 kind = "objarr"
@@ -753,7 +754,7 @@ def proc_names(segs: list[Segment], rt: "Runtime", res: dict[int, bytes]) -> dic
                 continue
             end = p + 1 + 2 * n
             def is_hdr(q: int) -> bool:  # a control record's header (not bytes inside another's properties)
-                if d[q] not in (1, 2, 3) or q + 2 + struct.unpack_from("<H", d, q + 1)[0] not in (end, end + 1):
+                if d[q] not in (1, 2, 3, 5) or q + 2 + struct.unpack_from("<H", d, q + 1)[0] not in (end, end + 1):
                     return False
                 at = q + (9 if struct.unpack_from("<H", d, q + 3)[0] & 0x8000 else 7)
                 return d[q + 5] < len(names) and bool(names[d[q + 5]]) and at < len(d) \
@@ -964,7 +965,7 @@ class Symbols:
         for i in insns:
             n = NAMES.get(i.op)
             text = ""
-            if n in ("CONTROL", "CTLARRAY", "FORM") and i.operand:
+            if n in ("CONTROL", "CTLARRAY", "CTLARRAY_GET", "CTLARRAY_SET", "FORM") and i.operand:
                 slot = struct.unpack_from("<H", i.operand, len(i.operand) - 2)[0]
                 text = sym.get(slot, "")
             elif n in ("PGET", "PSET", "PGET_IDX", "PSET_IDX") and len(i.operand) >= 2:
@@ -1009,7 +1010,7 @@ class Symbols:
                 typed = self.objvar_types.get(seg, {}).get(
                     struct.unpack_from("<H", i.operand, len(i.operand) - 2)[0]) if i.operand else None
                 cls = typed or (self.form_class.get(target, "Form") if target in self.tables else target)
-            elif (n in ("CONTROL", "CTLARRAY", "OBJVAR") or n is None and is_objarr(self.rt, i)) and i.operand:
+            elif (n in ("CONTROL", "CTLARRAY", "CTLARRAY_GET", "CTLARRAY_SET", "OBJVAR") or n is None and is_objarr(self.rt, i)) and i.operand:
                 slot = struct.unpack_from("<H", i.operand, len(i.operand) - 2)[0]
                 typed = self.objvar_types.get(seg, {}).get(slot)
                 if typed in self.tables:  # As New frmX (variable or array element)

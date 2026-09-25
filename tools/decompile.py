@@ -489,7 +489,7 @@ class Decompiler:
         for k, info in enumerate(infos):
             for i, note in zip(info.insns, info.notes):
                 n = NAMES.get(i.op)
-                if n in ("CONTROL", "CTLARRAY", "FORM") and i.operand and note:
+                if n in ("CONTROL", "CTLARRAY", "CTLARRAY_GET", "CTLARRAY_SET", "FORM") and i.operand and note:
                     slot = struct.unpack_from("<H", i.operand, len(i.operand) - 2)[0]
                     refs.setdefault(slot, (k, note))
                 elif n in ("PGET_ME", "PSET_ME") and i.operand and note:  # `Readout`, `Left`
@@ -509,7 +509,7 @@ class Decompiler:
                     if x not in func_slots:
                         owned.add(x)
                         call_slots.setdefault(x, k)
-                elif m["kind"] == "frm" and i.operand and (n in ("OBJVAR", "FORM", "CONTROL", "CTLARRAY")
+                elif m["kind"] == "frm" and i.operand and (n in ("OBJVAR", "FORM", "CONTROL", "CTLARRAY", "CTLARRAY_GET", "CTLARRAY_SET")
                                                           or ((not n or n.endswith(".X")) and P.is_objarr(self.rt, i))):
                     # records start at the operand; a form declares no global objects
                     owned.add(struct.unpack_from("<H", i.operand, len(i.operand) - 2)[0] - 2)
