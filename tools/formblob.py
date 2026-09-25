@@ -89,6 +89,10 @@ class FormDecoder:
                 out.append((name, f"{x},{y},{a},{b_}"))
                 pos += 16
                 continue
+            if (cls, name) == ("OLE", "OleObjectBlob") and b[pos] == 0x30:  # saved by the VBX: an empty
+                out.append(("_OleObjectBlob", b[pos]))  # object's one byte, rewritten by the IDE
+                pos += 1
+                continue
             if t == DT_PICTURE:  # i32 size (-1: none), then the picture file
                 n = struct.unpack_from("<i", b, pos)[0]
                 out.append((name, b[pos + 4:pos + 4 + n] if n > 0 else None))
@@ -205,6 +209,8 @@ def text_props(c: Control, frx: bytearray, frx_name: str) -> list[tuple[str, str
             continue
         if form and k in ("Left", "Top", "Width", "Height"):
             continue  # the record holds the client rectangle (ClientLeft..ClientHeight follow)
+        if c.cls == "OLE" and k == "TabIndex":
+            continue  # the OLE 2 control rejects it in the text (the IDE assigns it)
         if isinstance(v, bytes) or v is None:
             if v is None:
                 continue

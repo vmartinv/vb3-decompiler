@@ -313,9 +313,8 @@ still copied from the original source).
   names (per-module name table +30, table offset 76 record +30), the last
   pool entry, Declare aliases.
 - DefType tables beyond `DefInt A-Z` (only form seen in the samples).
-- Batteries (`tools/battery.py`, 742/743): types 68/69 (object vars:
-  free order, see below); builtins, expressions, print, statements,
-  names, deftype, controls, ctlarrays, menus complete.
+- Batteries (`tools/battery.py`, 940/941): all complete except types
+  68/69 (object vars: free order, see below).
 - 4D51/4CFD: a control array element's default property, `c(i)` /
   `c(i) = v` (u16 dims, u16 slot). METHOD 0x2A PopupMenu. A method's
   object is the first object marked after the call's ARGS (object
@@ -330,9 +329,37 @@ still copied from the original source).
   resized to put it there.
 - Print item ops per type (`;` / end of line): V 6085/60A4, I 6045/60DE,
   L 604B/608F, S 6059/609D, D 6069/60AE, C 607F/60B5, T 6104/6132.
-- Labels: LABEL 4965 `u32` = FFFFFFFF (named) or `FFFF, line number`;
-  48BE adds a word, the spaces before a statement on the label's line.
-  A statement marker after the label = the statement on its own line.
+- Labels: LABEL 4965 `u16 link, u16 line number` (FFFF: a named label);
+  the link is FFFF unless a Resume/Erl refers to the label. 48BE adds a
+  word, the spaces before a statement on the label's line. A statement
+  marker after the label = the statement on its own line; a label on a
+  procedure's first line replaces its statement marker (so a Dim before
+  it changes the p-code). RESUME_LABEL FFFF = `Resume 0`.
+- Graphics points: 22E9/22F6 `(x, y)`, 2300/230A `Step(x, y)`, 2314/231E
+  `-(x, y)`, 2328/2332 `-Step(x, y)`. Circle optional arguments are
+  tagged after their value: 23DA color, 233C start, 235E end, 2380
+  aspect. 2891 `Scale (x1, y1)-(x2, y2)`; 2A36 `obj.Point`.
+- Runtime call 0DFA: ids with 0x8000 are functions, others statements
+  (0x44 SavePicture).
+- 4B28 `New frmX` (operand: the form's object kind). Object kinds from
+  0x46: the project's VBX classes in use, then the forms.
+- Form object records `0x40xx/0x60xx, 0xC0nn`: form property nn
+  (ActiveForm 0D; FE is the Controls collection).
+- A local object variable's `kind, BP` record lives in the module image.
+- Suffixed variable entries fall through to the plain handler 3, 6, ...
+  bytes on (e.g. 31F4/31F7/31FA/31FD `#`/`&`/`!`/`%` before ADDR_LOC
+  3200).
+- DLL arguments: ARG_S/ARG_D ByVal Single/Double, ARG_T_BYREF (1972) a
+  ByVal String; a bare string address is ByRef `As String`; 0729 is an
+  array element's address (a Type array only when a FIELD op follows).
+  Declare ordinals are stored as the name `#n`.
+- Globals: 315B a global Type variable, 32C8 STORE.GLB.F; a module's
+  slot for a Global String * n follows its length slot. A Global is
+  declared in one module; other modules' slots only refer to it.
+- LOCK operand: bit 0 Unlock, bit 1 records given, 0x8000 one record,
+  0x4000 `To n` (lower bound pushed as 1). 53D1 `Dir$(p, attr)`.
+- VBX MODEL version 1.00 (THREED): VB appends MouseDown/Move/Up to the
+  control's events. VBX records can exceed 1 KB (Outline bitmaps).
 - A function call written with its suffix (`F%(1)`) uses a suffixed
   entry of CALL_FN (ID | type << 10, e.g. 62A1 `%`, 6298 `$`), like
   variable accesses; so does `F% = x` in its body. The record doesn't

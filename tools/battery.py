@@ -181,7 +181,13 @@ class Runner:
             dmak = write_project(d, root / "deco", None, stem.lower())
         except Exception:
             return self.split(idx, "CRASH", orig, traceback.format_exc(limit=3))
-        if not compile_mak(dmak) or any(f.suffix.lower() == ".log" for f in dmak.parent.iterdir()):
+        for attempt in range(2):  # a second try: the OLE 2 control can fail to load right after a build
+            for f in dmak.parent.iterdir():
+                if f.suffix.lower() == ".log":
+                    f.unlink()
+            if compile_mak(dmak) and not any(f.suffix.lower() == ".log" for f in dmak.parent.iterdir()):
+                break
+        else:
             return self.split(idx, "DECOFAIL", dmak)
         oexe = next(p for p in orig.parent.iterdir() if p.suffix.lower() == ".exe")
         res = per_case(oexe, dmak.with_suffix(".exe"), orig)

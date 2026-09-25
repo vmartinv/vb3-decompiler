@@ -1,7 +1,7 @@
 # Plan: complete the VB3 decompiler
 
 ## Context
-The decompiler already round-trips every sample: 483/483 procedures and every form are byte-identical (`/MAKE` build vs `/MAKE` build). It passes 742 of 743 generated battery cases.
+The decompiler already round-trips every sample: 483/483 procedures and every form are byte-identical (`/MAKE` build vs `/MAKE` build). It passes 940 of 941 generated battery cases (19 batteries).
 
 "Complete" means three things:
 1. Every VB3 language feature has a battery.
@@ -31,19 +31,14 @@ The DefType letter table itself is still undecoded (declarations record +44 is o
 **Exit:** all seven batteries at 100%, all samples still identical, commit.
 
 ## Phase 2: batteries for uncovered features
-Build one battery per item, each probed first:
-1. **controls: done (36/36).** every standard control class, with every design-time property at a non-default value, and every event handler signature. This also exercises `formblob.py`.
-2. **ctlarrays: done (13/13).** indexed controls, `Index` parameters in events, and `Load`/`Unload` of array elements.
-3. **menus: done (12/12).** nested menus, shortcuts, checked/disabled/invisible items, separators, menu control arrays.
-4. **forms:** MDI parent/child, startup form vs `Sub Main`, a .bas-only project, form properties (BorderStyle, icons, etc.).
-5. **graphics:** Line with B/BF and Step, Circle with all its optional arguments, PSet, Point, Cls, Scale, PaintPicture-era methods, and property get/set on controls.
-6. **objects:** Me, Screen, App, Clipboard, Printer and Debug, plus `Set`, `Nothing`, `Is`, `TypeOf … Is`, form and control variables, `New` form instances.
-7. **errors:** On Error GoTo/Resume Next/GoTo 0, `Resume`/`Resume Next`/`Resume label`, `Err`/`Erl`/`Error$`.
-8. **declares:** every parameter kind (ByVal, `As Any`, strings, arrays, Alias, Lib ordinal), Sub and Function forms.
-9. **modlevel:** Global, Type, Const and every `Option` statement, across .bas and form modules.
-10. **vbx:** the Pro VBX controls shipped with VB3 (grid, gauge, etc.) and their custom properties.
-11. **ddeole:** Link* properties and methods, LinkExecute/Poke/Request, OLE2 control properties.
-12. **misc:** DoEvents, Shell, Beep, Environ, Command, `Format$` masks, file I/O (Get/Put/Seek/EOF/LOF/Loc), string comparison (`Option Compare`).
+Done: one battery per item, each at 100%:
+controls 36, ctlarrays 13, menus 12, forms 36, graphics 46, objects 22,
+errors 14, declares 17, modlevel 16, vbx 16, ddeole 8, misc 23.
+
+Not covered: GRAPH.VBX (two MODELs, array properties saved by the VBX),
+ANIBUTON.VBX (MODEL not found by `parse_models`), CRYSTAL.VBX (crashes
+the IDE under Wine), an OLE control holding an object (only the empty
+object's one-byte `OleObjectBlob` is known).
 
 **Exit:** each battery at 100%, samples still identical. Update the OPCODES.md counts and commit after each battery or pair of batteries.
 
