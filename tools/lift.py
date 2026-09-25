@@ -40,6 +40,7 @@ FUNCS = {  # builtin -> arity
     "Left$": 2, "Shell": 2, "Format$": 2, "InStr": 2, "Mid$": 3, "InputBox$": 3,
     "RGB": 3, "Trim$": 1, "Format$.1": 1,
 }
+RT_FUNCS = {0x8043: "LoadPicture", 0x8050: "Choose", 0x8051: "Switch", 0x805C: "Partition", 0x805D: "IIf"}  # op 0DFA ids
 STATEMENT_FUNCS = {"MsgBox": 3, "DoEvents": 0, "Cls": 0, "Beep": 0, "ChDir": 1, "ChDrive": 1}
 FUNCTION_FORMS = {"MsgBox.fn": ("MsgBox", 3)}
 MISSING_TEXT = "\0missing"
@@ -153,7 +154,12 @@ def lift(code: list[tuple[int, bytes]], ids: dict[int, int] | None = None,
         if st and st[-1] is not prev_top and not st[-1].t:
             st[-1].t = result_type(prev_name)
 
+    let_at = None  # `Let`: prefixes the next statement
+    write_next = False  # `Write #`: the next Print # statement is a Write
     for k, (op, operand) in enumerate(code):
+        if let_at is not None and len(out) > let_at:
+            out[let_at] = "Let " + out[let_at]
+            let_at = None
         settle()
         prev_top = st[-1] if st else None
         prev_name = NAMES.get(op, "")
@@ -288,7 +294,8 @@ def lift(code: list[tuple[int, bytes]], ids: dict[int, int] | None = None,
             del st[mark:]
             items = "".join(print_items).rstrip()
             if o.startswith("\0file"):
-                out.append(f"Print {o[5:]}," + (f" {items}" if items else ""))
+                out.append(f"{'Write' if write_next else 'Print'} {o[5:]}," + (f" {items}" if items else ""))
+                write_next = False
             else:
                 out.append(f"{o}Print" + (f" {items}" if items else ""))
             print_items.clear()
@@ -340,10 +347,13 @@ def lift(code: list[tuple[int, bytes]], ids: dict[int, int] | None = None,
             out.append("Return")
         elif name == "Randomize":
             out.append("Randomize")
-        elif op == 0x0DFA:  # LoadPicture: u16 0x8043, u16 argument count
-            n = struct.unpack_from("<H", operand, 2)[0]
+        elif op == 0x0DFA:  # runtime function: u16 id, u16 argument count (a trailing missing marker aside)
+            fid, n = struct.unpack_from("<HH", operand)
+            if st and st[-1].text == MISSING_TEXT and len(st) > n:
+                pop()
             args = [pop() for _ in range(n)][::-1]
-            st.append(E(f"LoadPicture({', '.join(a.text for a in args if a.text != MISSING_TEXT)})"))
+            fn = RT_FUNCS.get(fid, f"RTFN{fid:X}")
+            st.append(E(f"{fn}({', '.join(a.text for a in args if a.text != MISSING_TEXT)})"))
         elif name == "PGET_IDX":
             o = pop()
             n = struct.unpack_from("<H", operand)[0]
@@ -512,7 +522,7 @@ def lift(code: list[tuple[int, bytes]], ids: dict[int, int] | None = None,
         elif name.startswith("CASE_VAL."):
             pass
         elif name.startswith("CASE_IS."):
-            op_text = {"GT": ">", "LT": "<", "GE": ">=", "LE": "<=", "NE": "<>"}[name.split(".")[1]]
+            op_text = {"GT": ">", "LT": "<", "GE": ">=", "LE": "<=", "NE": "<>", "EQ": "="}[name.split(".")[1]]
             st.append(E(f"Is {op_text} {pop().text}"))
         elif name == "BYVAL":
             st.append(E(f"ByVal {pop().text}"))
@@ -531,12 +541,64 @@ def lift(code: list[tuple[int, bytes]], ids: dict[int, int] | None = None,
                 out[-1] += f", {pop().text}"  # Case a, b
             else:
                 out.append(f"Case {pop().text}")
+        elif name in ("CASE_TO", "CASE_TO_HI"):
+            hi, lo = pop(), pop()
+            st.append(E(f"{lo.text} To {hi.text}"))
+        elif name in ("CASE_TO_LO", "CASE_TO_JMP"):
+            pass
+        elif name == "WHILE":
+            out.append(f"While {pop().text}")
+        elif name == "WEND":
+            out.append("Wend")
+        elif name in ("ON_GOTO", "ON_GOSUB"):
+            n = struct.unpack_from("<H", operand)[0] // 2
+            targets = struct.unpack_from(f"<{n}H", operand, 2)
+            out.append(f"On {pop().text} {'GoTo' if name == 'ON_GOTO' else 'GoSub'} " + ", ".join(f"L{t:x}" for t in targets))
+        elif name == "LET":
+            let_at = len(out)
+        elif name == "MID_STMT":
+            target, value = pop(), pop()
+            args = [pop().text for _ in range(2 if op == 0x7731 else 1)][::-1]
+            out.append(f"Mid$({target.text}, {', '.join(args)}) = {value.text}")
+        elif name in ("LSET", "RSET"):
+            target, value = pop(), pop()
+            out.append(f"{'LSet' if name == 'LSET' else 'RSet'} {target.text} = {value.text}")
+        elif name == "STOP":
+            out.append("Stop")
+        elif name == "RANDOMIZE_N":
+            out.append(f"Randomize {pop().text}")
+        elif name == "WRITE#":
+            write_next = True
+        elif name == "LINE_INPUT#":
+            var = pop()
+            num, mark = gfx.pop() if gfx else ("#?", len(st))
+            out.append(f"Line Input {num}, {var.text}")
+        elif name == "NAME":
+            b, a = pop(), pop()
+            out.append(f"Name {a.text} As {b.text}")
+        elif name == "WIDTH#":
+            w, num = pop(), pop()
+            out.append(f"Width {num.text}, {w.text}")
+        elif name in ("DATE$=", "TIME$=", "DATE=", "TIME="):
+            out.append(f"{name[:-1].title()} = {pop().text}")
+        elif name == "LOCK":
+            w = struct.unpack_from("<H", operand)[0]
+            rec = ""
+            if w & 0x8000:
+                if w & 2:
+                    rec = f", {pop().text}"
+                else:
+                    hi, lo = pop(), pop()
+                    rec = f", {lo.text} To {hi.text}"
+            out.append(f"{'Unlock' if w & 1 else 'Lock'} {pop().text}{rec}")
+        elif name == "ERASE":
+            out.append(f"Erase {pop().text}")
         elif name == "ENDIF":
             out.append("End If")
         elif name in ("END_SELECT",):
             out.append("End Select")
         elif name in ("FOR", "FOR_STEP", "FOR.I", "FOR.L"):
-            step = pop().text if name == "FOR_STEP" else None
+            step = pop().text if name.startswith("FOR_STEP") else None
             b, a, v = pop(), pop(), pop()
             out.append(f"For {v.text} = {a.text} To {b.text}" + (f" Step {step}" if step else ""))
         elif name in ("NEXT", "NEXT.I", "NEXT.L"):
@@ -558,8 +620,19 @@ def lift(code: list[tuple[int, bytes]], ids: dict[int, int] | None = None,
         else:
             out.append(f"<{name}>")
     settle()
-    if len(out) > 1 and out[0] == "Else":  # single-line Else: `Else stmt`
-        out = ["Else " + out[1]] + out[2:]
+    merged: list[str] = []  # one source line: `If c Then a Else b`, `Next j, i`
+    for t in out:
+        if merged and merged[-1] == "Else":
+            merged[-1] = "Else " + t
+        elif merged and t == "Else" and merged[-1].startswith("If "):
+            merged[-1] += " Else"
+        elif merged and merged[-1].endswith(" Else"):
+            merged[-1] += " " + t
+        elif merged and t.startswith("Next ") and merged[-1].startswith("Next ") and len(t) > 5:
+            merged[-1] += ", " + t[5:]
+        else:
+            merged.append(t)
+    out = merged
     text = "; ".join(out) if out else (st[-1].text if st else "")
     return prefix + text
 

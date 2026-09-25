@@ -6,10 +6,9 @@ statement, the opcodes the disassembler doesn't name yet.
   DISPLAY=:99 python3 tools/opprobe.py <probe> [-a]
 
 A probe is `probes/<name>.py` defining `header` (module-level lines) and
-`lines`, a list of (label, statement). Each statement is compiled on its
-own line inside one Sub; the p-code is split at the statement markers
-(STMT). Output: per unknown opcode, the labels it appeared in (a single
-consistent label names it). -a prints every statement's op sequence;
+`lines`, a list of (label, statement); a statement may span lines (a
+whole construct). Each is compiled as its own Sub. Output: per unknown
+opcode, the labels it appeared in (a single consistent label names it). -a prints every statement's op sequence;
 --sem prints, for unknown ops seen with one builtin-call label
 (`Name(a, b)`), a proposed opcodes.SEM entry.
 """
@@ -27,7 +26,6 @@ from roundtrip import compile_mak  # noqa: E402
 
 REPO = Path(__file__).resolve().parent.parent
 WORK = REPO / "work" / "probe"
-PER_SUB = 200  # statements per Sub
 
 
 def op_name(rt, i) -> str:
@@ -45,33 +43,25 @@ def main():
     g["REPO"] = REPO  # probes may load battery lists
     exec(compile((REPO / "probes" / f"{a.probe}.py").read_text(), a.probe, "exec"), g)
     header, lines = g.get("header", ""), g["lines"]
-    subs = [lines[k:k + PER_SUB] for k in range(0, len(lines), PER_SUB)]
     code = header + "\n" + "".join(
-        f"\nSub P{j:02d} ()\n" + "".join(f"    {st}\n" for _, st in chunk) + "End Sub\n" for j, chunk in enumerate(subs))
+        f"\nSub P{j:04d} ()\n" + "".join(f"    {re.sub(r'\bL(\d)\b', rf'L\1x{j}', ln)}\n" for ln in st.split("\n"))
+        + "End Sub\n"  # labels are module-wide: L1 -> L1x<j>
+        for j, (_, st) in enumerate(lines))
     mak = B.write_case_project(WORK / a.probe, a.probe.upper()[:8], [(0, dict(code=code, bas=g.get("bas", False)))])
     if not compile_mak(mak):
         sys.exit(f"compile failed: {mak.with_suffix('.fail.png')}")
     rt = P.Runtime(REPO / "work" / "ide" / "VBRUN300.DLL")
     segs = P.parse_ne(mak.with_suffix(".exe"))
-    procs = sorted(P.find_procs(segs), key=lambda p: (p.segment, p.start))
+    procs = sorted(P.find_procs(segs), key=lambda p: (p.segment, p.start))  # layout: sorted by name
     seen: dict[str, list[str]] = {}
-    for j, p in enumerate(procs):  # procedures are laid out sorted by name: P00, P01, ...
+    for (label, _), p in zip(lines, procs):
         ins, _ = P.decode(rt, segs[p.segment - 1].data, p)
-        stmts, cur = [], []
-        for i in ins:
-            n = op_name(rt, i)
-            if n == "STMT":
-                stmts.append(cur)
-                cur = []
-            elif n not in ("RET", "TRAP"):
-                cur.append((n, i.op))
-        stmts = stmts[1:]  # before the first marker: nothing
-        for (label, st), ops in zip(subs[j], stmts):
-            if a.a:
-                print(f"{label:24s} {' '.join(n for n, _ in ops)}")
-            for n, op in ops:
-                if n.startswith("op_"):
-                    seen.setdefault(n, []).append(label)
+        ops = [(n, i.op) for i in ins if (n := op_name(rt, i)) not in ("STMT", "RET", "TRAP")]
+        if a.a:
+            print(f"{label:24s} {' '.join(n for n, _ in ops)}")
+        for n, op in ops:
+            if n.startswith("op_"):
+                seen.setdefault(n, []).append(label)
     for n, labels in sorted(seen.items()):
         uniq = sorted(set(labels))
         call = re.fullmatch(r"([A-Za-z]\w*\$?)(?:\((.*)\))?", uniq[0]) if len(uniq) == 1 else None

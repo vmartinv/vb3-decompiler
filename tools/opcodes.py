@@ -41,6 +41,19 @@ NAMES: dict[int, str] = {
     0x0D4D: "CASE_EQ.I", 0x0D2F: "CASE_EQ.V", 0x0D39: "CASE_EQ.R8", 0x0D57: "CASE_EQ.T",  # u16 next Case, u16 body
     0x0D83: "END_SELECT", 0x0D76: "CASE_ELSE", 0x0DAD: "END_SELECT", 0x0CFF: "SELECT.T",
     0x4403: "CASE_IS.GT", 0x43F2: "CASE_IS.LT",   # `Case Is > v`
+    # from probes/stmts
+    0x440A: "CASE_IS.EQ", 0x43E1: "CASE_IS.NE", 0x43EB: "CASE_IS.LE", 0x43FC: "CASE_IS.GE",  # Variant
+    0x3DA2: "CASE_IS.GT", 0x39B6: "CASE_IS.GT",                                            # String, Integer
+    0x43F9: "CASE_TO_LO", 0x0CBD: "CASE_TO_JMP", 0x43E8: "CASE_TO_HI",  # Variant `Case a To b`: a, 43F9, 0CBD, b, 43E8
+    0x3E11: "CASE_TO", 0x3E85: "CASE_TO",                                # Integer / String: a, b, op
+    0x1A8F: "FOR_STEP", 0x1ACE: "FOR_STEP", 0x1AE2: "FOR", 0x1AFC: "FOR",  # I step, Single step, Double, Currency
+    0x1CC1: "NEXT", 0x1D05: "NEXT_NOVAR", 0x1D60: "NEXT_NOVAR", 0x1DA6: "NEXT_NOVAR", 0x1DCB: "NEXT_NOVAR",
+    0x35BB: "LOOP_WHILE_JT", 0x34A8: "WHILE", 0x35F5: "WEND",
+    0x1F6D: "ON_GOTO", 0x1F66: "ON_GOSUB",  # u16 table bytes, u16 targets
+    0x3770: "LET", 0x7731: "MID_STMT", 0x76E0: "MID_STMT", 0x76C9: "LSET", 0x7753: "RSET", 0x76CE: "LSET", 0x7759: "RSET",
+    0x0E2A: "STOP", 0x7440: "RANDOMIZE_N", 0x6193: "WRITE#", 0x3702: "LINE_INPUT#", 0x5407: "NAME",
+    0x3755: "WIDTH#", 0x5393: "DATE$=", 0x5399: "TIME$=", 0x539F: "DATE=", 0x53A6: "TIME=",
+    0x371B: "LOCK", 0x371E: "LOCK", 0x09C2: "ERASE",  # LOCK operand: 1 Unlock, 0x8000 record(s), 2 one record
     0x1B37: "FOR", 0x1B3E: "FOR_STEP", 0x1A7E: "FOR.I", 0x1AA6: "FOR.L",
     0x1E08: "NEXT", 0x1C8A: "NEXT.I", 0x1D08: "NEXT.L", 0x1C87: "NEXT_NOVAR", 0x1E0B: "NEXT_NOVAR", 0x35E9: "DO", 0x0D73: "END_SELECT",
     0x7EB6: "ON_ERROR_GOTO", 0x7E63: "RESUME", 0x7E44: "RESUME_LABEL", 0x7E5D: "RESUME_NEXT",
@@ -74,6 +87,7 @@ NAMES: dict[int, str] = {
     0x4FFC: "NARGS", 0x376A: "END_CALL",
     0x6A63: "ARG_STR", 0x6A72: "ARGS_FREE", 0x6A02: "ARG_V", 0x6823: "ARG_S", 0x6834: "ARG_D",
     0x320F: "ADDR_LOC.V", 0x3200: "ADDR_LOC", 0x3237: "ADDR_LOC.T",
+    0x31C2: "ADDR.MOD.V",  # by reference: For, Input #, Mid$ =, LSet (31B3..31CC: its % & ! # @ $ entries)
     # --- objects -------------------------------------------------------
     0x4A6E: "CONTROL", 0x4AA7: "FORM", 0x4A12: "ME", 0x4A15: "ME_IMPLICIT",
     0x4A7F: "OBJVAR",
@@ -201,6 +215,60 @@ METHODS = {
 # `lift.py infer` (search over the aligned corpus) and kept only where
 # they make the corpus lines lift exactly.
 SEM: dict[int, tuple[str, str, int]] = {
+    # from probes/builtins (`x = <call>` per builtin)
+    0x5401: ("kw", "MkDir", 1), 0x540D: ("kw", "RmDir", 1), 0x53FB: ("kw", "Kill", 1), 0x5334: ("kw", "AppActivate", 1),
+    0x535D: ("kw", "SendKeys", 2), 0x3749: ("kw", "Reset", 0), 0x7428: ("kw", "Error", 1), 0x53F3: ("kw", "SetAttr", 2),
+    0x5170: ("pass", "", 0), 0x4BC0: ("pass", "", 0),  # Variant argument / result of a runtime function (op 0DFA)
+    0x0AE4: ("fn", "LBound", 1),
+    0x0AF4: ("fn", "UBound", 2),
+    0x0E85: ("fn", "CDbl", 1),
+    0x0E88: ("fn", "CSng", 1),
+    0x0EA8: ("fn", "CVar", 1),
+    0x0EB9: ("fn", "CStr", 1),
+    0x0F64: ("fn", "CInt", 1),
+    0x0F78: ("fn", "CLng", 1),
+    0x19E9: ("fn", "Erl", 0),
+    0x19FB: ("fn", "Rnd", 1),
+    0x1A0C: ("fn", "DateSerial", 3),
+    0x1A12: ("fn", "TimeSerial", 3),
+    0x1A1E: ("fn", "TimeValue", 1),
+    0x1A26: ("fn", "Day", 1),
+    0x1A4E: ("fn", "Month", 1),
+    0x1A55: ("fn", "Weekday", 1),
+    0x1A5C: ("fn", "Year", 1),
+    0x1A63: ("fn", "Hour", 1),
+    0x1A71: ("fn", "Second", 1),
+    0x2A36: ("fn", "Point", 2),
+    0x360D: ("fn", "FileAttr", 2),
+    0x362B: ("fn", "Seek", 1),
+    0x3A2D: ("fn", "Sgn", 1),
+    0x3B9B: ("fn", "Sin", 1),
+    0x3BA1: ("fn", "Cos", 1),
+    0x3BA7: ("fn", "Tan", 1),
+    0x3BAD: ("fn", "Atn", 1),
+    0x3BB3: ("fn", "Exp", 1),
+    0x3BC4: ("fn", "Log", 1),
+    0x3BD0: ("fn", "Fix", 1),
+    0x4823: ("fn", "IsEmpty", 1),
+    0x4832: ("fn", "IsNull", 1),
+    0x483A: ("fn", "VarType", 1),
+    0x5277: ("fn", "Command$", 0),
+    0x527D: ("fn", "Date$", 0),
+    0x5283: ("fn", "Time$", 0),
+    0x5289: ("fn", "Date", 0),
+    0x52A3: ("fn", "Environ$", 1),
+    0x52A9: ("fn", "Environ$", 1),
+    0x538D: ("fn", "CurDir$", 1),
+    0x53DD: ("fn", "FileDateTime", 1),
+    0x53E3: ("fn", "FileLen", 1),
+    0x53E9: ("fn", "GetAttr", 1),
+    0x7551: ("fn", "InStr", 4),
+    0x75E1: ("fn", "Oct$", 1),
+    0x7696: ("fn", "String$", 2),
+    0x7851: ("fn", "StrComp", 2),
+    0x7ED1: ("fn", "Error$", 1),
+    0x74EE: ("fn", "Hex$", 1),
+    0x7564: ("fn", "LCase$", 1),
     0x53CC: ("fn", "Dir$", 1), 0x53C6: ("fn", "Dir$", 0), 0x5314: ("fn", "DoEvents", 0),
     0x75EF: ("fn", "Right$", 2), 0x3613: ("fn", "FreeFile", 0), 0x75B4: ("fn", "Mid$", 2),
     0x7690: ("fn", "String$", 2), 0x7684: ("fn", "String", 2), 0x3958: ("fn", "Abs", 1),

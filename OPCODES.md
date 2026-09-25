@@ -313,6 +313,6 @@ still copied from the original source).
   names (per-module name table +30, table offset 76 record +30), the last
   pool entry, Declare aliases.
 - DefType tables beyond `DefInt A-Z` (only form seen in the samples).
-- Batteries (`tools/battery.py`, 554/695): builtins 68/125 (unmapped
-  builtin ops: probe `builtins`), statements 41/68, names 22/35, types
-  50/62, deftype 49/56, expressions 86/91, print 238/238.
+- Batteries (`tools/battery.py`, 631/695): statements 58/68, types
+  53/62, deftype 49/56, expressions 86/91, names 22/35; builtins,
+  print complete.

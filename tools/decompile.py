@@ -116,13 +116,18 @@ def plain_handler(rt: P.Runtime, op: int) -> tuple[str | None, str]:
     if op in NAMES:
         return NAMES[op], ""
     oid = rt.opcode_id(op)
-    if oid is None or oid >> 10 not in SUFFIX_OF_ID:
+    if oid is None:
         return None, ""
-    for k in sorted(range(-16, 17), key=abs):
-        n = NAMES.get(op + k)
-        if n and n.split(".")[0] in VAR_FAMILIES and rt.opcode_id(op + k) == oid & 0x3FF:
-            return n, SUFFIX_OF_ID[oid >> 10]
-    return None, ""
+    if oid >> 10 in SUFFIX_OF_ID:
+        for k in sorted(range(-16, 17), key=abs):
+            n = NAMES.get(op + k)
+            if n and n.split(".")[0] in VAR_FAMILIES and rt.opcode_id(op + k) == oid & 0x3FF:
+                return n, SUFFIX_OF_ID[oid >> 10]
+    fam = ID_CLASS.get(oid & 0xFF)  # otherwise by the ID's class; scope from the slot (".X")
+    return (f"{fam}.X", SUFFIX_OF_ID.get(oid >> 10, "")) if fam else (None, "")
+
+
+ID_CLASS = {0x0B: "LOAD", 0x0C: "STORE", 0x0E: "ALOAD", 0x0F: "ASTORE"}  # interpreter ID low byte
 
 
 def image_layout(image: bytes, nforms: int) -> dict:
@@ -358,7 +363,7 @@ class Decompiler:
             last_udt = None
             for j, i in enumerate(info.insns):
                 n, sfx = plain_handler(self.rt, i.op)
-                if n is None and P.is_objarr(self.rt, i):
+                if (n is None or n.endswith(".X")) and P.is_objarr(self.rt, i):
                     n = "ALOAD.MOD.V"  # object array element (typed separately)
                     x = struct.unpack_from("<H", i.operand, len(i.operand) - 2)[0]
                     if word(self.image, base + x) >> 8 == 0x80:  # `0x80NN, global offset`: a global As New array
@@ -375,6 +380,16 @@ class Decompiler:
                     if td:
                         udt[last_udt] = td.g
                     last_udt = None
+                if n == "ARRAY_REF" and i.operand:  # a whole array (LBound, Erase, argument `a()`)
+                    slot = struct.unpack_from("<H", i.operand, len(i.operand) - 2)[0]
+                    if slot not in vars_ and (self.is_global_slot(base, slot) or slot in {x for x, _ in m["funcs"]}):
+                        continue  # a global array (through this module's slot) or a function slot
+                    bp = self.value(base, slot)  # a descriptor (module/Static) or a BP offset
+                    v = vars_.setdefault(slot, Var(slot, "LOC" if -0x1000 < bp < 0 else "REF" if 0 < bp < 0x100 else "MOD"))
+                    v.array = True
+                    if k not in v.procs:
+                        v.procs.append(k)
+                    continue
                 if n == "OBJVAR" and i.operand:  # object variable: record `kind, BP offset / 0`
                     slot = struct.unpack_from("<H", i.operand, len(i.operand) - 2)[0]
                     bp = self.value(base, slot)
@@ -391,6 +406,11 @@ class Decompiler:
                     continue
                 scope, t, arr = acc
                 slot = struct.unpack_from("<H", i.operand, len(i.operand) - 2)[0]
+                if scope == "X":  # the slot holds 0 (module) or a BP offset < 0 (local); else unsure: skip
+                    bp = self.value(base, slot)
+                    if bp > 0:
+                        continue
+                    scope = "MOD" if bp == 0 else "LOC"
                 v = vars_.setdefault(slot, Var(slot, scope))
                 if scope == "REF":
                     v.scope = "REF"
@@ -439,7 +459,7 @@ class Decompiler:
                         owned.add(x)
                         call_slots.setdefault(x, k)
                 elif m["kind"] == "frm" and i.operand and (n in ("OBJVAR", "FORM", "CONTROL", "CTLARRAY")
-                                                          or (not n and P.is_objarr(self.rt, i))):
+                                                          or ((not n or n.endswith(".X")) and P.is_objarr(self.rt, i))):
                     # records start at the operand; a form declares no global objects
                     owned.add(struct.unpack_from("<H", i.operand, len(i.operand) - 2)[0] - 2)
         if m["kind"] == "frm":
