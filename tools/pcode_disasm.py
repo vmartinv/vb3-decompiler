@@ -195,6 +195,12 @@ def parse_models(ds: bytes, mprops: list, mevents: list, min_ptr: int) -> dict[s
         if len(props) < 5 or not ("Name" in props or "Left" in props):
             continue
         evs = entries(el, mevents) if el else []
+        if w(r - 26) < 0x200 and "DragDrop" in evs and "MouseDown" not in evs:
+            # a VB1 model (usVersion 1.00): VB adds the mouse events after its own
+            for e in ("MouseDown", "MouseMove", "MouseUp"):
+                evs.append(e)
+                if e in MASTER_EVENT_TYPES:
+                    EVENT_TYPES.setdefault((cls, e), MASTER_EVENT_TYPES[e])
         q = el
         while el and w(q) and (q - el) // 2 < len(evs):  # EVENTINFO: name, cParms, cwParms, npParmTypes
             v, k = w(q), (q - el) // 2
@@ -210,11 +216,12 @@ def parse_models(ds: bytes, mprops: list, mevents: list, min_ptr: int) -> dict[s
         if cls not in found or (not found[cls][1] and evs):
             found[cls] = (props, evs)
             MODEL_FLAGS[cls] = int.from_bytes(ds[r - 24:r - 20], "little")  # MODEL.fl
+            MODEL_VERSION[cls] = int.from_bytes(ds[r - 26:r - 24], "little")  # MODEL.usVersion
             q, types, std = pl, [], []
             while w(q) and len(types) < len(props):  # PROPINFO: name, fl (low byte = DT_ data type)
                 v = w(q)
                 types.append((MASTER_PROP_TYPES[0xFFFF - v] if 0xFFFF - v < len(MASTER_PROP_TYPES) else 0)
-                             if v >= 0xFF80 else ds[v + 2])
+                             if v >= 0xFF80 else ds[v + 2] if v + 2 < len(ds) else 0)
                 std.append(v >= 0xFF80)
                 q += 2
             PROP_TYPES[cls] = types
@@ -508,6 +515,7 @@ EVENT_TYPES: dict[tuple[str, str], tuple[int, ...]] = {}
 PROP_TYPES: dict[str, list[int]] = {}  # class -> PROPINFO data type per property-list entry
 MASTER_PROP_TYPES: list[int] = []
 MODEL_FLAGS: dict[str, int] = {}
+MODEL_VERSION: dict[str, int] = {}
 PROP_STD: dict[str, list[bool]] = {}  # class -> property-list entry is a standard (master) property
 MASTER_EVENT_TYPES: dict[str, tuple[int, ...]] = {}  # standard event -> parameter types
 MEPROPS: dict[int, dict[int, int]] = {}  # code segment -> {PGET_ME slot: property index}
@@ -672,7 +680,7 @@ def resolve_symbols(segs: list[Segment], rt: "Runtime", res: dict[int, bytes]) -
                 continue
             if kind == "objvar":
                 continue  # untyped (As Control/Form generic) or not in this image
-            if kind == "control" and w0 >> 8 == 0x60 and w1 >> 8 == 0xC0:  # the form's object property (ActiveForm)
+            if kind == "control" and w0 >> 8 in (0x40, 0x60) and w1 >> 8 == 0xC0:  # the form's object property (ActiveForm, Controls)
                 mep[slot] = w1 & 0xFF
                 continue
             if kind == "control":
@@ -762,7 +770,7 @@ def proc_names(segs: list[Segment], rt: "Runtime", res: dict[int, bytes]) -> dic
                 at = q + (9 if struct.unpack_from("<H", d, q + 3)[0] & 0x8000 else 7)
                 return d[q + 5] < len(names) and bool(names[d[q + 5]]) and at < len(d) \
                     and (d[at] in CLASS_BY_BLOB or d[at] == 0xFF)
-            hdr = next((q for q in range(p - 3, max(0, p - 1024), -1) if is_hdr(q)), None)
+            hdr = next((q for q in range(p - 3, max(0, p - 0x10000), -1) if is_hdr(q)), None)  # (VBX records hold bitmaps)
             if hdr is not None:
                 flags = struct.unpack_from("<H", d, hdr + 3)[0]
                 idx = d[hdr + 5]
@@ -971,9 +979,11 @@ class Symbols:
             if n in ("CONTROL", "CTLARRAY", "CTLARRAY_GET", "CTLARRAY_SET", "FORM") and i.operand:
                 slot = struct.unpack_from("<H", i.operand, len(i.operand) - 2)[0]
                 text = sym.get(slot, "")
-                idx = self.meprops.get(seg, {}).get(slot) if n == "CONTROL" else None
+                idx = self.meprops.get(seg, {}).get(slot) if n in ("CONTROL", "CTLARRAY") else None
                 props = self.rt.property_lists().get(self.form_class.get(form_of_seg, "Form"), [])
-                if not text and idx is not None and idx < len(props) and props[idx]:
+                if not text and idx == 0xFE:
+                    text = "Controls"  # the form's control collection
+                elif not text and idx is not None and idx < len(props) and props[idx]:
                     text = props[idx]  # an object-valued property of the form itself: `ActiveForm`
             elif n in ("PGET", "PSET", "PGET_IDX", "PSET_IDX") and len(i.operand) >= 2:
                 nn = struct.unpack_from("<H", i.operand, len(i.operand) - 2)[0]

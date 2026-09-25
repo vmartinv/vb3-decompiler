@@ -64,11 +64,13 @@ NAMES: dict[int, str] = {
     0x0816: "REDIM", 0x0813: "REDIM_PRESERVE", 0x0AEF: "UBOUND",
     # graphics / Print methods: `obj GFX pieces... END`; value methods: `obj GFX_FN args FN`
     0x2137: "GFX", 0x2130: "GFX_FN",
-    0x22F6: "PT", 0x22E9: "PT", 0x231E: "PT_TO", 0x2328: "PT_STEP_TO", 0x2332: "PT_STEP_TO",
+    0x4B28: "NEW_FORM",  # New frmX (operand: its object kind)
+    0x22F6: "PT", 0x22E9: "PT", 0x2300: "PT_STEP", 0x230A: "PT_STEP",  # (x, y), Step(x, y), -(x, y), -Step(x, y)
+    0x2314: "PT_TO", 0x231E: "PT_TO", 0x2328: "PT_STEP_TO", 0x2332: "PT_STEP_TO",
     0x26C7: "LINE", 0x26C1: "LINE_C",            # operand: 0 / 1 B / 2 BF
-    0x23DA: "CIRCLE_C", 0x23E3: "CIRCLE", 0x27BE: "PSET_C", 0x27C4: "PSET_P",  # PSet (x, y) [, color]
-    0x27E8: "SCALE",
-    0x296C: "TEXTWIDTH", 0x28FF: "TEXTHEIGHT", 0x2A69: "POINT",
+    0x23DA: "CIRCLE_C", 0x233C: "CIRCLE_START", 0x235E: "CIRCLE_END", 0x2380: "CIRCLE_ASPECT", 0x23E3: "CIRCLE", 0x27BE: "PSET_C", 0x27C4: "PSET_P",  # PSet (x, y) [, color]
+    0x27E8: "SCALE", 0x2891: "SCALE_PTS",
+    0x296C: "TEXTWIDTH", 0x28FF: "TEXTHEIGHT", 0x2A69: "POINT", 0x2A36: "POINT",
     0x3764: "DEBUG", 0x2124: "PRINT_BEGIN",
     # Print items, one op per item type (% & ! # @ $ Variant) and what follows it:
     # end of statement (newline), `;` or `,`. PRINT_END closes a statement ending in `;`/`,` or empty.
@@ -180,7 +182,7 @@ NAMES: dict[int, str] = {
     0x7210: "FIELD_ALOAD", 0x72DB: "FIELD_ASTORE",  # array field `r.a(i)`: u16 dims, u16 field
     0x2FB1: "STORE.UDT",  # `w = r` (whole Type): u16 target slot
     0x6F79: "OBJ_FREE",   # epilogue: release a local Type (like 4FA6 for object variables)
-    0x6BF1: "FIELD_GET.L", 0x31B0: "LOAD.UDT", 0x31EE: "LOAD.UDT_LOC", 0x31CF: "ADDR.MOD",  # ADDR.MOD: a module variable by reference (Get #)
+    0x6BF1: "FIELD_GET.L", 0x31B0: "LOAD.UDT", 0x31EE: "LOAD.UDT_LOC", 0x315B: "LOAD.UDT_GLB", 0x32C8: "STORE.GLB.F", 0x31CF: "ADDR.MOD",  # ADDR.MOD: a module variable by reference (Get #)
 }
 
 # Variables: load (id 0x0B) / store (id 0x0C) by storage x type.
@@ -217,7 +219,7 @@ METHODS = {
     0x27: "FieldSize", 0x28: "GetChunk", 0x2A: "PopupMenu", 0x2D: "OpenTable", 0x2F: "ListTables",
     0x32: "CreateSnapshot", 0x33: "OpenQueryDef", 0x34: "CreateQueryDef", 0x39: "Execute",
     0x3A: "Seek", 0x3B: "Clone", 0x07: "LinkExecute", 0x35: "FindFirst",
-    0x01: "LinkSend", 0x05: "LinkPoke", 0x06: "LinkRequest", 0x08: "GetText", 0x0A: "SetText",
+    0x01: "LinkSend", 0x05: "LinkPoke", 0x06: "LinkRequest", 0x08: "GetText", 0x09: "GetData", 0x0A: "SetText", 0x0B: "SetData", 0x0D: "GetFormat",
 }
 
 # Lifter semantics for handlers that are plain builtins/statements:
@@ -250,7 +252,6 @@ SEM: dict[int, tuple[str, str, int]] = {
     0x1A5C: ("fn", "Year", 1),
     0x1A63: ("fn", "Hour", 1),
     0x1A71: ("fn", "Second", 1),
-    0x2A36: ("fn", "Point", 2),
     0x360D: ("fn", "FileAttr", 2),
     0x362B: ("fn", "Seek", 1),
     0x3A2D: ("fn", "Sgn", 1),
@@ -281,7 +282,7 @@ SEM: dict[int, tuple[str, str, int]] = {
     0x7ED1: ("fn", "Error$", 1),
     0x74EE: ("fn", "Hex$", 1),
     0x7564: ("fn", "LCase$", 1),
-    0x53CC: ("fn", "Dir$", 1), 0x53C6: ("fn", "Dir$", 0), 0x5314: ("fn", "DoEvents", 0),
+    0x53CC: ("fn", "Dir$", 1), 0x53C6: ("fn", "Dir$", 0), 0x53D1: ("fn", "Dir$", 2), 0x5314: ("fn", "DoEvents", 0),
     0x75EF: ("fn", "Right$", 2), 0x3613: ("fn", "FreeFile", 0), 0x75B4: ("fn", "Mid$", 2),
     0x7690: ("fn", "String$", 2), 0x7684: ("fn", "String", 2), 0x3958: ("fn", "Abs", 1),
     0x7570: ("fn", "Len", 1), 0x7610: ("fn", "Str$", 1), 0x4841: ("fn", "IsNumeric", 1),

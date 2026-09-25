@@ -40,7 +40,7 @@ FUNCS = {  # builtin -> arity
     "Left$": 2, "Shell": 2, "Format$": 2, "InStr": 2, "Mid$": 3, "InputBox$": 3,
     "RGB": 3, "Trim$": 1, "Format$.1": 1,
 }
-RT_FUNCS = {0x8043: "LoadPicture", 0x8050: "Choose", 0x8051: "Switch", 0x805C: "Partition", 0x805D: "IIf"}  # op 0DFA ids
+RT_FUNCS = {0x44: "SavePicture", 0x8043: "LoadPicture", 0x8050: "Choose", 0x8051: "Switch", 0x805C: "Partition", 0x805D: "IIf"}  # op 0DFA ids
 STATEMENT_FUNCS = {"MsgBox": 3, "DoEvents": 0, "Cls": 0, "Beep": 0, "ChDir": 1, "ChDrive": 1}
 FUNCTION_FORMS = {"MsgBox.fn": ("MsgBox", 3)}
 MISSING_TEXT = "\0missing"
@@ -69,6 +69,8 @@ def result_type(name: str) -> str:
         return {"R8": "D", "Ttmp": "T", "": ""}.get(tgt, tgt)
     if fam in CMP_FAMILIES:
         return "I"
+    if fam == "AUDT":
+        return "&"  # an array element's address
     if fam.startswith(("ADDR", "AADDR", "FIELD_ADDR")):
         return "&" + (suf if suf in ("V", "T") else "")
     if fam == "PUSH":
@@ -156,6 +158,11 @@ def lift(code: list[tuple[int, bytes]], ids: dict[int, int] | None = None,
             return name
         oid = (ids or {}).get(op, 0)
         low = oid & 0xFF
+        if oid >> 10:  # a suffixed entry falling through to the plain handler 3, 6, ... bytes on
+            plain = next((NAMES[op + k] for k in range(3, 22, 3)
+                          if op + k in NAMES and ids.get(op + k) == oid & 0x3FF), None)
+            if plain and plain.split(".")[0] in ("LOAD", "STORE", "ADDR", "ADDR_LOC", "ALOAD", "ASTORE", "AADDR"):
+                return plain
         if low == 0x0E and oid >> 10 and any(NAMES.get(op + k) == "CALL_FN" and ids.get(op + k) == oid & 0x3FF
                                              for k in range(1, 17)):
             return "CALL_FN"  # a function call written with a type suffix: `F%(1)`
@@ -195,6 +202,7 @@ def lift(code: list[tuple[int, bytes]], ids: dict[int, int] | None = None,
                 st.append(E(fn))
             continue
         name = family(op, NAMES.get(op, f"op_{op:04X}"))
+        prev_name = name
         fam = name.split(".")[0].split(" ")[0].rstrip("?")
         if name == "PAREN":  # explicit parentheses in the source (kept for the IDE's listing)
             if st:
@@ -207,6 +215,8 @@ def lift(code: list[tuple[int, bytes]], ids: dict[int, int] | None = None,
             st[-1].text = re.sub(r"^(\w+)\$", r"\1", st[-1].text)  # Variant form: Left(...), not Left$(...)
         if name == "ARGS":  # a call's start: its method object is the first object marked after it
             call_at.append(len(obj_at))
+        if name in ("ARG_S", "ARG_D", "ARG_T_BYREF") and st:  # DLL argument conversions: the declared type
+            st[-1].t = {"ARG_S": "S", "ARG_D": "D", "ARG_T_BYREF": "T"}[name]  # (ARG_T_BYREF: ByVal String)
         if fam.startswith("CVT") or name in ("ARGS", "ARGS_FREE", "END_CALL", "TRAP", "LABEL", "LABEL_WIDE", "NARGS",
                                              "ARG_STR", "ARG_V", "ARG_S", "ARG_D", "ARGS_DLL",
                                              "ARG_T_BYREF", "ARG_PAREN", "ARG_TEMP", "ARG_FIX", "ARG_FIX_BACK") or fam in STATEMENT_PREFIX:
@@ -221,6 +231,8 @@ def lift(code: list[tuple[int, bytes]], ids: dict[int, int] | None = None,
             st.append(E(nm(var_name(name, operand))))
         elif name == "ME":
             st.append(E("Me"))
+        elif name == "NEW_FORM":
+            st.append(E(f"New {nm('?')}"))
         elif name == "ME_IMPLICIT":
             st.append(E(""))
             obj_at.append(len(st))
@@ -291,26 +303,32 @@ def lift(code: list[tuple[int, bytes]], ids: dict[int, int] | None = None,
         elif name == "PRINT#":
             num = pop().text
             gfx.append((f"\0file{num}", len(st)))
-        elif name in ("PT", "PT_TO", "PT_STEP_TO"):
+        elif name in ("PT", "PT_STEP", "PT_TO", "PT_STEP_TO"):
             y, x = pop(), pop()
-            pre = {"PT": "", "PT_TO": "-", "PT_STEP_TO": "-Step"}[name]
+            pre = {"PT": "", "PT_STEP": "Step", "PT_TO": "-", "PT_STEP_TO": "-Step"}[name]
             st.append(E(f"{pre}({x.text}, {y.text})"))
-        elif name == "CIRCLE_C":
-            st.append(E("\0color"))
-        elif name in ("LINE", "LINE_C", "CIRCLE", "PSET_C", "PSET_P", "SCALE"):
+        elif name in ("CIRCLE_C", "CIRCLE_START", "CIRCLE_END", "CIRCLE_ASPECT"):  # tag the optional argument
+            st[-1] = E(f"\0{name[7:] or 'C'}\0{st[-1].text}")
+        elif name in ("LINE", "LINE_C", "CIRCLE", "PSET_C", "PSET_P", "SCALE", "SCALE_PTS"):
             o, mark = gfx.pop() if gfx else ("", len(st))
             parts = [e.text for e in st[mark:]]
             del st[mark:]
             if name.startswith("LINE"):
-                pts = "".join(t for t in parts if t.startswith(("(", "-")))
-                rest = [t for t in parts if not t.startswith(("(", "-"))]
+                pts = "".join(t for t in parts if t.startswith(("(", "-", "Step(")))
+                rest = [t for t in parts if not t.startswith(("(", "-", "Step("))]
                 flag = {1: "B", 2: "BF"}.get(slot_of(operand), "")
                 args = [pts] + (rest if name == "LINE_C" else ([""] if flag else [])) + ([flag] if flag else [])
                 out.append(f"{o}Line " + ", ".join(args))
-            elif name == "CIRCLE":
-                out.append(f"{o}Circle " + ", ".join(t for t in parts if t != "\0color"))
+            elif name == "CIRCLE":  # point, radius, then the tagged optional arguments
+                opt = dict(t[1:].split("\0", 1) for t in parts[2:])
+                args = parts[:2] + [opt.get(k, "") for k in ("C", "START", "END", "ASPECT")]
+                while args[-1] == "":
+                    args.pop()
+                out.append(f"{o}Circle " + ", ".join(args))
             elif name in ("PSET_C", "PSET_P"):
                 out.append(f"{o}PSet " + ", ".join(parts))
+            elif name == "SCALE_PTS":
+                out.append(f"{o}Scale ({parts[0]}, {parts[1]})-({parts[2]}, {parts[3]})")
             else:
                 out.append(f"{o}Scale")
         elif name in ("PRINT_TAB", "PRINT_SPC"):
@@ -362,7 +380,7 @@ def lift(code: list[tuple[int, bytes]], ids: dict[int, int] | None = None,
             n = struct.unpack_from("<H", operand)[0]
             idx = [pop() for _ in range(n)][::-1]
             st.append(E(f"{nm(f'glb{slot_of(operand):x}')}({', '.join(i.text for i in idx)})"))
-        elif name in ("LOAD.UDT", "LOAD.UDT_LOC"):
+        elif name in ("LOAD.UDT", "LOAD.UDT_LOC", "LOAD.UDT_GLB"):
             st.append(E(nm(f"u{slot_of(operand):x}")))
         elif name == "AUDT":
             n = struct.unpack_from("<H", operand)[0]
@@ -394,6 +412,9 @@ def lift(code: list[tuple[int, bytes]], ids: dict[int, int] | None = None,
                 pop()
             args = [pop() for _ in range(n)][::-1]
             fn = RT_FUNCS.get(fid, f"RTFN{fid:X}")
+            if not fid & 0x8000:  # a statement
+                out.append(f"{fn} {', '.join(a.text for a in args if a.text != MISSING_TEXT)}")
+                continue
             st.append(E(f"{fn}({', '.join(a.text for a in args if a.text != MISSING_TEXT)})"))
         elif name == "PGET_IDX":
             o = pop()
@@ -427,7 +448,8 @@ def lift(code: list[tuple[int, bytes]], ids: dict[int, int] | None = None,
         elif name == "DO_UNTIL_JT":
             out.append(f"Do Until {pop().text}")
         elif name == "RESUME_LABEL":
-            out.append(f"Resume L{slot_of(operand):x}")
+            t = slot_of(operand)
+            out.append("Resume 0" if t == 0xFFFF else f"Resume L{t:x}")
         elif name == "RESUME_NEXT":
             out.append("Resume Next")
         elif name == "RESUME":
@@ -639,13 +661,12 @@ def lift(code: list[tuple[int, bytes]], ids: dict[int, int] | None = None,
             out.append(f"{name[:-1].title()} = {pop().text}")
         elif name == "LOCK":
             w = struct.unpack_from("<H", operand)[0]
-            rec = ""
+            rec = ""  # bit 1: records given; 0x8000 one record, 0x4000 `To n` (lower bound pushed as 1)
             if w & 0x8000:
-                if w & 2:
-                    rec = f", {pop().text}"
-                else:
-                    hi, lo = pop(), pop()
-                    rec = f", {lo.text} To {hi.text}"
+                rec = f", {pop().text}"
+            elif w & 2:
+                hi, lo = pop(), pop()
+                rec = f", To {hi.text}" if w & 0x4000 else f", {lo.text} To {hi.text}"
             out.append(f"{'Unlock' if w & 1 else 'Lock'} {pop().text}{rec}")
         elif name == "ERASE":
             out.append(f"Erase {pop().text}")

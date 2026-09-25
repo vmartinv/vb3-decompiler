@@ -63,9 +63,10 @@ SIZE_TYPES = {2: "I", 4: "L", 8: "D", 16: "V"}  # filler declarations for unused
 
 
 def label_number(operand: bytes) -> int:
-    """A LABEL's line number (low word 0xFFFF, number in the high word), or 0xFFFFFFFF for a named label."""
-    (num,) = struct.unpack_from("<I", operand)
-    return num if num == 0xFFFFFFFF or num & 0xFFFF != 0xFFFF else num >> 16
+    """A LABEL's line number (second word; 0xFFFF for a named label, returned as 0xFFFFFFFF).
+    The first word is 0xFFFF unless a Resume / Erl refers to the label."""
+    num = struct.unpack_from("<H", operand, 2)[0]
+    return 0xFFFFFFFF if num == 0xFFFF else num
 
 
 @dataclass
@@ -133,8 +134,8 @@ def plain_handler(rt: P.Runtime, op: int) -> tuple[str | None, str]:
     oid = rt.opcode_id(op)
     if oid is None:
         return None, ""
-    if oid >> 10 in SUFFIX_OF_ID:
-        for k in sorted(range(-16, 17), key=abs):
+    if oid >> 10 in SUFFIX_OF_ID:  # 3-byte entries falling through to the plain handler after them first
+        for k in [*range(3, 22, 3), *sorted(range(-16, 17), key=abs)]:
             n = NAMES.get(op + k)
             if n and (n.split(".")[0] in VAR_FAMILIES or n == "CALL_FN") and rt.opcode_id(op + k) == oid & 0x3FF:
                 return n, SUFFIX_OF_ID[oid >> 10]
@@ -369,6 +370,9 @@ class Decompiler:
                 P.SEG_IMAGE[seg] = m["image"]
                 if m in free:
                     free.remove(m)
+        for m in mods:  # forms whose code names no control (`Me.Text1` resolves by the form)
+            if m["seg"] and m["form"]:
+                self.sym.seg_form.setdefault(m["seg"], m["form"])
         return mods
 
     def analyze_module(self, m: dict) -> None:
@@ -397,21 +401,28 @@ class Decompiler:
                     x = struct.unpack_from("<H", i.operand, len(i.operand) - 2)[0]
                     if word(self.image, base + x) >> 8 == 0x80:  # `0x80NN, global offset`: a global As New array
                         vars_.setdefault(x, Var(x, "MOD")).glob = word(self.image, base + x + 2)
-                if n in ("LOAD.UDT", "LOAD.UDT_LOC", "AUDT", "STORE.UDT") and i.operand:
+                if n in ("LOAD.UDT", "LOAD.UDT_LOC", "LOAD.UDT_GLB", "AUDT", "STORE.UDT") and i.operand:
                     last_udt = struct.unpack_from("<H", i.operand, len(i.operand) - 2)[0]
                     scope = "LOC" if n.endswith("LOC") or (n == "STORE.UDT" and self.value(base, last_udt) < 0) \
-                        else "MOD"
+                        else "GLB" if n.endswith("GLB") else "MOD"
                     v = vars_.setdefault(last_udt, Var(last_udt, scope))
-                    v.udt = True
                     v.array |= n == "AUDT"
                     if k not in v.procs:
                         v.procs.append(k)
+                    nxt_n = NAMES.get(info.insns[j + 1].op, "") if j + 1 < len(info.insns) else ""
+                    if n == "AUDT" and not nxt_n.startswith("FIELD_"):  # an element's address (ByRef argument)
+                        t = {2: "I", 4: "L", 8: "D"}.get(word(self.image, base + last_udt + 16))  # descriptor + 14
+                        if t and scope == "MOD":
+                            v.votes[t] = v.votes.get(t, 0) + 1
+                        last_udt = None
+                        continue
+                    v.udt = True
                     continue
                 if n and n.startswith(("FIELD_", )) and last_udt is not None and i.operand:
                     td = self.gimg.field_type.get(struct.unpack_from("<H", i.operand, len(i.operand) - 2)[0])
                     if td:
                         udt[last_udt] = td.g
-                        if vars_[last_udt].array:
+                        if vars_[last_udt].array or vars_[last_udt].scope == "GLB":
                             vars_[last_udt].udt_type = td.g
                     last_udt = None
                 if n == "ARRAY_REF" and i.operand:  # a whole array (LBound, Erase, argument `a()`)
@@ -517,6 +528,7 @@ class Decompiler:
             owned |= {s for s, v in vars_.items() if v.scope == "GLB"}
         # control/property operands point at their record, 2 bytes past a variable's slot
         owned |= {s - 2 for s, v in vars_.items() if getattr(v, "fixed", False) and v.scope != "MOD"}
+        owned |= {s - 2 for s, v in vars_.items() if v.obj and v.scope == "LOC"}  # local object: `kind, BP` record
         first_owned = min(owned | {r - 2 for r in refs} | {s for s, v in vars_.items() if v.scope == "GLB"
                                                and s >= m["decl_start"] and not self.is_global_slot(base, s)},
                           default=word(self.image, base) - 1 if not infos else 1 << 16)
@@ -578,6 +590,10 @@ class Decompiler:
                 nxt = next((x for x in known if x > s), end)
                 g = self.value(m["image"], s, False)
                 if v is None and getattr(m["vars"].get(s + 2), "fixed", False):  # a String * n's length
+                    s += 2
+                    continue
+                if v is None and m["kind"] == "bas" and f"F{g}" in uses.get(self.value(m["image"], s + 2, False), {}).get(
+                        "votes", {}):  # the length of a Global String * n (the global's slot follows)
                     s += 2
                     continue
                 if v is None and g in gl.types:  # reference to a Type (first `As T` in the module)
@@ -699,8 +715,15 @@ class Decompiler:
                 w0, w1 = gl.w(g), gl.w(g + 2)
                 if size == 4 and not u["stored"] and w1 >= 0x100 and set(u["votes"]) <= {"T", "L"}:
                     t, lit = "T", "\0str"  # string descriptor, text assigned below
+                if re.fullmatch(r"F\d+", t):  # String * n
+                    lit = None
                 m["items"][k] = ("global", it[1], lit, g, t, name, u["array"])
                 self.global_name[g] = name
+        declared = set()  # a Global is declared once: other modules' slots for it are references
+        for m in mods:
+            if m["kind"] == "bas":
+                m["items"] = [it for it in m["items"] if it[0] != "global" or it[3] not in declared]
+                declared |= {it[3] for it in m["items"] if it[0] == "global"}
         pending = [(mi, k) for mi, m in enumerate(mods) for k, it in enumerate(m["items"])
                    if it[0] in ("const", "global") and len(it) > 2 and it[2] == "\0str"]
         for (mi, k), text in zip(pending, texts):
@@ -717,6 +740,10 @@ class Decompiler:
                 gg = [it[3] for it in m["items"] if it[0] == "global"]
                 if gg and min(gg) < td.g < max(gg):
                     owner = m
+            if owner is None:  # else the module whose globals follow it (declared at its top)
+                after = [(min(gg), k) for k, m in enumerate(bas)
+                         if (gg := [it[3] for it in m["items"] if it[0] == "global"]) and min(gg) > td.g]
+                owner = bas[min(after)[1]] if after else None
             owner = owner or next((m for m in bas if not m["items"]), bas[0])
             owner.setdefault("types", []).append(td)
 
@@ -750,18 +777,24 @@ class Decompiler:
                 recs.append(r)
         recs.sort()  # records are allocated in order of first mention in the text
         for r in recs:
-            if r in self.by_record:
+            if r in self.by_record or self.declare_home(r) is not m:  # a Function's slot in a calling module
                 continue
             t = self.table
             dll = pool_name(self.image, self.pool, word(t, r + 40)).rstrip(".")
-            fn = pool_name(self.image, self.pool, word(t, r + 46))
+            fn = self.declare_name(r)
+            alias = f' Alias "#{fn[3:]}"' if pool_name(self.image, self.pool, word(t, r + 46)).startswith("#") else ""
             kind = "Function" if t[r + 12] == 2 else "Sub"
             params = self.declare_params(r)
-            line = f'Declare {kind} {fn} Lib "{dll}" ({", ".join(params)})'
+            line = f'Declare {kind} {fn} Lib "{dll}"{alias} ({", ".join(params)})'
             if kind == "Function":
                 line += f" As {TYPE_NAME[RET_TYPE.get(t[r + 13], 'V')]}"
             out.append(line)
         return out
+
+    def declare_name(self, r: int) -> str:
+        """A Declare's name: its DLL entry name; an ordinal entry (`Alias "#n"`) is named Ord<n>."""
+        fn = pool_name(self.image, self.pool, word(self.table, r + 46))
+        return f"Ord{fn[1:]}" if fn.startswith("#") else fn
 
     def declare_home(self, r: int) -> dict:
         """The module a slotless Declare is written in: a module's records
@@ -776,23 +809,28 @@ class Decompiler:
         seen = self.call_types.get(r, [])
         words = self.table[r + 15]
         out = []
+        taken = {self.declare_name(x).lower() for x in range(0, len(self.table) - 55, 8)
+                 if x not in self.by_record and self.is_declare(x)}
+        pn = "P" if not any(re.fullmatch(r"p\d+", x) for x in taken) else "Arg"
         if seen:
             n = max(len(x) for x in seen)
             for j in range(n):
                 ts = [x[j] for x in seen if j < len(x) and x[j]]
                 t = ts[0] if ts else ""
                 if t == "*" or (t.startswith("&") and t != "&T"):
-                    out.append(f"P{j + 1} As Any")
-                elif t in ("T", "&T"):
-                    out.append(f"ByVal P{j + 1} As String")
+                    out.append(f"{pn}{j + 1} As Any")
+                elif t == "T":
+                    out.append(f"ByVal {pn}{j + 1} As String")
+                elif t == "&T":
+                    out.append(f"{pn}{j + 1} As String")
                 else:
                     t = {"L/T": "L", "": "I", "V": "I"}.get(t, t)
-                    out.append(f"ByVal P{j + 1} As {TYPE_NAME.get(t, 'Integer')}")
+                    out.append(f"ByVal {pn}{j + 1} As {TYPE_NAME.get(t, 'Integer')}")
             return out
         k = 0
         while words > 0:
             k += 1
-            out.append(f"ByVal P{k} As {'Integer' if words == 1 else 'Long'}")
+            out.append(f"ByVal {pn}{k} As {'Integer' if words == 1 else 'Long'}")
             words -= 1 if words == 1 else 2
         return out
 
@@ -810,7 +848,8 @@ class Decompiler:
                 _, s, lit, g, t, name, arr = it
                 dims = self.array_dims(0, 0, self.gimg.base + 2 + g)[0] if arr else ""
                 out.append(f"Global Const {name} = {lit}" if lit else
-                           f"Global {name}" + (f"({dims})" if arr else "") + f" As {TYPE_NAME.get(t, t)}")
+                           f"Global {name}" + (f"({dims})" if arr else "") +
+                           (f" As String * {t[1:]}" if re.fullmatch(r"F\d+", t) else f" As {TYPE_NAME.get(t, t)}"))
             elif it[0] == "typeref":
                 continue
             elif it[0] == "newobj":
@@ -926,7 +965,7 @@ class Decompiler:
                 if r in self.events:
                     known = len(self.events[r])
                 elif r not in self.by_record:  # Declare: its DLL function name (no Alias assumed)
-                    known = len(pool_name(self.image, self.pool, word(t, r + 46)))
+                    known = len(self.declare_name(r))
             length.append(known)
         files = {b: self.form_files[k] if k < len(self.form_files) else None
                  for k, b in enumerate(b for b, m in enumerate(mods) if m["kind"] == "frm")}
@@ -1087,13 +1126,13 @@ class Decompiler:
             self.proc_name[info.proc.record] = info.name
         for _, r in m["funcs"]:
             if r not in self.by_record:
-                self.proc_name[r] = pool_name(self.image, self.pool, word(self.table, r + 46))
+                self.proc_name[r] = self.declare_name(r)
         for p in self.procs:  # calls to Declare Subs (operand: the record)
             for i in P.decode(self.rt, self.segs[p.segment - 1].data, p)[0] if p.segment == m["seg"] else []:
                 if NAMES.get(i.op) == "CALL" and len(i.operand) >= 4:
                     r = struct.unpack_from("<H", i.operand, 2)[0] & 0xFFF8
                     if r not in self.by_record and self.is_declare(r):
-                        self.proc_name[r] = pool_name(self.image, self.pool, word(self.table, r + 46))
+                        self.proc_name[r] = self.declare_name(r)
         m["names"] = names
 
     def collect_calls(self, mods: list[dict]) -> None:
@@ -1166,7 +1205,7 @@ class Decompiler:
         Each run of unnamed procedures gets one prefix and counters."""
         infos = m["infos"]
         slot_order = [r for _, r in m["funcs"]]
-        fixed = {r: pool_name(self.image, self.pool, word(self.table, r + 46))
+        fixed = {r: self.declare_name(r)
                  for r in slot_order if r not in self.by_record}
 
         def bounds(k: int) -> tuple[str, str | None]:
@@ -1350,7 +1389,11 @@ class Decompiler:
                 t = v.type() if v.votes else ("T" if self.value(base, s) % 2 == 1 else
                                               {2: "I", 4: "L", 8: "D"}.get(size.get(s), "V"))
                 decl = ("()" if v.array else "") + f" As {TYPE_NAME[t]}"
-            items.append((s, "dim", names[s], decl, v))
+            # a leading line label: the procedure's first line (a Dim before it would
+            # take a statement marker), so Variants are left undeclared
+            implicit = decl == " As Variant" and not m.get("defint") and info.insns \
+                and info.insns[0].op in (LABEL, LABEL_WIDE)
+            items.append((s, "fixed" if implicit else "dim", names[s], decl, v))
         for s, v in vars_.items():
             if v.scope == "MOD" and v.procs and v.procs[0] == k and s >= m["first_owned"] \
                     and (v.procs == [k] or not names[s].startswith(("s", "K"))):
@@ -1740,11 +1783,14 @@ class Decompiler:
             return note.rpartition("!")[2].rpartition(".")[2] or None
         if n.startswith(("FIELD_GET", "FIELD_SET", "FIELD_ADDR", "FIELD_ALOAD", "FIELD_ASTORE")) and slot is not None:
             return f"F{slot:X}"  # field record offset, as in the Type declaration
-        if n == "TYPEOF_IS" and slot is not None:
+        if n in ("TYPEOF_IS", "NEW_FORM") and slot is not None:
             nforms = self.forms
             base = 0x46 + len(P.vbx_entries(self.res.get(1, b"")))
             if 0 <= slot - base < len(nforms):
                 return nforms[slot - base][0]
+            vbx = [c for c in P.vbx_entries(self.res.get(1, b"")) if not c.upper().endswith(".VBX")]
+            if 0 <= slot - 0x46 < len(vbx):  # custom control classes (in use) come first
+                return vbx[slot - 0x46]
             return OBJ_KINDS.get(slot) or P.CLASS_BY_KIND.get(slot)
         if n == "OLE_CALL":
             return note.rpartition(".")[2] or None

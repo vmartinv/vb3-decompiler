@@ -14,6 +14,7 @@ A battery is `batteries/<name>.py` defining `cases`, a list of dicts:
   extra     more modules: a list of dicts with code/bas/controls/props
             (mdi: True makes a form an MDIForm)
   solo      True: in a project of its own
+  vbx       custom control files the case uses (["GRID.VBX"])
   nostart   True: no START form (the case's first module starts the program)
 
 `@SELF@` in code stands for the module's own (form) name, `@M<j>@` for the
@@ -106,6 +107,7 @@ def write_case_project(d: Path, stem: str, cases: list[tuple[int, dict]]) -> Pat
                 fn = n + ".FRM"
             (d / fn).write_bytes(text.replace("\r\n", "\n").replace("\n", "\r\n").encode("latin-1"))
             files.append(fn)
+    files += sorted({x for _, c in cases for x in c.get("vbx", [])})  # custom controls (from the IDE directory)
     mak = d / f"{stem}.MAK"
     mak.write_bytes(("\r\n".join(files) + "\r\nProjWinSize=152,402,248,215\r\nProjWinShow=2\r\n").encode())
     return mak
