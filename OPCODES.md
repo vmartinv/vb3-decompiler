@@ -402,7 +402,9 @@ still copied from the original source).
   last entry ends at the global name table, which also gives a general
   procedure there its length: `fit_tail_proc`).
 - Name-table size (+30) is fitted by resizing the last-appearing
-  generated names (`fit_size`; Globals first, `fit_globals`).
+  generated names (`fit_size`; Globals first, `fit_globals`). Locals and
+  parameters of different procedures can share a name, i.e. one entry
+  (`merge_locals`, when the table is too big).
 - Line counts: procedure record +50 counts its lines, not the blank lines
   before it; declarations +50 counts the declarations plus the file's
   trailing blank line. More deco lines than the count: undeclared
@@ -430,8 +432,11 @@ still copied from the original source).
   (`Decompiler.global_table`; predicts every Type/field pointer of the
   samples). `As <class>` names aren't entries. Its end is the project
   record's +30 - 259. Types
-  and fields store pointers into it, so every Type/field name but the
-  last gets its original length (`fit_types`); the first Type marks the
+  and fields store pointers into it, so every Type/field name gets its
+  original length (`fit_types`): equal pointers are one shared name (a
+  field name reused by another Type), the gap to the next pointer is the
+  length, and the last one ends where the table's later names start
+  (table end minus their sizes); the first Type marks the
   pool's end when no Global precedes it.
 - Procedure record +14 bit 7: `Static Sub`/`Static Function`.
 - Procedure record +18: offset in the IDE's per-module variable table.
@@ -443,7 +448,9 @@ still copied from the original source).
   its entries: stack locals and parameters 10 (Variant 12), Statics and
   Consts as module items, each distinct control referenced 14. So the
   first procedure's +18 gives the module items' extent: a trailing module
-  `Dim` beyond it is a procedure's scalar `Static` (`fit_entries`).
+  `Dim` beyond it is a procedure's scalar `Static`, a trailing `Const` a
+  Global Const's copy slot (`fit_entries`). A Static array of a Type has
+  flags 0xC200 (element type 0).
 - RT_RCDATA 1: the word after `FF 01` in each VBX/form entry is a heap
   address that differs between builds of the same source (`exediff`
   reports it as `rc1.volatile`, not counted as a difference).

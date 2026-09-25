@@ -6,7 +6,7 @@ VB3 language feature has a battery, and every case round-trips to
 identical p-code and form resources. What's left is whole-exe byte
 identity (Phase 3) and a final usage pass (Phase 4).
 
-Current numbers: batteries 933/969 exe-identical (all p-code identical);
+Current numbers: batteries 949/969 exe-identical (all p-code identical);
 samples 16/22 exe-identical (all 483/483 procedures p-code identical).
 
 "Complete" (Phase 3's target): with names padded to their original
@@ -23,15 +23,14 @@ detail (derivation, search, cross-checking against another field,
 recompiling and comparing, or something else) is fair game, and worth
 picking per item based on how many unknowns and constraints it has.
 
-1. **Global variable/constant name lengths.** Only sums are directly
-   observable from the exe (module decl+30, project record decl+30/+34,
-   Type-pointer prefix sums over the global name table) — the individual
-   name lengths aren't stored, but the sums are real constraints on
-   them. Root cause of most remaining single-case failures across
-   `deftype`, `types`, `names`, `objects`, `statements`, and of
-   `modlevel` (0/16: short synthetic Global names shrink the shared
-   name pool, shifting every later module's data by a few bytes,
-   project-wide — one root cause, many symptoms).
+1. **Global variable/constant name lengths.** Only sums are observable
+   (each module's +30 counts the Globals it declares or references, the
+   project +30 the global table). `fit_globals` fits only the declaring
+   .bas; `fit_global_inits` pads for the global list's bucket order but
+   reverts when that breaks a module's +30 (it keeps only the total).
+   Needed: a solver over all modules' +30 plus the project +30 and the
+   bucket order (`initlists` Globals cases, `modlevel` 003/005,
+   `objects` 009, `vbx` 007).
 2. **Static locals**: scalar Statics are recovered from procedure record
    +18 (module variable table, OPCODES.md; `fit_entries`) when trailing
    module Dims make the module part too big. Left: `Static Sub`/`Static

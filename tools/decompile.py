@@ -628,7 +628,8 @@ class Decompiler:
         for k in range(len(items) - 1, -1, -1):
             it = items[k]
             v = m["vars"].get(it[1])
-            if it[0] != "dim" or len(it) > 3 or v is None or len(v.procs) != 1:
+            if v is None or not v.procs or len(it) > 3 or not (
+                    it[0] == "const" or (it[0] == "dim" and len(v.procs) == 1)):  # a Const: a Global Const's copy
                 return items
             if size(items[:k], it[1]) == want:
                 m["first_owned"] = it[1]
@@ -697,7 +698,11 @@ class Decompiler:
                     if s in m["udt"] and v.array:  # array of a Type
                         dims, size = self.array_dims(m["image"], s)
                         td = gl.types.get(v.udt_type or m["udt"][s])
-                        items.append(("dim", s, f"({dims}) As {td.name if td else 'Variant'}"))
+                        decl = f"({dims}) As {td.name if td else 'Variant'}"
+                        if word(self.image, m["image"] + s + 6) >> 8 == 0xC2 and v.procs:  # Static (flags 0xC200)
+                            m.setdefault("static_arrays", []).append((s, decl, v.procs[0]))
+                        else:
+                            items.append(("dim", s, decl))
                         s += size
                         continue
                     if s in m["udt"]:
@@ -1626,23 +1631,28 @@ class Decompiler:
         ptrs.sort()
         taken = {w.lower() for mm in mods for ln in mm["lines"] for w in re.findall(r"[A-Za-z]\w*", ln)}
         tnew, fnew = {}, {}
-        for (p, kind, t, f), (q, *_) in zip(ptrs, ptrs[1:]):
-            n = q - p - 4
-            if not 1 <= n <= 40 or n == len(f"T{t:X}" if kind == "T" else f"F{f:X}"):
+        entries: dict[int, list] = {}  # one entry per name: equal names (fields of several Types) share it
+        for p, kind, t, f in ptrs:
+            entries.setdefault(p, []).append(f"T{t:X}" if kind == "T" else f"F{f:X}")
+        ps = sorted(entries)
+        if ps:  # the last entry ends where the table's later names (global_table) start
+            ids = [low for low, _ in self.global_table()]
+            last = entries[ps[-1]][0].lower()
+            if last in ids:
+                shared = {o.lower() for olds in entries.values() for o in olds}  # (the same name as an earlier one)
+                rest = sum(len(sp) + 4 for low, sp in self.global_table()[ids.index(last) + 1:] if low not in shared)
+                ps.append(word(self.table, 12 + 30) - 259 - rest)
+        for p, q in zip(ps, ps[1:]):
+            n, olds = q - p - 4, entries[p]
+            if not 1 <= n <= 40 or (len(olds) == 1 and n == len(olds[0])):
                 continue
-            if kind == "T":
-                old = f"T{t:X}"
-                c = next((c for c in grown(old, n - len(old)) if c.lower() not in taken), None)
-                if c:
-                    tnew[old] = c
-                    taken.add(c.lower())
-            else:
-                old = f"F{f:X}"
-                used = {x.lower() for x in fnew.values()}
-                c = next((c for c in grown(old, n - len(old)) if c.lower() not in used
-                          and c.lower() not in KEYWORDS | BUILTINS), None)
-                if c:
-                    fnew[old] = c
+            used = taken | {x.lower() for x in fnew.values()} if any(o[0] == "T" for o in olds) else \
+                {x.lower() for x in list(fnew.values()) + list(tnew.values())} | KEYWORDS | BUILTINS
+            c = next((c for c in grown(olds[0], n - len(olds[0])) if c.lower() not in used), None)
+            if c:
+                for old in olds:
+                    (tnew if old[0] == "T" else fnew)[old] = c
+                taken.add(c.lower())
         if not tnew and not fnew:
             return
         tpat = {o: re.compile(rf"\b{o}\b", re.I) for o in tnew}
@@ -1745,7 +1755,7 @@ class Decompiler:
         fixed-size arrays and String constants) comes out in the original
         order: 16 buckets over the global name table, whose end is the
         project record's +30 - 259; the total length is kept."""
-        from namesize import KEYWORDS, BUILTINS
+        from namesize import KEYWORDS, BUILTINS, name_size
         c = self.lists.get(self.gimg_chunk)
         if c is None or word(self.image, c + 2) < 2:
             return
@@ -1767,11 +1777,20 @@ class Decompiler:
             return
         taken = KEYWORDS | BUILTINS | self.project_names() | \
             {w.lower() for mm in self.all_mods for ln in mm["lines"] for w in re.findall(r"[A-Za-z]\w*", ln)}
+        fits = lambda: [name_size("\r\n".join(mm["lines"])) == word(
+            self.table, word(self.image, mm["image"] - 2) + 4 + 30) for mm in self.all_mods]
+        before = fits()
+        saved = ([list(mm["lines"]) for mm in self.all_mods], [dict(mm["names"]) for mm in self.all_mods],
+                 dict(self.global_name), set(self.renamed))
         for j, p in pads.items():
             old = ids[j][1]
             new = next(c for c in grown(old, p) if c.lower() not in taken)
             taken.add(new.lower())
             self.rename_global(old, new)
+        if any(b and not a for a, b in zip(fits(), before)):  # the lengths also count in the modules
+            for mm, ln, nm in zip(self.all_mods, saved[0], saved[1]):  # (+30): only the total was kept
+                mm["lines"], mm["names"] = ln, nm
+            self.global_name, self.renamed = saved[2], saved[3]
 
     def fit_deftype(self, m: dict, local: list, order: dict, taken: set, ok0: bool) -> None:
         """No implicitly typed variable, so any DefType letters do: each is a
@@ -1815,6 +1834,45 @@ class Decompiler:
         m["lines"][k] = f"DefInt {letter.upper()}"
         taken.add(letter)
 
+    def merge_locals(self, m: dict, local: list, want: int, ok0: bool) -> int:
+        """Locals (and parameters) of different procedures may share a name: one
+        name-table entry. Too big a table: give the last ones the name of an
+        earlier procedure's local that their own procedure doesn't use."""
+        from namesize import name_size
+        words: dict[str, set] = {}  # procedure name -> the words of its text
+        cur = None
+        for ln in m["lines"]:
+            if mt := re.match(r"(?:Static\s+)?(?:Sub|Function)\s+(\w+)", ln):
+                cur = words.setdefault(mt.group(1).lower(), set())
+            if cur is not None:
+                cur |= {w.lower() for w in re.findall(r"[A-Za-z]\w*", ln)}
+            if re.match(r"End (Sub|Function)\b", ln):
+                cur = None
+        locs = [s for _, s in local if not isinstance(s, str) and m["vars"][s].scope in ("LOC", "REF")
+                and m["vars"][s].procs]
+        proc = lambda s: (m["infos"][m["vars"][s].procs[0]].name or "").lower()
+        d = want - name_size("\r\n".join(m["lines"]))
+        for s in reversed(locs):
+            if d >= 0:
+                break
+            old = m["names"][s]
+            if any(old.lower() in w for pn, w in words.items() if pn != proc(s)):
+                continue  # already shared (the rename is by name)
+            for s2 in locs:
+                n2 = m["names"][s2]
+                if s2 == s or proc(s2) == proc(s) or proc(s) not in words or n2.lower() in words[proc(s)]:
+                    continue
+                lines0 = m["lines"]
+                self.rename(m, s, n2)
+                if ok0 and not (self.frees_ok(m) and self.inits_ok(m)):
+                    m["lines"], m["names"][s] = lines0, old
+                    continue
+                words[proc(s)].add(n2.lower())
+                local[:] = [x for x in local if x[1] != s]
+                d = want - name_size("\r\n".join(m["lines"]))
+                break
+        return d
+
     def fit_size(self, m: dict) -> None:
         """Resize the generated local names that appear last so that the
         module's name-table size (declarations record +30) is the original's:
@@ -1845,6 +1903,8 @@ class Decompiler:
         if d < 0 and "DefInt A-Z" in m["lines"] and not m.get("implicit_int"):
             self.fit_deftype(m, local, order, taken, ok0)
             d = want - name_size("\r\n".join(m["lines"]))
+        if d < 0:
+            d = self.merge_locals(m, local, want, ok0)
         for _, s in reversed(local):
             if not d:
                 break
