@@ -49,10 +49,11 @@ the shipped exes carry the build machine's paths and project name).
 
 Done: epilogue free order (name-length solver), name-table size (+30)
 fitting, line counts (+50: implicit Variants, joined Dims, trailing
-blank line), Static arrays, unused trailing locals typed from the frame
-size. Samples: 10/22 identical, the rest 1-65 bytes (biblio 3121).
-Batteries: all p-code identical; exe-identical per battery in the last
-`--exe` run: builtins 116/125, graphics, menus all, others partial.
+blank line), Static arrays, unused locals typed from the records,
+unused event-parameter slots, shared pool names, DefType line order.
+Samples: 12/22 identical (the rest 2-60 bytes; biblio 3121). Batteries:
+all p-code identical; exe-identical 846/941 (builtins, controls,
+expressions, forms, graphics, menus, misc complete; print 237/238).
 
 Remaining, by place (`exediff`):
 - table offset 12 record +30/+34 (project name total): global names are

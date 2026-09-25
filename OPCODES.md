@@ -378,7 +378,20 @@ still copied from the original source).
   trailing blank line. More deco lines than the count: undeclared
   (implicit) Variants, then joined `Dim a, b`.
 - Procedure record +0: 22 + frame bytes; +10: count of numbered locals
-  (Strings and Variants). Unused trailing locals are typed to fit both.
+  (Strings and Variants). Runs of unused locals (zero slots) are typed
+  jointly to fit both, the BP gaps and numbering of the used locals
+  around them (`solve_runs`): Variants 2 slots / 16 bytes / numbered,
+  Strings 1 slot / numbered, numbers 1 slot / 2, 4, 8 bytes. Zeros after
+  every procedure's slots belong to the procedure whose record they
+  explain (`tail_owner`).
+- Declarations record +0: the module path's offset in the compile-time
+  name pool (gives every pool entry's length); +12: image end + 2 per
+  slot-holding item (variables, references, parameters used or not,
+  unused locals), which fixes the Variant/String split of unused locals;
+  +44: DefType table offset, 4 + 2 after a comment line + 4 after
+  `Option Explicit` (so it orders those lines).
+- Procedures sharing a pool offset (the same general name in several
+  modules) get the same name.
 - Fixed-size array descriptor flags (slot +4): low byte element type
   (1 Integer, 2 Long, 3 Single, 4 Double, 5 Currency, 6 Variant,
   7 String, 8 `String * n`, 9 object; length / object kind in the slot

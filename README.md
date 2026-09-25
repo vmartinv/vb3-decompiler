@@ -135,7 +135,7 @@ python3 tools/corpus.py examples work/corpus --runtime VBRUN300.DLL --exe some.e
 - P-code: decompiles to source that recompiles to identical p-code on
   all samples and on all 941 generated feature cases (`battery.py`, 19
   batteries).
-- Whole exe: 10 of 22 samples rebuild byte-identical (`roundtrip.py`,
+- Whole exe: 12 of 22 samples and 846 of 941 feature cases rebuild byte-identical (`roundtrip.py`,
   `exediff.py`, `battery.py --exe`).
 
 "Complete" means: every language feature has a battery, every case

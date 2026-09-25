@@ -547,6 +547,19 @@ class Decompiler:
             if any(v.procs and v.procs[0] == k for v in vars_.values()) or any(kk == k for kk, _ in refs.values()):
                 break
         first_owned = min(first_owned, word(self.image, base) - 1)  # nothing owned: the image's end
+        # procedures (record order) before the first one owning a used slot: their
+        # parameters, used or not, have slots (unused ByRef 2 bytes, Control 4: kind, 0)
+        m.update(vars=vars_, infos=infos)
+        pb = 0
+        for k in sorted(range(len(infos)), key=lambda k: infos[k].proc.record):
+            if any(v.procs and v.procs[0] == k for v in vars_.values()) or any(kk == k for kk, _ in refs.values()) \
+                    or k in call_slots.values():
+                break
+            pb += self.param_slot_bytes(m, infos[k])
+        top = first_owned + (first_owned & 1)  # (odd: the image's end - 1)
+        if pb and top - pb >= m["decl_start"] and all(
+                self.value(base, z, False) in (0, 1, 4) for z in range(top - pb, top, 2)):
+            first_owned = top - pb
         m.update(infos=infos, vars=vars_, refs=refs, udt=udt, first_owned=first_owned, call_slots=call_slots)
 
     def is_global_slot(self, base: int, slot: int) -> bool:
@@ -690,6 +703,8 @@ class Decompiler:
                 fv = m["vars"].get(m["first_owned"])
                 if items is not None and fv is not None and fv.scope in ("LOC", "REF"):
                     m["first_owned"] = m["decl_start"]  # leading unused locals of the first procedure
+                elif fv is None and m["infos"] and m["first_owned"] >= word(self.image, m["image"]) - 1:
+                    m["first_owned"] = m["decl_start"]  # nothing used at all: the procedures' unused locals
             m["items"] = items
         # global declarations: sizes/types from the global image and the uses
         gs = sorted({it[3] for m in mods for it in m["items"] if it[0] == "global"})
@@ -899,10 +914,16 @@ class Decompiler:
         flags, count = word(self.table, rec + 18), word(self.table, rec + 50)
         if flags & 0x0800:
             out.insert(0, "Option Compare Text")
-        if m["defint"]:
+        # +44 (DefType table offset): 4, + 2 after a comment line, + 4 after Option Explicit
+        dt = word(self.table, rec + 44)
+        opt_first = m["defint"] and (dt - 4) & 4
+        if m["defint"] and not opt_first:
             out.insert(0, "DefInt A-Z")
         if flags & 0x40:
             out.insert(0, "Option Explicit")
+        if opt_first:
+            out.insert(1, "DefInt A-Z")
+        m["comment_first"] = not m["defint"] or bool((dt - 4) & 2)
         j = 0  # more lines than the original: join declarations (`Dim a As X, b As Y`)
         while count and len(out) + 1 > count and j + 1 < len(out):
             kw = next((k for k in ("Global Const ", "Const ", "Global ", "Dim ") if out[j].startswith(k)), None)
@@ -912,7 +933,12 @@ class Decompiler:
                 j += 1
         trailing = count > len(out)  # the file's trailing blank line counts toward the declarations (+50)
         if count:  # a blank line before a procedure doesn't count
-            out = ["'"] * max(0, count - len(out) - 1) + out + ([""] if m["infos"] else [])
+            pad = ["'"] * max(0, count - len(out) - 1)
+            if not m["comment_first"]:  # DefInt (and Option Explicit) before any comment
+                k = out.index("DefInt A-Z") + 1
+                out = out[:k] + pad + out[k:] + ([""] if m["infos"] else [])
+            else:
+                out = pad + out + ([""] if m["infos"] else [])
         self.cur_mod = m
         for info in self.text_order(m):
             out += self.emit_proc(info, m["form"], m["vars"], m["names"], m["image"])
@@ -973,6 +999,11 @@ class Decompiler:
         self.decl_home = next((m for m in mods if m["kind"] == "bas"), mods[0])
         for m in mods:
             m["lines"] = self.emit_module(m)
+            want = (word(self.table, word(self.image, m["image"] - 2) + 4 + 12) - word(self.image, m["image"])) // 2
+            if d := self.item_count(m) - want:  # unused Variants (2 slots, 1 item) vs other locals
+                m["nv_pick"], m["nv_delta"] = max(0, -d), d
+                m.pop("spans", None)
+                m["lines"] = self.emit_module(m)
         self.renamed: set[str] = set()
         for m in mods:
             if m["kind"] == "bas":
@@ -1079,6 +1110,18 @@ class Decompiler:
                     else:
                         continue
                     changed = True
+        # declarations record +0: the module path's pool offset; with those, every
+        # entry but the last is the gap to the next one (4 + length)
+        entries = sorted([(word(t, word(self.image, m["image"] - 2) + 4), ("path", b)) for b, m in enumerate(mods)] +
+                         [(o, ("name", k)) for k, o in enumerate(offs)])
+        for (o1, (kind, x)), (o2, _) in zip(entries, entries[1:]):
+            n = o2 - o1 - 4
+            if kind == "name" and 0 < n <= 40:
+                length[x] = n
+            elif kind == "path" and x in bas_len:
+                bas_len[x] = n
+            elif kind == "path" and files.get(x) and D[0] is None:
+                D[0] = n - 1 - len(files[x])
         self.name_len = {r: length[k] for k, o in enumerate(offs) for r in at[o]
                          if length[k] is not None and 0 < length[k] <= 40}
         self.bas_path_len = {b: v for b, v in bas_len.items() if v is not None}
@@ -1377,6 +1420,8 @@ class Decompiler:
         labels = {mt.group(1).lower() for ln in m["lines"] if (mt := re.match(r"\s*(L[0-9A-Fa-f]+):", ln))}
         labels |= {x.lower() for ln in m["lines"] if ln.startswith(("Declare ", "Global Declare "))
                    for x in re.findall(r"[(,]\s*(?:ByVal\s+)?((?:P|Arg)\d+)\b", ln)}  # Declare parameters
+        labels |= {x.lower() for ln in m["lines"] if ln.lstrip().startswith(("Dim ", "Static "))
+                   for x in re.findall(r"\b(f[0-9A-F]+)(?:\(.*?\))? As\b", ln)}  # unused locals (fillers)
         local = sorted(local + [(order[x], x) for x in labels if x in order])
         ok0 = self.frees_ok(m)
         for _, s in reversed(local):
@@ -1466,6 +1511,14 @@ class Decompiler:
             return c.lower() > lo.lower() and (hi is None or c.lower() < hi.lower()) and c.lower() not in taken
 
         lens = getattr(self, "name_len", {})
+        self.pool_names = getattr(self, "pool_names", {})  # pool offset -> name (one entry per name)
+        for k, info in enumerate(infos):  # a name another module already entered in the pool
+            shared = self.pool_names.get(word(self.table, info.proc.record + 4))
+            if not info.name and shared:
+                lo, hi = bounds(k)
+                if shared.lower() > lo.lower() and (hi is None or shared.lower() < hi.lower()):
+                    info.name = shared
+                    self.proc_name[info.proc.record] = shared
         for k, info in enumerate(infos):  # exact original lengths (compile-time name pool)
             if not info.name and info.proc.record in lens:
                 c = name_between(*bounds(k), lens[info.proc.record], taken)
@@ -1508,6 +1561,9 @@ class Decompiler:
                 self.proc_name[infos[kk].proc.record] = infos[kk].name
                 taken.add(infos[kk].name.lower())
             k = run[-1] + 1
+        for info in infos:
+            if info.name and info.proc.record not in self.events:
+                self.pool_names.setdefault(word(self.table, info.proc.record + 4), info.name)
 
     def emit_proc(self, info: ProcInfo, form: str | None, vars_: dict, names: dict, base: int | None) -> list[str]:
         kind = "Function" if info.function else "Sub"
@@ -1731,8 +1787,16 @@ class Decompiler:
                 pe += self.param_slot_bytes(m, info)
                 pe = max([pe] + [x + 2 for x in skip])
                 if pe < fo and all(self.value(base, z) == 0 for z in range(pe, fo, 2)):
-                    for z in range(pe, fo, 2):
-                        items.append((z, "static", f"f{z:X}", " As Integer", Var(z, "MOD")))
+                    # typed from the record (frame, numbered count) if they account for them
+                    ts = self.trailing_locals(info, base, [], len(range(pe, fo, 2)), -22)
+                    if ts and (word(self.table, info.proc.record) > 22 or word(self.table, info.proc.record + 10)):
+                        z = pe
+                        for t in ts:
+                            items.append((z, "dim", f"f{z:X}", f" As {t}", Var(z, "LOC")))
+                            z += 4 if t == "Variant" else 2
+                    else:
+                        for z in range(pe, fo, 2):
+                            items.append((z, "static", f"f{z:X}", " As Integer", Var(z, "MOD")))
             x = frame_known[0]
             # leading unused locals: zero slots from the end of the previous
             # procedure's allocations up to the first used local
@@ -1749,6 +1813,7 @@ class Decompiler:
             if evidence and prev_end < x and all(self.value(base, z) == 0 and z not in known
                                                  for z in range(prev_end, x, 2)):
                 x = prev_end
+            run_types = self.solve_runs(m, k, info, base, known, x, hi, records, calls_here)
             while x < hi:
                 if any(r - 2 <= x < r + 6 for r in records) or x in calls_here:
                     x += 2  # inside a control/object record or an external function slot
@@ -1776,8 +1841,9 @@ class Decompiler:
                         extra = max(0, prev_bp - self.value(base, nxt_k) - fs2)
                         nv = min(extra // 16, (y - x) // 4)
                         extra -= 16 * nv
-                    nxt_s = min((z for z in known if z >= y and self.value(base, z) > 0
-                                 and self.value(base, z) % 2 == 1 and z in vars_), default=None)
+                    nxt_s = min((z for z in known if z >= y and self.value(base, z) > 0  # (a Variant's
+                                 and self.value(base, z) % 2 == 1 and (z in vars_ or z - 2 in vars_)),  # number
+                                default=None)  # follows its BP offset)
                     if nxt_s is not None:
                         prior = sum(1 for z in known if z < x and self.value(base, z) > 0
                                     and self.value(base, z) % 2 == 1 and self.value(base, z) < 200)
@@ -1786,9 +1852,14 @@ class Decompiler:
                             ns = max(0, numbered - nv)  # the other numbered ones: Strings
                         else:
                             nv = min(numbered, (y - x) // 4)
-                    sizes = None
-                    if not framed and nxt_s is None and y >= hi and \
-                            (ts := self.trailing_locals(info, base, known, (y - x) // 2, prev_bp)) is not None:
+                    sizes, ts = None, run_types.get(x)
+                    if ts is not None:
+                        pass
+                    elif framed and nxt_s is not None:  # frame gap and numbering both known
+                        ts = self.split_unused((y - x) // 2, extra + 16 * nv, numbered)
+                    elif not framed and nxt_s is None and y >= hi:
+                        ts = self.trailing_locals(info, base, known, (y - x) // 2, prev_bp)
+                    if ts is not None:
                         nv, ns = ts.count("Variant"), ts.count("String")
                         sizes = [{"Double": 8, "Long": 4, "Integer": 2}[t] for t in ts if t not in ("Variant", "String")]
                         extra = sum(sizes)
@@ -1837,12 +1908,14 @@ class Decompiler:
             if end < start and all(self.value(base, z) == 0 for z in range(end, start, 2)):
                 for z in range(end, start, 2):
                     items.append((z, "static", f"f{z:X}", " As Integer", Var(z, "MOD")))
-        if k == len(m["infos"]) - 1:  # zeros after every procedure's slots: unused locals too
-            end, n = self.prev_end(m, k + 1), word(self.image, base)
+        if k == self.tail_owner(m):  # zeros after every procedure's slots: unused locals too
+            end, n = self.prev_end(m, len(m["infos"])), word(self.image, base)
+            end = max([end] + [it[0] + 2 for it in items])  # (not the ones declared already)
             if end < n - 1 and all(self.value(base, z) == 0 for z in range(end, n - 1, 2)):
                 known_k = [x for x, v in vars_.items() if v.procs and v.procs[0] == k and v.scope in ("LOC", "REF")]
                 prev_bp = min([self.value(base, z) for z in known_k if self.value(base, z) < 0] + [-22])
-                ts = self.trailing_locals(info, base, known_k, len(range(end, n - 1, 2)), prev_bp)
+                ts = getattr(self, "run_solution", {}).get((base, k, end)) or \
+                    self.trailing_locals(info, base, known_k, len(range(end, n - 1, 2)), prev_bp)
                 if ts and any(t != "Integer" for t in ts) or ts and word(self.table, info.proc.record) > -prev_bp:
                     z = end
                     for t in ts:
@@ -1880,7 +1953,7 @@ class Decompiler:
             if kind == "fixed":
                 if key is not None and key[:2] > last:
                     last = key[:2]
-                    self.dim_alloc.append(dict(alloc=key[:2]))
+                    self.dim_alloc.append(dict(alloc=(*key[:2], 0)))
                 continue
             # declare at the earliest point after the previous item; if that is
             # past the first use (same statement as a preceding control
@@ -1890,38 +1963,205 @@ class Decompiler:
             if key is not None and key[0] < pos and kind == "dim" and not v.array and not v.udt \
                     and key[:2] > last and not m["explicit"] and (decl.strip() == f"As {implicit_type}" or key[2]):
                 last = key[:2]
-                self.dim_alloc.append(dict(alloc=key[:2]))
+                self.dim_alloc.append(dict(alloc=(*key[:2], 0)))
                 continue
             if key is not None and key[0] < pos:
                 pos = key[0]  # conflicting order: at least keep it compilable
             word_ = {"static": "Static", "const": "Const"}.get(kind, "Dim")
             dims.setdefault(pos, []).append(f"{word_} {name}{decl if decl[0] in '( ' else ' ' + decl}")
             # could be implicit instead: allocated at its first use
-            self.dim_alloc.append(dict(alloc=(pos, -1), pos=pos, line=dims[pos][-1], key=key and key[:2],
+            self.dim_alloc.append(dict(alloc=(pos, -1, j), pos=pos, line=dims[pos][-1], key=key and (*key[:2], 0),
                                        drop=key is not None and key[0] >= pos and kind == "dim" and not v.array
-                                       and not v.udt and not m["explicit"] and decl.strip() == f"As {implicit_type}"))
+                                       and not v.udt and not m["explicit"]
+                                       and (decl.strip() == f"As {implicit_type}" or key[2])))
             last = (pos, -1)
         return dims
+
+    def item_count(self, m: dict) -> int:
+        """Slot-holding items of the emitted module (variables, control/form
+        references, external function slots, parameters used or not,
+        fillers): the declarations record +12 is the image end + 2 each."""
+        unused_p = 0
+        for info in m["infos"]:
+            ev = self.events.get(info.proc.record)
+            if ev:
+                ctl, _, e = ev.rpartition("_")
+                cls = self.sym.form_class.get(m["form"], "Form") if ctl in ("Form", "MDIForm") else \
+                    self.sym.classes.get((m["form"], ctl), "")
+                types = P.EVENT_TYPES.get((cls, e), P.MASTER_EVENT_TYPES.get(e, ()))
+                n = len(types) + (info.argwords > 2 * len(types))
+            else:
+                n = info.argwords // 2
+            unused_p += max(0, n - len([x for x in info.params if x in m["vars"]]))
+        fill = sum(len(re.findall(r"\b[fs][0-9A-F]+(?:\(.*?\))? As", ln)) for ln in m["lines"])
+        mi = sum(1 for it in m["items"] if len(it) == 4 and it[3] == "filler")
+        return len(m["vars"]) + len(m["refs"]) + len(m.get("call_slots", {})) + unused_p + fill + mi
+
+    def tail_owner(self, m: dict) -> int:
+        """The procedure owning the zeros after every procedure's slots: the
+        one whose record (+0 frame, +10 numbered count) says it has locals
+        its known ones don't account for; else the last one."""
+        if "tail_owner" in m:
+            return m["tail_owner"]
+        size = {"I": 2, "L": 4, "S": 4, "D": 8, "C": 8, "V": 16, "T": 0}
+        base, vars_ = m["image"], m["vars"]
+        owner = len(m["infos"]) - 1
+        for k, info in enumerate(m["infos"]):
+            own = [q for q, v in vars_.items() if v.procs and v.procs[0] == k and v.scope in ("LOC", "REF")]
+            frame = sum(size.get(info.ret if q == info.ret_slot else (vars_[q].type() if vars_[q].votes else "V"), 2)
+                        for q in own if self.value(base, q) < 0)
+            num = sum(1 for q in own for z in (q, q + 2) if 0 < self.value(base, z) < 200 and self.value(base, z) % 2)
+            if word(self.table, info.proc.record) - 22 > frame or word(self.table, info.proc.record + 10) > num:
+                if not any(self.value(base, q) == 0 for q in own):  # (its own gaps don't explain it)
+                    owner = k
+        m["tail_owner"] = owner
+        return owner
+
+    def solve_runs(self, m: dict, k: int, info: ProcInfo, base: int, known, x: int, hi: int,
+                   records: list, calls_here: set) -> dict:
+        """Types for every run of unused locals (zero slots) of a procedure,
+        solved together: each run's slot count is known, its frame bytes
+        (the BP gap to the next local) and numbered count (from the next
+        numbered local) only sometimes; the record gives the totals (+0: 22 +
+        frame, +10: numbered). Run start -> types; also fills
+        self.run_solution for the zeros after the last procedure."""
+        vars_ = m["vars"]
+        self.run_solution = getattr(self, "run_solution", {})
+        size = {"I": 2, "L": 4, "S": 4, "D": 8, "C": 8, "V": 16, "T": 0}
+        # runs: [start, slots, frame group, numbering group]; a group is the runs before
+        # the same next framed / numbered local, whose gap / number they share
+        runs, fgroups, ngroups = [], {}, {}
+        z = x
+        while z < hi:
+            if any(r - 2 <= z < r + 6 for r in records) or z in calls_here or z in known or self.value(base, z):
+                z += 2
+                continue
+            y = z
+            while y < hi and y not in known and self.value(base, y) == 0 \
+                    and not any(r - 2 <= y < r + 6 for r in records) and y not in calls_here:
+                y += 2
+            nk = min((q for q in known if q >= y and self.value(base, q) < 0), default=None)
+            if nk is not None and nk not in fgroups:
+                prev_bp = min([self.value(base, q) for q in known if q < z and self.value(base, q) < 0] + [-22])
+                v2 = vars_.get(nk)
+                fgroups[nk] = max(0, prev_bp - self.value(base, nk)
+                                  - size.get(v2.type() if v2 is not None and v2.votes else "V", 2))
+            ns_ = min((q for q in known if q >= y and 0 < self.value(base, q) < 200 and self.value(base, q) % 2
+                       and (q in vars_ or q - 2 in vars_)), default=None)
+            if ns_ is not None and ns_ not in ngroups:
+                prior = sum(1 for q in known if q < z and 0 < self.value(base, q) < 200 and self.value(base, q) % 2)
+                ngroups[ns_] = max(0, (self.value(base, ns_) - 1) // 2 - prior)
+            runs.append([z, (y - z) // 2, nk, ns_])
+            z = y
+        if k == self.tail_owner(m):  # the zeros after every procedure's slots
+            end, n = self.prev_end(m, len(m["infos"])), word(self.image, base)
+            if end < n - 1 and all(self.value(base, q) == 0 for q in range(end, n - 1, 2)):
+                runs.append([end, len(range(end, n - 1, 2)), None, None])
+        if not runs:
+            return {}
+        own = [q for q, v in vars_.items() if v.procs and v.procs[0] == k and v.scope in ("LOC", "REF")
+               and self.value(base, q) < 0]
+        known_frame = sum(size.get(info.ret if q == info.ret_slot else (vars_[q].type() if vars_[q].votes else "V"), 2)
+                          for q in own)
+        known_num = sum(1 for q in known if 0 < self.value(base, q) < 200 and self.value(base, q) % 2)
+        f_tot = word(self.table, info.proc.record) - 22 - known_frame
+        n_tot = word(self.table, info.proc.record + 10) - known_num
+
+        def can(n: int, f: int) -> bool:
+            return f == 0 if n == 0 else any(q <= f and can(n - 1, f - q) for q in (8, 4, 2))
+
+        def options(r):  # (nv, ns, nn, frame) per run, most Variants first
+            sl = r[1]
+            for nv in range(sl // 2, -1, -1):
+                for ns in range(sl - 2 * nv, -1, -1):
+                    nn = sl - 2 * nv - ns
+                    for fr in range(8 * nn, 2 * nn - 1, -2):
+                        if can(nn, fr):
+                            yield nv, ns, nn, fr
+
+        sols = []
+
+        def dfs(j: int, acc: list, fs: int, ns: int, fg: dict, ng: dict):
+            if len(sols) > 400:
+                return
+            if j == len(runs):
+                if fs == f_tot and ns == n_tot and fg == fgroups and ng == ngroups:
+                    sols.append(list(acc))
+                return
+            r = runs[j]
+            for o in options(r):
+                df, dn = 16 * o[0] + o[3], o[0] + o[1]
+                if fs + df > f_tot or ns + dn > n_tot:
+                    continue
+                fg2, ng2 = dict(fg), dict(ng)
+                if r[2] is not None:
+                    fg2[r[2]] = fg2.get(r[2], 0) + df
+                    if fg2[r[2]] > fgroups[r[2]]:
+                        continue
+                if r[3] is not None:
+                    ng2[r[3]] = ng2.get(r[3], 0) + dn
+                    if ng2[r[3]] > ngroups[r[3]]:
+                        continue
+                # a group is complete after its last run
+                if any(g is not None and g not in (x2[2] for x2 in runs[j + 1:]) and fg2.get(g, 0) != fgroups[g]
+                       for g in [r[2]]) or \
+                        any(g is not None and g not in (x2[3] for x2 in runs[j + 1:]) and ng2.get(g, 0) != ngroups[g]
+                            for g in [r[3]]):
+                    continue
+                dfs(j + 1, acc + [o], fs + df, ns + dn, fg2, ng2)
+
+        if sum(r[1] for r in runs) > 24:  # too many to search: the per-run guesses
+            return {}
+        dfs(0, [], 0, 0, {}, {})
+        if not sols:
+            return {}
+        # the declarations record's item count fixes the Variants: each takes 2 slots as 1 item
+        base_nv = sum(o[0] for o in sols[0])
+        want = base_nv + m.get("nv_delta", 0)
+        sol = next((x2 for x2 in sols if sum(o[0] for o in x2) == want), sols[0])
+        out = {}
+        for r, (nv, ns, nn, f) in zip(runs, sol):
+            ts = ["Variant"] * nv + ["String"] * ns
+            for q in range(nn, 0, -1):
+                zz = next(zz for zz in (8, 4, 2) if zz <= f and can(q - 1, f - zz))
+                ts.append({8: "Double", 4: "Long", 2: "Integer"}[zz])
+                f -= zz
+            out[r[0]] = ts
+            self.run_solution[(base, k, r[0])] = ts
+        return out
 
     def trailing_locals(self, info: ProcInfo, base: int, known, slots: int, prev_bp: int) -> list[str] | None:
         """Types of a procedure's last `slots` unused locals from its record:
         +0 is 22 + the frame size, +10 the count of numbered locals (Strings
-        and Variants). Variants take 2 slots and 16 frame bytes, Strings 1
-        slot and no frame, numbers 1 slot and 2/4/8 bytes. None: no solution."""
+        and Variants)."""
         rec = info.proc.record
         extra = max(0, prev_bp + word(self.table, rec))
         have = sum(1 for z in known if 0 < self.value(base, z) < 200 and self.value(base, z) % 2)
-        left = max(0, word(self.table, rec + 10) - have)
-        for nv in range(min(left, slots // 2, extra // 16), -1, -1):
-            ns, nn, f = left - nv, slots - 2 * nv - (left - nv), extra - 16 * nv
-            if ns >= 0 and nn >= 0 and (f == 0 if nn == 0 else 2 * nn <= f <= 8 * nn and f % 2 == 0):
-                out = ["Variant"] * nv + ["String"] * ns
-                for r in range(nn, 0, -1):
-                    z = next(z for z in (8, 4, 2) if 2 * (r - 1) <= f - z <= 8 * (r - 1))
-                    out.append({8: "Double", 4: "Long", 2: "Integer"}[z])
-                    f -= z
-                return out
-        return None
+        return self.split_unused(slots, extra, max(0, word(self.table, rec + 10) - have))
+
+    def split_unused(self, slots: int, frame: int, numbered: int) -> list[str] | None:
+        """Types for a run of unused locals: Variants take 2 slots, 16 frame
+        bytes and a number, Strings 1 slot and a number, numbers 1 slot and
+        2/4/8 bytes. Several splits fit; most Variants first, `nv_pick` (from
+        the declarations record's item count) moves down. None: no split."""
+        def can(n: int, f: int) -> bool:  # n numbers of 2/4/8 bytes summing to f
+            return f == 0 if n == 0 else any(z <= f and can(n - 1, f - z) for z in (8, 4, 2))
+
+        def ok(nv: int) -> bool:
+            nn, f = slots - 2 * nv - (numbered - nv), frame - 16 * nv
+            return nn >= 0 and numbered - nv >= 0 and 2 * nn <= f <= 8 * nn and can(nn, f)
+
+        opts = [nv for nv in range(min(numbered, slots // 2, frame // 16), -1, -1) if ok(nv)]
+        if not opts:
+            return None
+        nv = opts[min(self.cur_mod.get("nv_pick", 0), len(opts) - 1)]
+        ns, nn, f = numbered - nv, slots - 2 * nv - (numbered - nv), frame - 16 * nv
+        out = ["Variant"] * nv + ["String"] * ns
+        for r in range(nn, 0, -1):
+            z = next(z for z in (8, 4, 2) if z <= f and 2 * (r - 1) <= f - z <= 8 * (r - 1) and can(r - 1, f - z))
+            out.append({8: "Double", 4: "Long", 2: "Integer"}[z])
+            f -= z
+        return out
 
     def proc_spans(self, m: dict) -> dict:
         """Slot intervals each procedure allocates (text order: each one's
@@ -2153,8 +2393,8 @@ def grown(old: str, d: int):
     rest = "abcdefghijklmnopqrstuvwxyz0123456789"
     for c in "vabcdefghijklmnopqrstuwxyz":
         for t in itertools.product(rest, repeat=n - 1):
-            if (s := c + "".join(t)) not in KEYWORDS and s not in BUILTINS:
-                yield s
+            if (s := c + "".join(t)) not in KEYWORDS and s not in BUILTINS and s not in ("b", "bf"):
+                yield s  # (`B` also enters `BF` in the name table)
 
 
 def write_project(d: Decompiler, out: Path, layout_from: Path | None, name: str) -> Path:
