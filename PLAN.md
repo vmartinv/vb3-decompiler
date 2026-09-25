@@ -53,10 +53,13 @@ records, unused event-parameter slots, shared pool names, DefType line
 order, Type/field name lengths, Static Sub, volatile rc1 words,
 declarations-join off-by-one (was force-merging 2 already-matching
 Dim/Const lines), inline_const's end-of-image room check (was one byte
-short for an 8-byte Double/Currency at the very end of a module).
+short for an 8-byte Double/Currency at the very end of a module),
+Type-to-module assignment when several modules declare a Type and
+nothing else (was piling every such Type onto the first module instead
+of distributing them by each candidate's own line count).
 Samples: 14/22 identical (mcitest 6, textedit 2, objects 2, timecard 2,
 recedit 9, mdinote 32, calldlls 59, biblio 3121 bytes). Batteries: all
-p-code identical; exe-identical 854/941.
+p-code identical; exe-identical 856/941.
 
 Remaining, by place (`exediff`, `battery.py <name> --exe`):
 - Global variable/constant name lengths: only sums are observable
@@ -73,8 +76,7 @@ Remaining, by place (`exediff`, `battery.py <name> --exe`):
   data-level marker (unlike Static arrays, which carry an explicit
   0xC1/0xC2 flag). A single-owning-procedure heuristic was tried and
   made the types battery net worse (49/69 -> 47/69, plus a p-code
-  regression); not worth revisiting without a new signal. Type all
-  fields / nested still open.
+  regression); not worth revisiting without a new signal.
 - declares: Alias/ordinal names (decl+0/+64), parameter types.
 - timecard: two words of a module list swapped (declaration order).
 - biblio: data image (3121 bytes).
