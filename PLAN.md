@@ -6,7 +6,7 @@ VB3 language feature has a battery, and every case round-trips to
 identical p-code and form resources. What's left is whole-exe byte
 identity (Phase 3) and a final usage pass (Phase 4).
 
-Current numbers: batteries 925/969 exe-identical (all p-code identical);
+Current numbers: batteries 933/969 exe-identical (all p-code identical);
 samples 16/22 exe-identical (all 483/483 procedures p-code identical).
 
 "Complete" (Phase 3's target): with names padded to their original
@@ -32,17 +32,12 @@ picking per item based on how many unknowns and constraints it has.
    `modlevel` (0/16: short synthetic Global names shrink the shared
    name pool, shifting every later module's data by a few bytes,
    project-wide — one root cause, many symptoms).
-2. **types: Static locals (rec+18, decl+50).** A scalar `Static x As T`
-   local and an equivalent single-procedure module `Dim` compile to
-   byte-identical p-code (checked directly), and no data-level marker
-   distinguishes them the way Static arrays' explicit 0xC1/0xC2 flag
-   does (see CLAUDE.md) — so this needs a different kind of signal than
-   "read one bit off the data." Two attempts so far, both derived a
-   choice from one field's arithmetic alone and neither verified the
-   result against the actual recompiled exe before applying it broadly;
-   both reverted after regressions (the second including a p-code
-   regression, from converting based on a decl+50 excess that turned
-   out to have a different cause in that module).
+2. **Static locals**: scalar Statics are recovered from procedure record
+   +18 (module variable table, OPCODES.md; `fit_entries`) when trailing
+   module Dims make the module part too big. Left: `Static Sub`/`Static
+   Function` and Static locals mixed with other failures (names 023,
+   statements 063/064), and modules where the +18 model is still off by
+   2 (item boundary rounding) or too small.
 3. **declares**: Aliases are recovered (from pool lengths); left:
    `+30` sums with Declare parameters (`ByRef String`, `param types`,
    `user type param`) and `many declares` (decl +140..).

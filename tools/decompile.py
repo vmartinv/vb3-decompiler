@@ -611,6 +611,32 @@ class Decompiler:
                 return g
         return gl.size
 
+    def fit_entries(self, m: dict, items: list) -> list:
+        """The IDE's per-module variable table: from 0x2c (a form; .bas 0x2a),
+        8 + slot bytes per module-level item (Function/Declare slots, Dims,
+        Consts; a Type variable's type reference isn't one), then each
+        procedure's (by name). So the first procedure's record +18 gives where
+        the module's items end: trailing items past that are the procedures'
+        Statics (same slots and p-code as a module Dim)."""
+        if not m["infos"] or not items:
+            return items
+        want = min(word(self.table, i.proc.record + 18) for i in m["infos"])
+        base = (0x2c if m["kind"] == "frm" else 0x2a) - m["start"] + 8 * len(m["funcs"])
+        size = lambda its, end: base + 8 * sum(it[0] != "typeref" for it in its) + end
+        if size(items, m["first_owned"] & ~1) <= want:
+            return items
+        for k in range(len(items) - 1, -1, -1):
+            it = items[k]
+            v = m["vars"].get(it[1])
+            if it[0] != "dim" or len(it) > 3 or v is None or len(v.procs) != 1:
+                return items
+            if size(items[:k], it[1]) == want:
+                m["first_owned"] = it[1]
+                return items[:k]
+            if size(items[:k], it[1]) < want:
+                return items
+        return items
+
     def declarations(self, mods: list[dict]) -> None:
         """Header items per module, in slot (= text) order: Global, Dim, Const,
         and Types placed by global offset."""
@@ -742,7 +768,7 @@ class Decompiler:
                     m["first_owned"] = m["decl_start"]  # leading unused locals of the first procedure
                 elif fv is None and m["infos"] and m["first_owned"] >= word(self.image, m["image"]) - 1:
                     m["first_owned"] = m["decl_start"]  # nothing used at all: the procedures' unused locals
-            m["items"] = items
+            m["items"] = self.fit_entries(m, items)
         # global declarations: sizes/types from the global image and the uses
         gs = sorted({it[3] for m in mods for it in m["items"] if it[0] == "global"})
         # String constants: a descriptor in the global image; the texts are records

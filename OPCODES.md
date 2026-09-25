@@ -434,6 +434,16 @@ still copied from the original source).
   last gets its original length (`fit_types`); the first Type marks the
   pool's end when no Global precedes it.
 - Procedure record +14 bit 7: `Static Sub`/`Static Function`.
+- Procedure record +18: offset in the IDE's per-module variable table.
+  It starts at 0x2c (a form; a .bas 0x2a), then an entry per module-level
+  item (Function/Declare slot, Dim, Const, used or not; a Type variable's
+  type reference isn't one): 8 + its slot bytes (Integer 10, Long/String
+  12, Variant 24, `a(5) As Integer` 30); name lengths, Options, DefType
+  and comments don't count. Then the procedures sorted by name, each 16 +
+  its entries: stack locals and parameters 10 (Variant 12), Statics and
+  Consts as module items, each distinct control referenced 14. So the
+  first procedure's +18 gives the module items' extent: a trailing module
+  `Dim` beyond it is a procedure's scalar `Static` (`fit_entries`).
 - RT_RCDATA 1: the word after `FF 01` in each VBX/form entry is a heap
   address that differs between builds of the same source (`exediff`
   reports it as `rc1.volatile`, not counted as a difference).
