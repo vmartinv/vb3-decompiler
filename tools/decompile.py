@@ -762,8 +762,15 @@ class Decompiler:
         for mi, k in pending[len(texts):]:  # no text found: keep a placeholder string
             it = mods[mi]["items"][k]
             mods[mi]["items"][k] = it[:2] + ('""',) + it[3:]
-        # Types: in the module whose globals surround them, else the first .bas
+        # Types: in the module whose globals surround them, else (no Global in
+        # any module to go by) distributed across the modules with no other
+        # items, greedily by each candidate's own declarations-record line
+        # count (rec+50): as many Types (in chain order) as fit each one
+        # before moving to the next, so two Types textually declared in the
+        # same module (no blank module between them) stay together instead of
+        # each grabbing its own module 1:1.
         bas = [m for m in mods if m["kind"] == "bas"] or mods
+        unowned: list = []
         for td in gl.types.values():
             owner = None
             for m in bas:
@@ -774,8 +781,19 @@ class Decompiler:
                 after = [(min(gg), k) for k, m in enumerate(bas)
                          if (gg := [it[3] for it in m["items"] if it[0] == "global"]) and min(gg) > td.g]
                 owner = bas[min(after)[1]] if after else None
-            owner = owner or next((m for m in bas if not m["items"]), bas[0])
-            owner.setdefault("types", []).append(td)
+            if owner is None:
+                unowned.append(td)
+            else:
+                owner.setdefault("types", []).append(td)
+        candidates = [m for m in bas if not m["items"]] or [bas[0]]
+        ci, budget = 0, word(self.table, word(self.image, candidates[0]["image"] - 2) + 4 + 50)
+        for td in unowned:
+            need = len(td.lines(gl.types))
+            while budget <= 0 and ci + 1 < len(candidates):
+                ci += 1
+                budget = word(self.table, word(self.image, candidates[ci]["image"] - 2) + 4 + 50)
+            candidates[ci].setdefault("types", []).append(td)
+            budget -= need
 
     def array_at(self, base: int, slot: int) -> tuple[str, bool, int] | None:
         """A fixed-size array's descriptor at slot: (element type, Static, type
