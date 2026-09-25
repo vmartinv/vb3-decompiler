@@ -27,6 +27,28 @@ Reusable VB3 reverse-engineering tools + findings. Companion to
 - Builds use `VB.EXE /MAKE` (~2 s, no GUI clicks). Its output differs
   from a GUI "Make EXE" build in one word of RT_RCDATA 1, so compare
   /MAKE builds only with /MAKE builds.
+- Whole-exe identity work (Phase 3, see PLAN.md): before touching
+  `decompile.py`, isolate the field in question by hand-writing two
+  minimal `.frm`s that differ only in the one thing being tested and
+  compiling them directly with `tools/vb3ide/compile_project.py`
+  (bypassing the decompiler entirely) — this gives ground truth about
+  what a field actually encodes before any decompiler logic is written
+  against it.
+- A fix must be validated against the *whole* battery (`battery.py --exe`
+  with no `-k`) and the full sample roundtrip, not just the isolated
+  case: several modules share one project's global image/name pool, and
+  a change that's correct alone can still cascade into an unrelated
+  module's p-code once bundled. Zero p-code regressions (CODE/CRASH/
+  DECOFAIL) is non-negotiable — revert rather than trade a p-code
+  regression for an exe-byte win.
+- An exact arithmetic constraint derived from one exe field (e.g. a
+  module's own decl+50 line count) is only trustworthy when it's the
+  *sole* discrepancy source for that module. This corpus has several
+  independently-guessed, entangled sources of exe mismatch already
+  (name lengths, DefType's own line-counting); a derived "this must be
+  the missing piece" value can be misattributed when another source is
+  also active in the same module, and converting on a wrong attribution
+  can itself introduce a p-code regression, not just a wrong guess.
 
 ## Key files
 

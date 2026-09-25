@@ -1,116 +1,68 @@
 # Plan: complete the VB3 decompiler
 
-## Context
-The decompiler already round-trips every sample: 483/483 procedures and every form are byte-identical (`/MAKE` build vs `/MAKE` build). It passes 940 of 941 generated battery cases (19 batteries).
+## Status
+Phases 1 (feature batteries) and 2 (uncovered features) are done: every
+VB3 language feature has a battery, and every case round-trips to
+identical p-code and form resources. What's left is whole-exe byte
+identity (Phase 3) and a final usage pass (Phase 4).
 
-"Complete" means three things:
-1. Every VB3 language feature has a battery.
-2. Every case round-trips to identical p-code and form resources.
-3. With names padded to their original lengths, the rebuilt exe is identical to the original.
+Current numbers: batteries 856/941 exe-identical (all p-code identical);
+samples 14/22 exe-identical (all 483/483 procedures p-code identical).
 
-The work splits into four phases. Each phase ends with a sample regression run, doc updates and a commit. Standing rules apply throughout: no VB3 or extracted binaries in git, no qrace, small output, and background runs with wait loops.
+"Complete" (Phase 3's target): with names padded to their original
+lengths, the rebuilt exe is byte-identical to the original.
 
-The loop for every feature is the same:
-1. Write a probe in `probes/`.
-2. Run `tools/opprobe.py -a/--sem` to name unknown ops in `tools/opcodes.py`.
-3. Add a lift handler in `tools/lift.py` and any declaration or naming changes in `tools/decompile.py`.
-4. Write a battery in `batteries/`, validate its source with `battery.py --check`, then run the full round-trip.
+## Remaining items
 
-## Phase 1: close the existing batteries
-
-### names: done (35/35)
-
-### statements: done (68/68)
-
-### types: done (69/69)
-
-### deftype: done (56/56)
-The DefType letter table itself is still undecoded (declarations record +44 is only a "has DefType" flag); p-code is identical without it, so it moves to Phase 3.
-
-**Exit:** all seven batteries at 100%, all samples still identical, commit.
-
-## Phase 2: batteries for uncovered features
-Done: one battery per item, each at 100%:
-controls 36, ctlarrays 13, menus 12, forms 36, graphics 46, objects 22,
-errors 14, declares 17, modlevel 16, vbx 16, ddeole 8, misc 23.
-
-Not covered: GRAPH.VBX (two MODELs, array properties saved by the VBX),
-ANIBUTON.VBX (MODEL not found by `parse_models`), CRYSTAL.VBX (crashes
-the IDE under Wine), an OLE control holding an object (only the empty
-object's one-byte `OleObjectBlob` is known).
-
-**Exit:** each battery at 100%, samples still identical. Update the OPCODES.md counts and commit after each battery or pair of batteries.
-
-## Phase 3: whole-exe identity
-Tools: `tools/exediff.py` (differing bytes by place: record field, code
-segment, resource region), `battery.py --exe`, `roundtrip.py` (reports
-`exe N bytes` / `EXE IDENTICAL`; decompiles our own /MAKE build, since
-the shipped exes carry the build machine's paths and project name).
-
-Done: epilogue free order (name-length solver), name-table size (+30)
-fitting, line counts (+50), Static arrays, unused locals typed from the
-records, unused event-parameter slots, shared pool names, DefType line
-order, Type/field name lengths, Static Sub, volatile rc1 words,
-declarations-join off-by-one (was force-merging 2 already-matching
-Dim/Const lines), inline_const's end-of-image room check (was one byte
-short for an 8-byte Double/Currency at the very end of a module),
-Type-to-module assignment when several modules declare a Type and
-nothing else (was piling every such Type onto the first module instead
-of distributing them by each candidate's own line count).
-Samples: 14/22 identical (mcitest 6, textedit 2, objects 2, timecard 2,
-recedit 9, mdinote 32, calldlls 59, biblio 3121 bytes). Batteries: all
-p-code identical; exe-identical 856/941.
-
-Remaining, by place (`exediff`, `battery.py <name> --exe`):
-- Global variable/constant name lengths: only sums are observable
-  (module +30, project record table offset 12 +30/+34, Type pointers as
-  prefix sums of the global name table); distribution is a guess.
-- decl+30 name sizes where no generated name is free to resize
-  (deftype, types, names, objects, statements cases).
-- modlevel (0/16): global-name sizes shift the global image of every
-  later module (one root cause per project).
-- types: Static locals (rec+18, decl+50) — confirmed unrecoverable: a
-  scalar `Static x As T` local and a same-type module `Dim` referenced by
-  only one procedure compile to byte-identical p-code (checked by
-  compiling both directly), differing only in these two fields with no
-  data-level marker (unlike Static arrays, which carry an explicit
-  0xC1/0xC2 flag). A single-owning-procedure heuristic was tried and
-  made the types battery net worse (49/69 -> 47/69, plus a p-code
-  regression); not worth revisiting without a new signal.
-- declares: Alias/ordinal names (decl+0/+64), parameter types. A Declare
-  parameter of a user Type ("Rc As R") resolving to `As Any` is not
-  itself the bug: it already compiles and matches p-code (calldlls
-  samples this at 18/18 procs). Tried resolving it to the real Type name
-  instead: fixes the isolated battery case, but moving the Type (or the
-  Declare) relative to a Global to satisfy VB3's forward-declare
-  requirement shifts the global image / record allocation order in a
-  multi-declare module (calldlls regressed to 15-17/18); reverted.
-- timecard: two words of a module list swapped (declaration order).
-- biblio: data image (3121 bytes).
-
-## Phase 4: usage
-Done: `tools/vb3decompile.py <exe> <outdir> [--verify]` (icons/.frx are
-already written by `decompile.py`'s generic binary-property handling, so
-no separate icon extraction was needed); README usage section and tools
-list rewritten.
-
-**Remaining:** final pass — run all batteries plus the samples in `--exe`
-mode, then commit.
+1. **Global variable/constant name lengths.** Only the *sums* are
+   observable from the exe (module decl+30, project record decl+30/+34,
+   Type-pointer prefix sums over the global name table); the individual
+   name lengths are a guess. Root cause of most remaining single-case
+   failures across `deftype`, `types`, `names`, `objects`, `statements`,
+   and of `modlevel` (0/16: short synthetic Global names shrink the
+   shared name pool, shifting every later module's data by a few bytes,
+   project-wide — one root cause, many symptoms).
+2. **types: Static locals (rec+18, decl+50).** Confirmed unrecoverable:
+   a scalar `Static x As T` local and an equivalent single-procedure
+   module `Dim` compile to byte-identical p-code, with no data-level
+   marker distinguishing them (unlike Static arrays, which carry an
+   explicit 0xC1/0xC2 flag — see CLAUDE.md). Two fix attempts (a
+   single-owning-procedure heuristic, and an exact decl+50-arithmetic
+   version) both reverted after net regressions, including a p-code
+   regression from the second. Not worth revisiting without a new
+   signal.
+3. **declares: Alias/ordinal names (decl+0/+64), parameter types.**
+   Mostly the same name-length issue (item 1). A Declare parameter of a
+   user Type resolving to `As Any` is not itself a bug — it already
+   compiles and matches p-code (`calldlls` sample: 18/18 procs). A fix
+   resolving it to the real Type name was reverted: it regressed
+   `calldlls` by shifting the global image / record allocation order
+   relative to a Global in the same module.
+4. **timecard**: two words of a module list swapped (declaration
+   order) — 2 bytes, `rc2.Card` region. Not yet root-caused.
+5. **biblio**: data image diff, 3121 bytes — the largest remaining.
+   Not yet broken down by place.
+6. **Phase 4 final pass**: once the above settle, run every battery
+   plus every sample in `--exe` mode and commit. (`tools/vb3decompile.py`
+   itself is done; icons/.frx already come for free from
+   `decompile.py`'s generic binary-property handling.)
 
 ## Critical files
 - `tools/decompile.py` (declarations, naming, records)
 - `tools/lift.py` (statements)
 - `tools/opcodes.py` (NAMES/SEM)
 - `tools/formblob.py` (controls/menus)
-- `tools/battery.py` (`--exe` mode)
-- `tools/opprobe.py`
-- `batteries/*.py`
-- `probes/*.py`
+- `tools/exediff.py`, `tools/battery.py --exe` (exe-identity diffing)
 - README.md, OPCODES.md
 
 ## Verification
-- Per change, run the affected battery: `DISPLAY=:99 python3 tools/battery.py <name> --chunk 48`, and `-k` for single cases.
-- Per phase:
-  - run all batteries: `tools/battery.py`;
-  - run the samples roundtrip `/MAKE` vs `/MAKE`, which must stay at 483/483 procedures with forms identical;
-  - from Phase 3 on, also the `--exe` identity check.
+- Per change, run the affected battery in isolation first
+  (`DISPLAY=:99 python3 tools/battery.py <name> --exe -k "<case>"`), then
+  the *whole* battery (`--chunk 48`, no `-k`): several remaining bugs
+  only show up once a module shares a project/global-image with others,
+  and a fix validated only in isolation can still regress the bundle.
+- Before committing any fix: full `tools/battery.py --exe --chunk 48`
+  (all batteries) and full `tools/roundtrip.py` (all samples), looking
+  for CODE/CRASH/DECOFAIL, not just EXE byte counts. Zero p-code
+  regressions is non-negotiable — revert rather than ship a net exe-byte
+  win that costs even one p-code mismatch.
