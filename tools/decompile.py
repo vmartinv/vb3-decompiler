@@ -207,7 +207,7 @@ def mod_name(slot: int) -> str:
     return f"m{slot:X}" if slot != 0xE else "m0E"
 
 
-def name_between(lo: str, hi: str | None, n: int, taken: set[str]) -> str | None:
+def name_between(lo: str, hi: str | None, n: int, taken: set[str], shape: str = r"[a-z][0-9a-f]+") -> str | None:
     """The smallest name of exactly n characters with lo < name < hi
     (case-insensitive), not taken, not a keyword/builtin and not shaped
     like the decompiler's synthetic variable names (letter + hex)."""
@@ -230,7 +230,7 @@ def name_between(lo: str, hi: str | None, n: int, taken: set[str]) -> str | None
         if hi is not None and c >= hi.lower():
             return None
         if (c[0].isalpha() and c > lo and c not in taken and c not in RESERVED
-                and not re.fullmatch(r"[a-z][0-9a-f]+", c)):
+                and not re.fullmatch(shape, c)):
             return c[0].upper() + c[1:]
         cur = _next_name(cur)
     return None
@@ -912,10 +912,11 @@ class Decompiler:
         if not self.pool_tail:
             return
         o, recs = self.pool_tail
+        n = word(self.table, 12 + 30) - 259 - sum(len(sp) + 4 for _, sp in self.global_table()) - o - 4
+        self.fit_tail_proc([r for r in recs if r in self.by_record and r not in self.events], n, mods)
         recs = [r for r in recs if r not in self.by_record and r not in self.events]
         if not recs:
             return
-        n = word(self.table, 12 + 30) - 259 - sum(len(sp) + 4 for _, sp in self.global_table()) - o - 4
         for r in recs:
             old = self.declare_name(r, assumed=True)
             if not 1 <= n <= 40 or n == len(old) or r in self.alias_len:
@@ -935,6 +936,28 @@ class Decompiler:
                         ln = pat.sub(new, ln)
                     lines.append(ln)
                 mm["lines"] = lines
+
+    def fit_tail_proc(self, recs: list[int], n: int, mods: list[dict]) -> None:
+        """A general procedure as the pool's last entry: its name n characters
+        long (renamed in every module), still sorting between its neighbors."""
+        for r in recs:
+            m = next((mm for mm in mods if any(i.proc.record == r for i in mm["infos"])), None)
+            if m is None or not 1 <= n <= 40:
+                continue
+            k = next(j for j, i in enumerate(m["infos"]) if i.proc.record == r)
+            info = m["infos"][k]
+            if not info.name or len(info.name) == n or r in getattr(self, "name_len", {}):
+                continue
+            taken = {x.lower() for x in self.proc_name.values()} | self.project_names()
+            new = name_between(*self.name_bounds(m, k), n, taken, r"[vmgfsl][0-9a-f]+")
+            if new is None:
+                continue
+            old = info.name
+            info.name = self.proc_name[r] = new
+            self.renamed.add(new.lower())
+            pat = re.compile(rf"(?<![\w.]){re.escape(old)}\b", re.I)
+            for mm in mods:
+                mm["lines"] = [pat.sub(new, ln) for ln in mm["lines"]]
 
     def declare_entry(self, r: int) -> str:
         """A Declare's DLL entry name (`#n`: an ordinal)."""
@@ -1119,8 +1142,8 @@ class Decompiler:
                 m["nv_pick"], m["nv_delta"] = max(0, -d), d
                 m.pop("spans", None)
                 m["lines"] = self.emit_module(m)
-        self.fit_tail_alias(mods)
         self.renamed: set[str] = set()
+        self.fit_tail_alias(mods)
         self.fit_types(mods)
         for m in mods:
             if m["kind"] == "bas":
@@ -1724,6 +1747,48 @@ class Decompiler:
             taken.add(new.lower())
             self.rename_global(old, new)
 
+    def fit_deftype(self, m: dict, local: list, order: dict, taken: set, ok0: bool) -> None:
+        """No implicitly typed variable, so any DefType letters do: each is a
+        name (`A-Z` adds `a` and `z`; one shared with a variable of that name
+        adds nothing). Pick `A-Z`, one new letter or a local renamed to the
+        letter, whichever leaves a size difference fit_size can still close
+        (shrinking locals to 1 character, or growing one), else the smallest."""
+        from namesize import name_size
+        want = word(self.table, word(self.image, m["image"] - 2) + 4 + 30)
+        k = m["lines"].index("DefInt A-Z")
+        size = lambda: want - name_size("\r\n".join(m["lines"]))
+        rest = [s for _, s in local if not isinstance(s, str)]
+        shrink = lambda skip=None: sum(len(m["names"][s]) - 1 for s in rest if s != skip)
+
+        def score(d, skip=None):
+            grow = any(s != skip for s in rest)
+            return 0 if (d == 0 or (d > 0 and grow) or (d < 0 and -d <= shrink(skip))) else abs(d)
+
+        opts = [(score(size()), 0, None, None)]
+        free = next(c for c in "cdefghijklnopqrstuvwxy" if c not in taken)
+        m["lines"][k] = f"DefInt {free.upper()}"
+        if not ok0 or (self.frees_ok(m) and self.inits_ok(m)):
+            opts.append((score(size()), 1, free, None))
+        for _, s in [x for x in local if not isinstance(x[1], str)][-1:]:  # the last one
+            old = m["names"][s]
+            new = next((c for c in old[0].lower() + "cdefghijklnopqrstuvwxy" if c not in taken - {"a", "z"}), None)
+            if new is None:
+                break
+            self.rename(m, s, new)
+            m["lines"][k] = f"DefInt {new.upper()}"
+            if not ok0 or (self.frees_ok(m) and self.inits_ok(m)):
+                opts.append((score(size(), s), 2, new, s))
+            self.rename(m, s, old)
+        m["lines"][k] = "DefInt A-Z"
+        _, _, letter, s = min(opts)
+        if letter is None:
+            return
+        if s is not None:
+            self.rename(m, s, letter)
+            local[:] = [x for x in local if x[1] != s]
+        m["lines"][k] = f"DefInt {letter.upper()}"
+        taken.add(letter)
+
     def fit_size(self, m: dict) -> None:
         """Resize the generated local names that appear last so that the
         module's name-table size (declarations record +30) is the original's:
@@ -1747,8 +1812,13 @@ class Decompiler:
                    for x in re.findall(r"[(,]\s*(?:ByVal\s+)?((?:P|Arg)\d+)\b", ln)}  # Declare parameters
         labels |= {x.lower() for ln in m["lines"] if ln.lstrip().startswith(("Dim ", "Static "))
                    for x in re.findall(r"\b(f[0-9A-F]+)(?:\(.*?\))? As\b", ln)}  # unused locals (fillers)
-        local = sorted(local + [(order[x], x) for x in labels if x in order])
+        local += [(order[n.lower()], s) for s, n in m["names"].items() if n.lower() in order and m["vars"].get(s)
+                  and m["vars"][s].scope == "REF" and re.fullmatch(r"p[0-9A-F]+", n)]  # ByRef parameters
+        local = sorted(local + [(order[x], x) for x in labels if x in order], key=lambda x: x[0])
         ok0 = self.frees_ok(m) and self.inits_ok(m)
+        if d < 0 and "DefInt A-Z" in m["lines"] and not m.get("implicit_int"):
+            self.fit_deftype(m, local, order, taken, ok0)
+            d = want - name_size("\r\n".join(m["lines"]))
         for _, s in reversed(local):
             if not d:
                 break
@@ -1809,26 +1879,28 @@ class Decompiler:
                 by_name[new] = by_name[w.lower()]
         self.col_fixes = []
 
+    def name_bounds(self, m: dict, k: int) -> tuple[str, str | None]:
+        """(lo, hi): the names procedure k of module m must sort between (code
+        layout and Function/Declare slots are both sorted by name)."""
+        infos = m["infos"]
+        slot_order = [r for _, r in m["funcs"]]
+        fixed = {r: self.declare_name(r) for r in slot_order if r not in self.by_record}
+        los = [x.name for x in infos[:k] if x.name]
+        his = [x.name for x in infos[k + 1:] if x.name]
+        r = infos[k].proc.record
+        if r in slot_order:
+            j = slot_order.index(r)
+            los += [fixed.get(x) or self.proc_name.get(x, "") for x in slot_order[:j]]
+            his += [fixed[x] for x in slot_order[j + 1:] if x in fixed]
+        return max(los, key=str.lower, default=""), min(his, key=str.lower, default=None)
+
     def fit_names(self, m: dict) -> None:
         """Names for general procedures (not stored) that keep both orders
         the compiler derives from names: code layout (procedures sorted by
         name, case-insensitive) and Function/Declare slots (sorted too).
         Each run of unnamed procedures gets one prefix and counters."""
         infos = m["infos"]
-        slot_order = [r for _, r in m["funcs"]]
-        fixed = {r: self.declare_name(r)
-                 for r in slot_order if r not in self.by_record}
-
-        def bounds(k: int) -> tuple[str, str | None]:
-            info = infos[k]
-            los = [x.name for x in infos[:k] if x.name]
-            his = [x.name for x in infos[k + 1:] if x.name]
-            r = info.proc.record
-            if r in slot_order:
-                j = slot_order.index(r)
-                los += [fixed.get(x) or self.proc_name.get(x, "") for x in slot_order[:j]]
-                his += [fixed[x] for x in slot_order[j + 1:] if x in fixed]
-            return max(los, key=str.lower, default=""), min(his, key=str.lower, default=None)
+        bounds = lambda k: self.name_bounds(m, k)
 
         taken = {n.lower() for n in self.proc_name.values()} | {x.name.lower() for x in infos if x.name}
 
@@ -1950,6 +2022,8 @@ class Decompiler:
                     seq = [(b["key"] if b in dropped or b is a else b["alloc"]) for b in self.dim_alloc]
                     if all(x < y for x, y in zip(seq, seq[1:])):
                         dropped.append(a)
+                        if a["rely"]:
+                            self.cur_mod["implicit_int"] = True
                         dims[a["pos"]].remove(a["line"])
                         ndims -= 1
                         break
@@ -2291,6 +2365,8 @@ class Decompiler:
                     and key[:2] > last and not m["explicit"] and (decl.strip() == f"As {implicit_type}" or key[2]):
                 last = key[:2]
                 self.dim_alloc.append(dict(alloc=(*key[:2], 0)))
+                if m["defint"] and not key[2]:
+                    m["implicit_int"] = True  # typed by DefInt: the letters must cover it
                 continue
             if key is not None and key[0] < pos:
                 pos = key[0]  # conflicting order: at least keep it compilable
@@ -2300,7 +2376,8 @@ class Decompiler:
             self.dim_alloc.append(dict(alloc=(pos, -1, j), pos=pos, line=dims[pos][-1], key=key and (*key[:2], 0),
                                        drop=key is not None and key[0] >= pos and kind == "dim" and not v.array
                                        and not v.udt and not m["explicit"]
-                                       and (decl.strip() == f"As {implicit_type}" or key[2])))
+                                       and (decl.strip() == f"As {implicit_type}" or key[2]),
+                                       rely=m["defint"] and not (key and key[2])))
             last = (pos, -1)
         return dims
 

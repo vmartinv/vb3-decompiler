@@ -399,7 +399,8 @@ still copied from the original source).
 - A Declare's `Alias` shows only as its name's length (the compile-time
   pool entry at record +4): a name as long as the DLL entry's compiles
   identically either way (`alias_len`, from the pool gaps; the pool's
-  last entry ends at the global name table).
+  last entry ends at the global name table, which also gives a general
+  procedure there its length: `fit_tail_proc`).
 - Name-table size (+30) is fitted by resizing the last-appearing
   generated names (`fit_size`; Globals first, `fit_globals`).
 - Line counts: procedure record +50 counts its lines, not the blank lines
@@ -450,4 +451,7 @@ still copied from the original source).
 - A module's leading Function/Declare slots can hold another module's
   procedure record: an external call slot allocated at first use.
 - Declarations record +44: 4/8 if any DefType, 0xFFFF if none (flag
-  only). +18 flags: 0x40 Option Explicit, 0x800 Option Compare Text.
+  only; the letters and types aren't stored, and don't type Consts). Each
+  DefType range letter is a module name-table entry, shared with a
+  variable of that one-letter name (`DefInt A-Z` adds `a`, `z`); +50
+  counts each DefType statement as a line. +18 flags: 0x40 Option Explicit, 0x800 Option Compare Text.

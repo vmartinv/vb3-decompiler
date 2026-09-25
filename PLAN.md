@@ -6,7 +6,7 @@ VB3 language feature has a battery, and every case round-trips to
 identical p-code and form resources. What's left is whole-exe byte
 identity (Phase 3) and a final usage pass (Phase 4).
 
-Current numbers: batteries 911/969 exe-identical (all p-code identical);
+Current numbers: batteries 925/969 exe-identical (all p-code identical);
 samples 16/22 exe-identical (all 483/483 procedures p-code identical).
 
 "Complete" (Phase 3's target): with names padded to their original
