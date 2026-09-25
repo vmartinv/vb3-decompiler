@@ -77,7 +77,14 @@ Remaining, by place (`exediff`, `battery.py <name> --exe`):
   0xC1/0xC2 flag). A single-owning-procedure heuristic was tried and
   made the types battery net worse (49/69 -> 47/69, plus a p-code
   regression); not worth revisiting without a new signal.
-- declares: Alias/ordinal names (decl+0/+64), parameter types.
+- declares: Alias/ordinal names (decl+0/+64), parameter types. A Declare
+  parameter of a user Type ("Rc As R") resolving to `As Any` is not
+  itself the bug: it already compiles and matches p-code (calldlls
+  samples this at 18/18 procs). Tried resolving it to the real Type name
+  instead: fixes the isolated battery case, but moving the Type (or the
+  Declare) relative to a Global to satisfy VB3's forward-declare
+  requirement shifts the global image / record allocation order in a
+  multi-declare module (calldlls regressed to 15-17/18); reverted.
 - timecard: two words of a module list swapped (declaration order).
 - biblio: data image (3121 bytes).
 
