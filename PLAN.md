@@ -6,7 +6,7 @@ VB3 language feature has a battery, and every case round-trips to
 identical p-code and form resources. What's left is whole-exe byte
 identity (Phase 3) and a final usage pass (Phase 4).
 
-Current numbers: batteries 856/941 exe-identical (all p-code identical);
+Current numbers: batteries 858/969 exe-identical (`initlists` new) (all p-code identical);
 samples 14/22 exe-identical (all 483/483 procedures p-code identical).
 
 "Complete" (Phase 3's target): with names padded to their original
@@ -50,21 +50,16 @@ picking per item based on how many unknowns and constraints it has.
    resolving it to the real Type name was reverted: it regressed
    `calldlls` by shifting the global image / record allocation order
    relative to a Global in the same module.
-4. **timecard**: two words swapped in an undocumented per-form chunk in
-   `RT_RCDATA(2)` (right after each form's own image; the boundary is
-   tracked by `image_layout()` but its contents aren't interpreted) — 2
-   bytes, `rc2.Card`. Mechanism confirmed via VB.EXE disassembly
-   (Ghidra) and empirical splice-and-recompile testing: it's a
-   module-level, 16-bucket hash-table order effect, the same shape as
-   the already-implemented per-procedure `OBJ_FREE` order (`fit_frees`)
-   but one level up — see OPCODES.md ("module-level table with 16
-   buckets") for the full writeup: bucket formula, the walker that
-   turned out to be a red herring (IDE cleanup, not exe output), and
-   the actual next lead (`FUN_0000_6edb`, not yet mapped). Not fixable
-   yet: no way to read a target order back from a foreign exe until
-   the real consumer of the table is found.
+4. **Init-list order** (module and global; see OPCODES.md "Init
+   lists"): the target order is readable from the original exe, so the
+   decompiler can fit name lengths to it the way `fit_frees` does for
+   OBJ_FREE. Not implemented yet. Covers `timecard` (2 bytes, `rc2.Card`)
+   and the `initlists` battery (26/28 fail only on it, plus the global
+   case's Global Const String texts).
 5. **biblio**: data image diff, 3121 bytes — the largest remaining.
-   Not yet broken down by place.
+   Lead: its global init list has 7 entries in the original, 30 in the
+   rebuild, so the rebuild declares many more global String constants /
+   fixed arrays than the original did.
 6. **Phase 4 final pass**: once the above settle, run every battery
    plus every sample in `--exe` mode and commit. (`tools/vb3decompile.py`
    itself is done; icons/.frx already come for free from

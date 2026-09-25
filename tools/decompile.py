@@ -149,12 +149,14 @@ ID_CLASS = {0x0B: "LOAD", 0x0C: "STORE", 0x0E: "ALOAD", 0x0F: "ASTORE",  # inter
 
 def image_layout(image: bytes, nforms: int) -> dict:
     """RT_RCDATA 2 structure: chunks `u16 len, 00 00, 1E 00, ...`:
-    global image, 4-byte end; name pool (u16 size, 32-bucket hash table,
-    entries `u16 link, u8 flag, u8 len, name`; offsets from its start + 2);
-    then the .bas module images, then per form its image and control list
-    (4-byte end chunks in between, not always)."""
+    global image; name pool (u16 size, 32-bucket hash table, entries `u16
+    link, u8 flag, u8 len, name`; offsets from its start + 2); then the .bas
+    module images, then the form images. The global image and each module
+    image can be followed by an init list: `u16 len, u16 count, 1E 00`, count
+    words (fixed-size arrays and String constants, see OPCODES.md); `lists`
+    maps an image to its list."""
     first = re.search(rb"..\x00\x00\x1e\x00", image, re.S)
-    out = dict(global_=first.start() if first else None, pool=None, modules=[], forms=[])
+    out = dict(global_=first.start() if first else None, pool=None, modules=[], forms=[], lists={})
     if not first:
         return out
     # walk: chunks are `u16 len, u16, u16 0x1E`; the name pool (`u16 size, 0,
@@ -173,15 +175,21 @@ def image_layout(image: bytes, nforms: int) -> dict:
         else:
             chunks.append((c, n))
         c += 2 + n
-    rest = [c for c, n in chunks[1:] if n != 4 and (out["pool"] is None or c > out["pool"])]
-    # a form image starts with 16 zero bytes, then the form's own record at
-    # 0x16; the chunk after it (if not another form) is its control list
+    prev = None
+    for c, n in chunks:
+        if n == 4 + 2 * struct.unpack_from("<H", image, c + 2)[0]:  # an init list (4 bytes: empty)
+            if prev is not None:
+                out["lists"].setdefault(prev, c)
+        else:
+            prev = c
+    rest = [c for c, n in chunks[1:] if c not in out["lists"].values() and (out["pool"] is None or c > out["pool"])]
+    # a form image starts with 16 zero bytes, then the form's own record at 0x16
     is_form = [struct.unpack_from("<H", image, c)[0] >= 0x1A and not any(image[c + 6:c + 0x16])
                and image[c + 0x16] != 0 for c in rest]
     idx = [j for j, f in enumerate(is_form) if f][-nforms:] if nforms else []
     first = idx[0] if idx else len(rest)
     out["modules"] = rest[:first]
-    out["forms"] = [(rest[j], rest[j + 1] if j + 1 < len(rest) and j + 1 not in idx else None) for j in idx]
+    out["forms"] = [(rest[j], out["lists"].get(rest[j])) for j in idx]
     return out
 
 
@@ -527,7 +535,8 @@ class Decompiler:
         if m["kind"] == "frm":
             owned |= {s for s, v in vars_.items() if v.scope == "GLB"}
         # control/property operands point at their record, 2 bytes past a variable's slot
-        owned |= {s - 2 for s, v in vars_.items() if getattr(v, "fixed", False) and v.scope != "MOD"}
+        owned |= {s - 2 for s, v in vars_.items() if getattr(v, "fixed", False) and v.scope != "MOD"
+                  and not (v.scope == "GLB" and m["kind"] == "bas")}  # a .bas's Global String * n: declared
         owned |= {s - 2 for s, v in vars_.items() if v.obj and v.scope == "LOC"}  # local object: `kind, BP` record
         first_owned = min(owned | {r - 2 for r in refs} | {s for s, v in vars_.items() if v.scope == "GLB"
                                                and s >= m["decl_start"] and not self.is_global_slot(base, s)},
@@ -561,6 +570,13 @@ class Decompiler:
                 self.value(base, z, False) in (0, 1, 4) for z in range(top - pb, top, 2)):
             first_owned = top - pb
         m.update(infos=infos, vars=vars_, refs=refs, udt=udt, first_owned=first_owned, call_slots=call_slots)
+
+    def global_desc(self, base: int, s: int) -> int:
+        """Bytes of a Global fixed-size array's descriptor at s in its declaring
+        .bas (after the global offset): `0x4000 | dims, 0xC000 | element type`
+        (the bounds are in the global image); 0 if none."""
+        w, f = self.value(base, s, False), self.value(base, s + 2, False)
+        return 4 if w & 0xFF00 == 0x4000 and 1 <= w & 0xFF <= 60 and f >> 8 == 0xC0 and 0 <= f & 0xFF <= 9 else 0
 
     def is_global_slot(self, base: int, slot: int) -> bool:
         g = self.value(base, slot, False)
@@ -683,7 +699,7 @@ class Decompiler:
                         and (prev_g is None or kind <= prev_g or kind in OBJ_KINDS or kind in formk):
                     cls = OBJ_KINDS.get(kind) or formk.get(kind) or P.CLASS_BY_KIND[kind]
                     items.append(("global", s, None, g2, cls))  # `Global x As <class>`: kind, global offset
-                    s += 4
+                    s += 4 + self.global_desc(m["image"], s + 4)
                     continue
                 if m["kind"] == "bas" and (v is not None and v.scope == "GLB") or (
                         m["kind"] == "bas" and v is None and self.is_global_slot(m["image"], s)
@@ -691,7 +707,7 @@ class Decompiler:
                                                           {x[3] for x in items if x[0] == "global"}):
                     g = self.value(m["image"], s, False)
                     items.append(("global", s, None, g))
-                    s += 2
+                    s += 2 + self.global_desc(m["image"], s + 2)
                     continue
                 # unused: a constant (nonzero) or a variable filling the gap, 2 bytes
                 # at a time so that a following declaration isn't swallowed

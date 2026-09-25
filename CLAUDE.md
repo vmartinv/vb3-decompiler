@@ -66,6 +66,12 @@ Reusable VB3 reverse-engineering tools + findings. Companion to
   bisection), that's the signal to stop guessing black-box and switch to
   reading VB.EXE's own logic (next bullet) — splicing tells you *that*
   naming matters and roughly how, not the actual mechanism.
+- To find what depends on individual name *lengths* (vs. their sums),
+  use a **shift experiment**: one hand-written project, first name
+  lengthened by d and last name shortened by d (sums constant),
+  compiled for d = 0..32 and diffed against d = 0. Only length-dependent
+  bytes change, and their period in d gives the hash (32 = 16 buckets of
+  2 bytes). This is how the init lists (OPCODES.md) were found.
 - **VB.EXE's own logic is readable, and often the faster path once
   black-box testing finds something naming/order-related** (a
   hash/bucket structure, an emission rule) rather than a pure sum:

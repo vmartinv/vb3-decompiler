@@ -222,7 +222,7 @@ still copied from the original source).
   the name pool (`u16 size, 0, 0x1A`, 32-bucket hash, entries `u16 link,
   u8, u8 len, name`, offsets from its start + 2; DLL/`Declare` names), then
   each .bas image, then each form image (16 zero bytes, form record at
-  0x16) and its control list. Chunks are `u16 len, u16, u16 0x1E`; the word
+  0x16); each image followed by its init list (below). Chunks are `u16 len, u16, u16 0x1E`; the word
   before a module's chunk + 4 is its declarations record (+18 flags: 0x40
   Option Explicit, 0x800 Option Compare Text, 0x8000 the text contains a
   tab; +30 name-table size, +34 the same in 16-byte units; +44 DefType
@@ -371,37 +371,29 @@ still copied from the original source).
   per identifier in first-appearance order (`namesize.name_offsets`;
   fits 120/120 random probe procedures). `Decompiler.fit_frees` picks
   generated name lengths that reproduce the original order.
-- The same lookup also has a **module-level table with 16 buckets**
-  (seg53:0x78c3 `and ax, 0x1e`, fixed base `di = 4`; the procedure
-  table's entry is 0x78ce `and ax, 0xe`, `di = [0x37ea]`; both share the
-  walk from 0x78d5, `es:[0x36da]`). Bucket = (name-table offset >> 1) &
-  15, same offset model as the procedure case but over the *module's*
-  first-appearance order. Confirmed by Ghidra decompilation (see below)
-  and empirically against `timecard`'s `Card` form: a 2-byte swap in the
-  per-form chunk of `RT_RCDATA(2)` right after each form's own image
-  (the boundary `image_layout` already tracks, contents not yet
-  interpreted) tracks the *length* of the module's Dim'd variables, not
-  their spelling — padding synthetic names to the true lengths (keeping
-  fake spelling) removes the swap. The effect is non-monotonic in a
-  length-correction prefix, consistent with mod-16 collisions among
-  identifiers declared *after* the point being corrected (plausibly
-  controls, referenced later in the module, whose own offset depends on
-  every earlier Dim).
-  - Ruled out as the consumer: the obvious walker of this table
-    (seg53:0x86fd/0x8707, same 806A/8097 iterator and the same
-    object/Type filter `and dx,0x70f; cmp dx,0x609` as the OBJ_FREE
-    emitter) decompiles cleanly to the IDE's own in-memory cleanup — for
-    each matching entry it dispatches (via a type-indexed jump-table
-    thunk, `FUN_0000_2bf2`) to a destructor, run when a form/module is
-    closed in the IDE. Not exe output.
-  - Not yet found: which routine actually produces the exe bytes from
-    this table. The next lead is `FUN_0000_6edb` (seg53:0x6edb), the
-    core identifier lookup/insert used while parsing — large and
-    densely flag-driven, not yet mapped. Until it's found, there's no
-    way to read a target bucket order back from a foreign exe (unlike
-    the procedure case, where the target OBJ_FREE sequence is directly
-    in the p-code), so this isn't fixable yet, only diagnosed.
-    (Ghidra headless-decompile recipe: see CLAUDE.md.)
+- **Init lists** (the only exe bytes that depend on individual name
+  lengths once the name-table sums are fixed; found by shift experiments:
+  lengthen the first name by d, shorten the last by d, compile d = 0..32,
+  diff). The global image and every module image in `RT_RCDATA(2)` are
+  followed by a chunk `u16 len, u16 count, 1E 00, count x u16`
+  (`image_layout()["lists"]`; `len 4, count 0` when empty). Entries: the
+  image offset of each fixed-size array's slot and each String
+  constant's slot | 1 (global list: `Global` fixed arrays and `Global
+  Const` Strings; module list: the module's `Dim` fixed arrays and
+  `Const` Strings, then its procedures' `Static` arrays). Not listed:
+  dynamic arrays, scalars, `String * n`, Type variables. Order: VB.EXE's
+  16-bucket name hash (seg53:0x78c3 `and ax, 0x1e`), bucket =
+  (name-table offset >> 1) & 15, buckets in order, each in declaration
+  order (FIFO). Module list: offsets are the module name table's
+  (`namesize.name_offsets`, but the first entry is at 26 mod 32, i.e.
+  FIRST + 16); Static arrays come after, ordered by their procedure's
+  8-bucket table (as OBJ_FREE). Global list: offsets are the global name
+  table's (text order, `len + 4` per name, the same address space as the
+  Type/field name pointers, which anchor it). The swapped words in
+  `timecard`'s `Card` are this list.
+- A `Global` fixed-size array in its declaring .bas: slot = global
+  offset, then `0x4000 | dims, 0xC000 | element type` (bounds in the
+  global image).
 - Name-table size (+30) is fitted by resizing the last-appearing
   generated names (`fit_size`; Globals first, `fit_globals`).
 - Line counts: procedure record +50 counts its lines, not the blank lines
