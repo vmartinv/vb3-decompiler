@@ -313,6 +313,14 @@ still copied from the original source).
   names (per-module name table +30, table offset 76 record +30), the last
   pool entry, Declare aliases.
 - DefType tables beyond `DefInt A-Z` (only form seen in the samples).
-- Batteries (`tools/battery.py`, 649/695): statements 62/68, types
-  57/62, deftype 54/56, names 22/35; builtins, expressions,
-  print complete.
+- Batteries (`tools/battery.py`, 664/695): statements 62/68, types
+  57/62; builtins, expressions, print, names, deftype complete.
+- Procedure/Declare records (56 bytes) follow the module's declarations
+  record (`word(image, m.image-2)+4`) and are allocated in first-mention
+  text order: a Sub call statement (62DD bare, 62E0 `Call` keyword)
+  allocates the callee's record, a function call in an expression
+  (62A7) doesn't. Code layout is sorted by name, case-insensitively.
+- A module's leading Function/Declare slots can hold another module's
+  procedure record: an external call slot allocated at first use.
+- Declarations record +44: 4/8 if any DefType, 0xFFFF if none (flag
+  only). +18 flags: 0x40 Option Explicit, 0x800 Option Compare Text.

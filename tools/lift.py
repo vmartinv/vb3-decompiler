@@ -236,6 +236,8 @@ def lift(code: list[tuple[int, bytes]], ids: dict[int, int] | None = None,
             fn = nm(f"proc{rec & 0xFFF8:x}")
             if name == "CALL_FN":
                 st.append(E(f"{fn}({', '.join(a.text for a in args)})"))
+            elif op == 0x62E0:  # the Call keyword
+                out.append(f"Call {fn}" + (f"({', '.join(a.text for a in args)})" if args else ""))
             else:
                 out.append((fn + " " + ", ".join(a.text for a in args)).rstrip())
         elif name == "CTLARRAY":

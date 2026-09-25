@@ -133,25 +133,13 @@ python3 tools/corpus.py examples work/corpus --runtime VBRUN300.DLL --exe some.e
 - Resources: form layouts decoded to `.frm` text (`formblob.py`);
   recompiled form resources are byte-identical on all samples.
 - P-code: decompiles to source that recompiles to identical p-code on
-  all samples and on 649/695 generated feature cases (`battery.py`).
+  all samples and on 664/695 generated feature cases (`battery.py`).
 
 "Complete" means: every language feature has a battery, every case
 round-trips to identical p-code and form resources, and, with names
 padded to their original lengths, to an identical executable.
 
-Plan:
-
-1. Close the current batteries (statements, types, deftype, expressions,
-   names).
-2. Add batteries for what is not covered yet: every control class with
-   its properties and events, control arrays, menus, form kinds (MDI),
-   graphics methods, object variables (Me, Screen, App, Clipboard,
-   Printer), error handling, Declare variants, module-level items
-   (Global, Type, Const, Option), VBX controls, DDE/OLE. Probe their
-   opcodes and fix what fails.
-3. Whole-exe identity: the name-dependent table words (module name
-   tables, Type/field names, hash order), checked by the names battery.
-4. Usage docs and a single command (exe in, project out).
+Plan: see [PLAN.md](PLAN.md).
 
 ## License
 

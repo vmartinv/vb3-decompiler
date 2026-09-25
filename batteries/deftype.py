@@ -20,7 +20,7 @@ def body(decl):
             "Sub Test1 ()\n"
             "    Dim k, q\n"
             f"    abc = {v('abc', 1)}: mno = {v('mno', 2)}: xyz = {v('xyz', 3)}\n"
-            f"    k = abc + {v('k', 1)}: q = xyz\n"
+            f"    k = abc + {v('abc', 1)}: q = xyz\n"
             "    Debug.Print k; q; mno\n"
             "End Sub\n")
 

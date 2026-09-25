@@ -95,6 +95,7 @@ class ProcInfo:
     argwords: int = 0
     params: list = field(default_factory=list)  # (slot, text)
     ret_slot: int | None = None
+    callees: list = field(default_factory=list)  # called records, in text order
 
 
 def var_access(name: str) -> tuple[str, str, bool] | None:
@@ -318,9 +319,16 @@ class Decompiler:
             m["explicit"] = bool(word(self.table, rec + 18) & 0x40)
             m["tabs"] = bool(word(self.table, rec + 18) & 0x8000)  # the code contains tab characters
             m["defint"] = word(self.table, rec + 44) != 0xFFFF  # the samples' only DefType: DefInt A-Z
-        for m in mods:  # Function/Declare slots: record offsets (sorted by name)
-            m["funcs"], s = [], m["start"]
-            while self.is_record(self.value(m["image"], s, False)):
+        decl_recs = sorted(word(self.image, m["image"] - 2) + 4 for m in mods)
+
+        def owner(r: int) -> int:  # a module's records follow its declarations record
+            return max((r0 for r0 in decl_recs if r0 < r), default=-1)
+
+        for m in mods:  # Function/Declare slots: record offsets (sorted by name); a slot
+            m["funcs"], s = [], m["start"]  # holding another module's procedure is a call's
+            me = word(self.image, m["image"] - 2) + 4
+            while self.is_record(r := self.value(m["image"], s, False)) and \
+                    (r not in self.by_record or owner(r) == me):
                 m["funcs"].append((s, self.value(m["image"], s, False)))
                 s += 2
             m["decl_start"] = s
@@ -721,10 +729,10 @@ class Decompiler:
     def declare_lines(self, m: dict) -> list[str]:
         out = []
         recs = [r for _, r in m["funcs"]]
-        # Declare Subs have no slot: found from their calls; declared in the module
-        # that calls them (records follow text order), else the first .bas
-        for r in sorted(r for r in self.call_types if r not in self.by_record and r not in self.slotted
-                        and self.is_declare(r)):
+        # Declare Subs (and unused Declares) have no slot: found by scanning the
+        # table; declared in the module whose records surround them
+        for r in sorted(r for r in range(0, len(self.table) - 55, 8) if r not in self.by_record
+                        and r not in self.slotted and self.is_declare(r)):
             if self.declare_home(r) is m:
                 recs.append(r)
         recs.sort()  # records are allocated in order of first mention in the text
@@ -743,18 +751,11 @@ class Decompiler:
         return out
 
     def declare_home(self, r: int) -> dict:
-        """The module a slotless Declare (a Declare Sub) is written in: records
-        are allocated in text order, module by module, so it's the module
-        whose records (procedures, slotted Declares) most closely precede it."""
-        after = []
-        for m in self.all_mods:
-            recs = [info.proc.record for info in m["infos"]] + [x for _, x in m["funcs"]]
-            if recs and min(recs) <= r <= max(recs):
-                return m  # among its module's records
-            if recs and min(recs) > r:
-                after.append((min(recs), id(m), m))
-        # declarations come first in a module's text: the next module's records follow
-        return min(after)[2] if after else self.decl_home
+        """The module a slotless Declare is written in: a module's records
+        (procedures, Declares) follow its declarations record in the table."""
+        starts = [(word(self.image, m["image"] - 2) + 4, k) for k, m in enumerate(self.all_mods)]
+        k = max(((r0, k) for r0, k in starts if r0 < r), default=None)
+        return self.all_mods[k[1]] if k else self.decl_home
 
     def declare_params(self, r: int) -> list[str]:
         """DLL parameters from the argument types at call sites (arguments are
@@ -822,12 +823,44 @@ class Decompiler:
             out.insert(0, "Option Explicit")
         out = ["'"] * max(0, count - len(out) - 1) + out + [""] if count else out
         self.cur_mod = m
-        for info in m["infos"]:
+        for info in self.text_order(m):
             out += self.emit_proc(info, m["form"], m["vars"], m["names"], m["image"])
         if m["tabs"] and out and not any("\t" in s for s in out):
             i = out.index("'") if "'" in out else 0  # flag 0x8000 needs a tab somewhere
             out[i] = out[i] + ("\t" if out[i] == "'" else "\t'")
         return out
+
+    def text_order(self, m: dict) -> list:
+        """Procedures in an order that allocates their records as the original
+        text did: a record is allocated at the first mention of its name (a
+        definition or a call), so the module's records must be mentioned in
+        ascending order. Depth-first search, lowest record first."""
+        infos = m["infos"]
+        own = sorted({i.proc.record for i in infos})
+        mine = set(own)
+        mentions = [[x for x in [i.proc.record] + i.callees if x in mine] for i in infos]
+
+        def dfs(done: tuple, seen: frozenset, k: int, budget: list) -> list | None:
+            if len(done) == len(infos):
+                return list(done)
+            budget[0] -= 1
+            if budget[0] < 0:
+                return None
+            for j in sorted(set(range(len(infos))) - set(done), key=lambda j: infos[j].proc.record):
+                s2, k2, ok = set(seen), k, True
+                for x in mentions[j]:
+                    if x not in s2:
+                        if own[k2] != x:
+                            ok = False
+                            break
+                        s2.add(x)
+                        k2 += 1
+                if ok and (r := dfs(done + (j,), frozenset(s2), k2, budget)):
+                    return r
+            return None
+
+        order = dfs((), frozenset(), 0, [5000])
+        return [infos[j] for j in order] if order else sorted(infos, key=lambda i: i.proc.record)
 
     def run(self) -> list[dict]:
         """Modules with their source lines (m['lines'])."""
@@ -1053,7 +1086,7 @@ class Decompiler:
         for m in mods:
             self.cur_base = m["image"]
             for info in m["infos"]:
-                calls = []
+                calls, info.callees = [], []
                 self.statements(info, m["names"], calls)
                 by_name = {n.lower(): x for x, n in m["names"].items()}
                 for name, operand, types, texts in calls:
@@ -1064,6 +1097,8 @@ class Decompiler:
                     (rec,) = struct.unpack_from("<H", operand, 2)
                     if name == "CALL_FN":
                         rec = self.value(m["image"], rec, False)
+                    if name != "CALL_FN":  # a Sub call statement allocates the record; a
+                        info.callees.append(rec & 0xFFF8)  # function call in an expression doesn't
                     self.call_types.setdefault(rec & 0xFFF8, []).append(types)
                     self.call_modules.setdefault(rec & 0xFFF8, set()).add(id(m))
 
@@ -1080,7 +1115,7 @@ class Decompiler:
         def bounds(k: int) -> tuple[str, str | None]:
             info = infos[k]
             los = [x.name for x in infos[:k] if x.name]
-            his = [x.name for x in infos[k + 1:] if x.event]
+            his = [x.name for x in infos[k + 1:] if x.name]
             r = info.proc.record
             if r in slot_order:
                 j = slot_order.index(r)
@@ -1242,6 +1277,9 @@ class Decompiler:
                 items.append((s, "fixed", names[s], None, v))
         for s, (kk, n) in m["refs"].items():
             if kk == k:
+                items.append((s, "fixed", n, None, None))
+        for s, kk in m.get("call_slots", {}).items():  # external functions: slot at the call
+            if kk == k and (n := self.proc_name.get(self.value(base, s) & 0xFFF8)):
                 items.append((s, "fixed", n, None, None))
         items.sort(key=lambda it: (it[0], it[1]))
         # unused locals leave gaps in the slot numbering: declare fillers
