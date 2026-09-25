@@ -38,7 +38,8 @@ End Sub
 """
 
 FORM_STATIC = """Sub Form_Load ()
-    Static {P} As Integer, sa(3) As String, sb(2) As Integer, sc(1) As Long
+    Dim {P} As Integer
+    Static sa(3) As String, sb(2) As Integer, sc(1) As Long
     {P} = 1: sa(1) = "x": sb(1) = 2: sc(1) = 3
     {Q} = 1
 End Sub

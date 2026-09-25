@@ -22,6 +22,7 @@ Recovery rules (see ../OPCODES.md, "Source recovery"):
 from __future__ import annotations
 
 import argparse
+import os
 import re
 import struct
 import sys
@@ -161,28 +162,33 @@ def image_layout(image: bytes, nforms: int) -> dict:
         return out
     # walk: chunks are `u16 len, u16, u16 0x1E`; the name pool (`u16 size, 0,
     # 0x1A`) sits between the global image's chunks and the modules
-    chunks, c = [], first.start()
+    chunks, c, pre = [], first.start(), True
     while c + 6 <= len(image):
         n, tag = struct.unpack_from("<H", image, c)[0], struct.unpack_from("<H", image, c + 4)[0]
         if tag == 0x1A and out["pool"] is None:
             out["pool"] = c
-            c += 2  # the pool's size word doesn't cover its last 2 bytes
+            c += 2  # the pool's size word doesn't cover its last 2 bytes (the next image's prefix)
+            pre = True
         elif tag != 0x1E:
             if c + 8 <= len(image) and struct.unpack_from("<H", image, c + 6)[0] in (0x1E, 0x1A):
-                c += 2  # a 2-byte prefix before some module chunks
+                c += 2  # the word before a module image (its declarations record - 4)
+                pre = True
                 continue
             break
         else:
-            chunks.append((c, n))
+            chunks.append((c, n, pre))
+            pre = False
         c += 2 + n
-    prev = None
-    for c, n in chunks:
-        if n == 4 + 2 * struct.unpack_from("<H", image, c + 2)[0]:  # an init list (4 bytes: empty)
-            if prev is not None:
-                out["lists"].setdefault(prev, c)
-        else:
+    # an image (the global one, or after its 2-byte prefix) can be followed by
+    # a chunk of (u8 type, u16 slot) triples, then by its init list
+    prev, rest = None, []
+    for c, n, pre in chunks:
+        if pre:
             prev = c
-    rest = [c for c, n in chunks[1:] if c not in out["lists"].values() and (out["pool"] is None or c > out["pool"])]
+            if c != first.start() and (out["pool"] is None or c > out["pool"]):
+                rest.append(c)
+        elif n == 4 + 2 * struct.unpack_from("<H", image, c + 2)[0] and prev is not None:
+            out["lists"].setdefault(prev, c)  # an init list (4 bytes: empty)
     # a form image starts with 16 zero bytes, then the form's own record at 0x16
     is_form = [struct.unpack_from("<H", image, c)[0] >= 0x1A and not any(image[c + 6:c + 0x16])
                and image[c + 0x16] != 0 for c in rest]
@@ -332,6 +338,7 @@ class Decompiler:
         """Every module (from the data images) with its code segment, if any."""
         lay = image_layout(self.image, len(self.forms))
         self.pool = lay["pool"]
+        self.lists = lay["lists"]
         self.gimg = GlobalImage(self.image, lay["global_"])
         mods = [dict(kind="bas", image=c, form=None, seg=None, start=0x06) for c in lay["modules"]]
         mods += [dict(kind="frm", image=c, form=self.forms[k][0], seg=None, start=0x1A, ctl=cl)
@@ -1046,6 +1053,7 @@ class Decompiler:
                 self.fit_globals(m)
         for m in mods:
             self.fit_frees(m)
+            self.fit_inits(m)
             self.fit_size(m)
         self._mods = mods
         return mods
@@ -1387,6 +1395,129 @@ class Decompiler:
                 return False
         return True
 
+    def init_target(self, m: dict) -> list[str] | None:
+        """The module's init list (fixed-size arrays, String constants | 1)
+        as names, without the procedures' Static arrays (listed after)."""
+        c = self.lists.get(m["image"])
+        if c is None:
+            return None
+        sarr = {a[0] for a in m.get("static_arrays", [])}
+        out = []
+        for k in range(word(self.image, c + 2)):
+            s = word(self.image, c + 6 + 2 * k) & ~1
+            if s in sarr:
+                continue
+            if s not in m["names"]:
+                return None
+            out.append(m["names"][s].lower())
+        return out
+
+    def inits_ok(self, m: dict) -> bool:
+        """The module's predicted init list order is the original's: 16
+        buckets ((name-table offset >> 1) & 15), each in first-appearance order."""
+        from namesize import name_offsets
+        target = self.init_target(m)
+        if not target or len(target) < 2:
+            return True
+        offs = name_offsets("\r\n".join(m["lines"]))
+        order = {low: j for j, low in enumerate(offs)}
+        if not all(t in offs for t in target):
+            return True
+        return sorted(target, key=lambda t: ((offs[t] >> 1) & 15, order[t])) == target
+
+    def fit_inits(self, m: dict) -> None:
+        """Pad generated names so that the module's init list comes out in the
+        original order (see inits_ok); names before the last listed one move
+        its entries' buckets."""
+        from namesize import FIRST, KEYWORDS, BUILTINS, identifiers
+        target = self.init_target(m)
+        if not target or len(target) < 2 or self.inits_ok(m):
+            return
+        ids = list(identifiers("\r\n".join(m["lines"])).items())
+        pos = {low: j for j, (low, _) in enumerate(ids)}
+        if not all(t in pos for t in target):
+            return
+        fixed = {i.name.lower() for i in m["infos"] if i.name}
+        glob = self.project_names()
+        slot_of = {n.lower(): s for s, n in m["names"].items()}
+        free = [j for j, (low, sp) in enumerate(ids) if low in slot_of and low not in fixed
+                and low not in glob and self.generated(sp)]
+        starts = [FIRST]
+        for _, sp in ids:
+            starts.append(starts[-1] + len(sp) + 4)
+        # only the total shift before each listed name matters (mod 32): one
+        # shift per gap between listed names (by position), spread over the
+        # adjustable names in that gap
+        tpos = sorted(pos[t] for t in target)
+        gaps = [[j for j in free if (tpos[k - 1] if k else -1) <= j < tpos[k]] for k in range(len(tpos))]
+        room = [(sum(1 - len(ids[j][1]) for j in g), sum(40 - len(ids[j][1]) for j in g)) for g in gaps]
+        by_pos = {pos[t]: t for t in target}
+
+        def rep(r: int, lo: int, hi: int) -> int | None:
+            """The shift ≡ r (mod 32) in [lo, hi] closest to 0."""
+            xs = [x for x in range(r % 32 - 64, r % 32 + 65, 32) if lo <= x <= hi]
+            return min(xs, key=abs) if xs else None
+
+        def cost(bucket: dict) -> tuple[int, list] | None:
+            """Cheapest shifts putting each listed name in its bucket: per
+            name (position order) the total shift before it is one of two
+            residues; DP over them."""
+            best = {0: (0, [])}  # total shift mod 32 -> (sum |x|, shifts)
+            for k, p in enumerate(tpos):
+                t, nxt = by_pos[p], {}
+                for c in (2 * bucket[t] - starts[p], 2 * bucket[t] + 1 - starts[p]):
+                    for prev, (w, xs) in best.items():
+                        x = rep(c - prev, *room[k])
+                        if x is not None and (c % 32 not in nxt or w + abs(x) < nxt[c % 32][0]):
+                            nxt[c % 32] = (w + abs(x), xs + [x])
+                best = nxt
+            return min(best.values(), key=lambda v: v[0]) if best else None
+
+        found = [None]
+
+        def buckets(k: int, bucket: dict) -> None:
+            """Every bucket assignment the list order allows: non-decreasing
+            along the list, equal only in first-appearance order."""
+            if k == len(target):
+                c = cost(bucket)
+                if c and (found[0] is None or c[0] < found[0][0]):
+                    found[0] = c
+                return
+            t = target[k]
+            lo = 0
+            if k:
+                pt = target[k - 1]
+                lo = bucket[pt] + (0 if pos[pt] < pos[t] else 1)
+            for b in range(lo, 16):
+                bucket[t] = b
+                buckets(k + 1, bucket)
+            bucket.pop(t, None)
+
+        from math import comb
+        if comb(len(target) + 15, 16) > 300000:
+            return
+        buckets(0, {})
+        shift = found[0][1] if found[0] else None
+        if os.environ.get("DBG_INITS"):
+            print("fit_inits", target, room, found[0], file=sys.stderr)
+        if not shift or not any(shift):
+            return
+        pads = {}
+        for g, x in zip(gaps, shift):
+            for j in g:  # grow the first names, shrink down to 1 character
+                p = max(1 - len(ids[j][1]), min(40 - len(ids[j][1]), x))
+                pads[j], x = p, x - p
+        taken = KEYWORDS | BUILTINS | glob | {low for low, _ in ids}
+        lines0, names0 = m["lines"], dict(m["names"])
+        for j, p in pads.items():
+            if p:
+                old = ids[j][1]
+                new = next(c for c in grown(old, p) if c.lower() not in taken)
+                taken.add(new.lower())
+                self.rename(m, slot_of[old.lower()], new)
+        if not self.frees_ok(m) or not self.inits_ok(m):
+            m["lines"], m["names"] = lines0, names0
+
     def project_names(self) -> set[str]:
         """Names visible in every module: globals, procedures, forms."""
         return {x.lower() for x in self.global_name.values()} | \
@@ -1519,7 +1650,7 @@ class Decompiler:
         labels |= {x.lower() for ln in m["lines"] if ln.lstrip().startswith(("Dim ", "Static "))
                    for x in re.findall(r"\b(f[0-9A-F]+)(?:\(.*?\))? As\b", ln)}  # unused locals (fillers)
         local = sorted(local + [(order[x], x) for x in labels if x in order])
-        ok0 = self.frees_ok(m)
+        ok0 = self.frees_ok(m) and self.inits_ok(m)
         for _, s in reversed(local):
             if not d:
                 break
@@ -1532,7 +1663,7 @@ class Decompiler:
                 pat = re.compile(rf"(?<![\w.]){re.escape(old)}\b", re.I)
                 lines0 = m["lines"]
                 m["lines"] = [pat.sub(new, ln) for ln in lines0]
-                if ok0 and not self.frees_ok(m):
+                if ok0 and not (self.frees_ok(m) and self.inits_ok(m)):
                     m["lines"] = lines0
                     continue
                 taken.add(new.lower())
@@ -1546,7 +1677,7 @@ class Decompiler:
             if new is None:
                 continue
             self.rename(m, s, new)
-            if ok0 and not self.frees_ok(m):
+            if ok0 and not (self.frees_ok(m) and self.inits_ok(m)):
                 self.rename(m, s, old)
                 continue
             taken.add(new.lower())

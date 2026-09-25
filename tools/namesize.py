@@ -88,7 +88,7 @@ def identifiers(code: str) -> dict[str, str]:
     return out
 
 
-FIRST = 10  # name-table offset of a module's first identifier, mod 16
+FIRST = 26  # name-table offset of a module's first identifier, mod 32
 
 
 def name_offsets(code: str) -> dict[str, int]:

@@ -6,8 +6,8 @@ VB3 language feature has a battery, and every case round-trips to
 identical p-code and form resources. What's left is whole-exe byte
 identity (Phase 3) and a final usage pass (Phase 4).
 
-Current numbers: batteries 858/969 exe-identical (`initlists` new) (all p-code identical);
-samples 14/22 exe-identical (all 483/483 procedures p-code identical).
+Current numbers: batteries 870/969 exe-identical (all p-code identical);
+samples 15/22 exe-identical (all 483/483 procedures p-code identical).
 
 "Complete" (Phase 3's target): with names padded to their original
 lengths, the rebuilt exe is byte-identical to the original.
@@ -50,12 +50,12 @@ picking per item based on how many unknowns and constraints it has.
    resolving it to the real Type name was reverted: it regressed
    `calldlls` by shifting the global image / record allocation order
    relative to a Global in the same module.
-4. **Init-list order** (module and global; see OPCODES.md "Init
-   lists"): the target order is readable from the original exe, so the
-   decompiler can fit name lengths to it the way `fit_frees` does for
-   OBJ_FREE. Not implemented yet. Covers `timecard` (2 bytes, `rc2.Card`)
-   and the `initlists` battery (26/28 fail only on it, plus the global
-   case's Global Const String texts).
+4. **Init-list order** (see OPCODES.md "Init lists"): module lists are
+   fitted (`fit_inits`; fixed `timecard`). Not yet: procedures' Static
+   arrays (8-bucket, after the module entries) and the global list
+   (Global fixed arrays / Global Const Strings, over the global name
+   table). The `initlists` Globals project also differs in its Global
+   Const String texts (rc2 header).
 5. **biblio**: data image diff, 3121 bytes — the largest remaining.
    Lead: its global init list has 7 entries in the original, 30 in the
    rebuild, so the rebuild declares many more global String constants /
