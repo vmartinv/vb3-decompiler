@@ -87,6 +87,7 @@ NAMES: dict[int, str] = {
     0x4FFC: "NARGS", 0x376A: "END_CALL",
     0x6A63: "ARG_STR", 0x6A72: "ARGS_FREE", 0x6A02: "ARG_V", 0x6823: "ARG_S", 0x6834: "ARG_D",
     0x320F: "ADDR_LOC.V", 0x3200: "ADDR_LOC", 0x3237: "ADDR_LOC.T",
+    0x32B2: "LOAD.LOC.F", 0x32EF: "STORE.LOC.F", 0x32A1: "LOAD.MOD.F", 0x32DE: "STORE.MOD.F",  # String * n
     0x31C2: "ADDR.MOD.V",  # by reference: For, Input #, Mid$ =, LSet (31B3..31CC: its % & ! # @ $ entries)
     # --- objects -------------------------------------------------------
     0x4A6E: "CONTROL", 0x4AA7: "FORM", 0x4A12: "ME", 0x4A15: "ME_IMPLICIT",
@@ -105,6 +106,8 @@ NAMES: dict[int, str] = {
     0x3788: "PUSH.R8 0", 0x3791: "PUSH.R8 1", 0x379A: "PUSH.R8 2", 0x37A7: "PUSH.R8 3",
     0x37AE: "PUSH.R8 4", 0x37B5: "PUSH.R8 5", 0x37BC: "PUSH.R8 6", 0x37C3: "PUSH.R8 7", 0x37CA: "PUSH.R8 8", 0x37D8: "PUSH.R8 10",
     0x387A: "PUSH.R8", 0x389A: "PUSH.T",
+    0x385E: "PUSH.S", 0x384C: "PUSH.C", 0x382E: "PUSH.I", 0x3887: "PUSH.L",  # 1.5!, 1@ (int64 / 10000), &O17, &O17&
+    0x49A6: "REDIM_AS",  # ReDim a(n) As <type>: u16 type (1 % 2 & 3 ! 4 # 5 @ 7 $), u16
     0x37E2: "PUSH.B False", 0x383D: "PUSH.B True",
     # --- conversions ---------------------------------------------------
     0x0EB0: "CVT.I>V", 0x0E8B: "CVT.I>R8", 0x0E7B: "CVT.I>L", 0x0F1C: "CVT.L>V",
@@ -169,6 +172,11 @@ NAMES: dict[int, str] = {
     0x70D5: "FIELD_GET.T",
     0x6D00: "FIELD_SET.I", 0x6BD2: "FIELD_GET.I", 0x6D9B: "FIELD_SET.V", 0x6C6C: "FIELD_GET.V",
     0x70EE: "FIELD_SET.T", 0x6C52: "FIELD_GET.D", 0x6D1C: "FIELD_SET.L", 0x6D7F: "FIELD_SET.D",
+    0x6C10: "FIELD_GET.C", 0x6C35: "FIELD_GET.S", 0x6D3B: "FIELD_SET.C", 0x6D60: "FIELD_SET.S", 0x6FEB: "FIELD_SET.T",
+    0x0729: "AUDT",  # element of an array of Types: u16 dims, u16 slot (indices on the stack)
+    0x7210: "FIELD_ALOAD", 0x72DB: "FIELD_ASTORE",  # array field `r.a(i)`: u16 dims, u16 field
+    0x2FB1: "STORE.UDT",  # `w = r` (whole Type): u16 target slot
+    0x6F79: "OBJ_FREE",   # epilogue: release a local Type (like 4FA6 for object variables)
     0x6BF1: "FIELD_GET.L", 0x31B0: "LOAD.UDT", 0x31EE: "LOAD.UDT_LOC", 0x31CF: "ADDR.MOD",  # ADDR.MOD: a module variable by reference (Get #)
 }
 
@@ -216,6 +224,7 @@ METHODS = {
 # they make the corpus lines lift exactly.
 SEM: dict[int, tuple[str, str, int]] = {
     # from probes/builtins (`x = <call>` per builtin)
+    0x0AE9: ("fn", "LBound", 2),
     0x5401: ("kw", "MkDir", 1), 0x540D: ("kw", "RmDir", 1), 0x53FB: ("kw", "Kill", 1), 0x5334: ("kw", "AppActivate", 1),
     0x535D: ("kw", "SendKeys", 2), 0x3749: ("kw", "Reset", 0), 0x7428: ("kw", "Error", 1), 0x53F3: ("kw", "SetAttr", 2),
     0x5170: ("pass", "", 0), 0x4BC0: ("pass", "", 0),  # Variant argument / result of a runtime function (op 0DFA)

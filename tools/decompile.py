@@ -36,8 +36,15 @@ from opcodes import NAMES  # noqa: E402
 from vbdecl import MOD_SIZE, GlobalImage, const_literal, word  # noqa: E402
 
 SUFFIX = {"I": "%", "L": "&", "S": "!", "D": "#", "C": "@", "T": "$", "V": ""}
-TYPE_NAME = {"I": "Integer", "L": "Long", "S": "Single", "D": "Double", "C": "Currency", "T": "String",
-             "V": "Variant"}
+class _TypeNames(dict):
+    def __missing__(self, t: str) -> str:  # "F<n>": fixed-length String
+        if t.startswith("F") and t[1:].isdigit():
+            return f"String * {t[1:]}"
+        raise KeyError(t)
+
+
+TYPE_NAME = _TypeNames({"I": "Integer", "L": "Long", "S": "Single", "D": "Double", "C": "Currency", "T": "String",
+                        "V": "Variant"})
 RET_TYPE = {1: "I", 2: "L", 3: "S", 4: "D", 5: "C", 6: "V", 7: "T"}  # procedure record +13
 EVENT_TYPE = {1: "Integer", 2: "Long", 3: "Single", 4: "Double", 5: "Currency", 6: "String", 8: "Control"}
 EVENT_PARAMS = {  # conventional parameter names (the IDE's templates)
@@ -65,6 +72,7 @@ class Var:
     stored: bool = False
     udt: bool = False
     udt_type: int | None = None  # Type of an array's elements
+    fixed: bool = False  # String * n (length in the slot before)
     obj: str | None = None  # object variable's class (As Control, As frmX, ...)
     glob: int | None = None  # global offset, for a reference to a global object array
     copy_type: str | None = None  # a Global Const's copy: its type (its size in the slots)
@@ -368,10 +376,13 @@ class Decompiler:
                     x = struct.unpack_from("<H", i.operand, len(i.operand) - 2)[0]
                     if word(self.image, base + x) >> 8 == 0x80:  # `0x80NN, global offset`: a global As New array
                         vars_.setdefault(x, Var(x, "MOD")).glob = word(self.image, base + x + 2)
-                if n in ("LOAD.UDT", "LOAD.UDT_LOC") and i.operand:
-                    last_udt = struct.unpack_from("<H", i.operand)[0]
-                    v = vars_.setdefault(last_udt, Var(last_udt, "LOC" if n.endswith("LOC") else "MOD"))
+                if n in ("LOAD.UDT", "LOAD.UDT_LOC", "AUDT", "STORE.UDT") and i.operand:
+                    last_udt = struct.unpack_from("<H", i.operand, len(i.operand) - 2)[0]
+                    scope = "LOC" if n.endswith("LOC") or (n == "STORE.UDT" and self.value(base, last_udt) < 0) \
+                        else "MOD"
+                    v = vars_.setdefault(last_udt, Var(last_udt, scope))
                     v.udt = True
+                    v.array |= n == "AUDT"
                     if k not in v.procs:
                         v.procs.append(k)
                     continue
@@ -379,6 +390,8 @@ class Decompiler:
                     td = self.gimg.field_type.get(struct.unpack_from("<H", i.operand, len(i.operand) - 2)[0])
                     if td:
                         udt[last_udt] = td.g
+                        if vars_[last_udt].array:
+                            vars_[last_udt].udt_type = td.g
                     last_udt = None
                 if n == "ARRAY_REF" and i.operand:  # a whole array (LBound, Erase, argument `a()`)
                     slot = struct.unpack_from("<H", i.operand, len(i.operand) - 2)[0]
@@ -416,6 +429,11 @@ class Decompiler:
                     v.scope = "REF"
                 if n.startswith(("STORE", "ASTORE", "ADDR", "AADDR")):
                     v.stored = True
+                if n.startswith("ADDR") and not v.obj and j + 1 < len(info.insns) \
+                        and NAMES.get(info.insns[j + 1].op) == "SET_OBJ":  # `Set x = ...`: an object variable
+                    kind = word(self.image, base + slot)  # its record: kind, BP offset
+                    v.obj = self.sym.objvar_types.get(seg, {}).get(slot) or OBJ_KINDS.get(kind) \
+                        or P.CLASS_BY_KIND.get(kind) or "Object"
                 v.array |= arr
                 if arr and j + 1 < len(info.insns):  # array of a Type: `a(i).field`
                     nn = NAMES.get(info.insns[j + 1].op, "")
@@ -425,13 +443,25 @@ class Decompiler:
                             v.udt_type = td.g
                 if k not in v.procs:
                     v.procs.append(k)
-                if sfx:
+                if t == "F":  # fixed-length String: its length is in the slot before
+                    t = f"F{self.value(base, slot - 2, False)}"
+                    v.fixed = True
+                elif sfx:
                     t = TYPE_OF_SUFFIX[sfx]
                 elif t == "L/T":
                     nxt = NAMES.get(info.insns[j + 1].op, "") if j + 1 < len(info.insns) else ""
                     t = lt_hint(nxt)
-                if t in SUFFIX:
+                if t in SUFFIX or t.startswith("F"):
                     v.votes[t] = v.votes.get(t, 0) + 1
+
+        # object variables' classes (from their records) name their properties: annotate again
+        typed = {x: v.obj for x, v in vars_.items() if v.obj}
+        if seg and any(self.sym.objvar_types.get(seg, {}).get(x) != c for x, c in typed.items()):
+            known = self.sym.objvar_types.setdefault(seg, {})
+            for x, c in typed.items():
+                known.setdefault(x, c)
+            for info in infos:
+                info.notes = self.sym.annotate(seg, info.insns)
 
         # control/form slots referenced by each procedure
         refs: dict[int, tuple[int, str]] = {}  # slot -> (first proc, name)
@@ -465,6 +495,7 @@ class Decompiler:
         if m["kind"] == "frm":
             owned |= {s for s, v in vars_.items() if v.scope == "GLB"}
         # control/property operands point at their record, 2 bytes past a variable's slot
+        owned |= {s - 2 for s, v in vars_.items() if getattr(v, "fixed", False) and v.scope != "MOD"}
         first_owned = min(owned | {r - 2 for r in refs} | {s for s, v in vars_.items() if v.scope == "GLB"
                                                and s >= m["decl_start"] and not self.is_global_slot(base, s)},
                           default=word(self.image, base) - 1 if not infos else 1 << 16)
@@ -525,6 +556,9 @@ class Decompiler:
                 v = m["vars"].get(s)
                 nxt = next((x for x in known if x > s), end)
                 g = self.value(m["image"], s, False)
+                if v is None and getattr(m["vars"].get(s + 2), "fixed", False):  # a String * n's length
+                    s += 2
+                    continue
                 if v is None and g in gl.types:  # reference to a Type (first `As T` in the module)
                     items.append(("typeref", s, None))
                     s += 2
@@ -535,6 +569,12 @@ class Decompiler:
                         td = next((t for t in gl.types.values() if 0 <= nxt - s - t.size <= 4), None)
                         if td:
                             m["udt"][s] = td.g
+                    if s in m["udt"] and v.array:  # array of a Type
+                        dims, size = self.array_dims(m["image"], s)
+                        td = gl.types.get(v.udt_type or m["udt"][s])
+                        items.append(("dim", s, f"({dims}) As {td.name if td else 'Variant'}"))
+                        s += size
+                        continue
                     if s in m["udt"]:
                         td = gl.types.get(m["udt"][s])
                         items.append(("dim", s, f"As {td.name}" if td else "As Variant"))
@@ -557,7 +597,7 @@ class Decompiler:
                         continue
                     else:
                         items.append(("dim", s, f" As {TYPE_NAME[t]}"))
-                    s += MOD_SIZE[t]
+                    s += MOD_SIZE[t] if t in MOD_SIZE else max(nxt - s, 2)
                     continue
                 kind, g2 = self.value(m["image"], s, False), self.value(m["image"], s + 2, False)
                 newobj = self.sym.objvar_types.get(m["seg"], {}) if m["seg"] else {}
@@ -916,7 +956,7 @@ class Decompiler:
         names: dict[int, str] = {}
         for it in m["items"]:
             if it[0] in ("dim", "const"):
-                names[it[1]] = f"{'K' if it[0] == 'const' else 'm'}{it[1]:X}"
+                names[it[1]] = f"K{it[1]:X}" if it[0] == "const" else mod_name(it[1])
             elif it[0] == "newobj":
                 names[it[1]] = f"G{it[3]:X}" if m["kind"] == "bas" else mod_name(it[1])
                 self.global_name[it[3]] = names[it[1]]
@@ -1548,7 +1588,7 @@ class Decompiler:
             return note.rpartition(".")[2] if note else None
         if n in ("SUBOBJ", "CTLARRAY_OF"):
             return note.rpartition("!")[2].rpartition(".")[2] or None
-        if n.startswith(("FIELD_GET", "FIELD_SET", "FIELD_ADDR")) and slot is not None:
+        if n.startswith(("FIELD_GET", "FIELD_SET", "FIELD_ADDR", "FIELD_ALOAD", "FIELD_ASTORE")) and slot is not None:
             return f"F{slot:X}"  # field record offset, as in the Type declaration
         if n == "TYPEOF_IS" and slot is not None:
             nforms = self.forms

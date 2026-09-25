@@ -800,6 +800,8 @@ def decode(rt: Runtime, data: bytes, p: Proc) -> tuple[list[Insn], str | None]:
     def run(pc: int, depth: int):
         out = []
         while pc < p.end:
+            if pc + 2 > min(p.end, len(data)):
+                return None  # an odd candidate length ran past the end
             (op,) = struct.unpack_from("<H", data, pc)
             if depth and not rt.plausible(op):
                 return None  # a candidate length that exposes a non-handler word is wrong

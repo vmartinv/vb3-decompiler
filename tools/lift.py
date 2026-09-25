@@ -155,6 +155,7 @@ def lift(code: list[tuple[int, bytes]], ids: dict[int, int] | None = None,
             st[-1].t = result_type(prev_name)
 
     let_at = None  # `Let`: prefixes the next statement
+    redim_as = None  # `ReDim a(n) As T`
     write_next = False  # `Write #`: the next Print # statement is a Write
     for k, (op, operand) in enumerate(code):
         if let_at is not None and len(out) > let_at:
@@ -338,6 +339,21 @@ def lift(code: list[tuple[int, bytes]], ids: dict[int, int] | None = None,
             st.append(E(f"{nm(f'glb{slot_of(operand):x}')}({', '.join(i.text for i in idx)})"))
         elif name in ("LOAD.UDT", "LOAD.UDT_LOC"):
             st.append(E(nm(f"u{slot_of(operand):x}")))
+        elif name == "AUDT":
+            n = struct.unpack_from("<H", operand)[0]
+            idx = [pop() for _ in range(n)][::-1]
+            st.append(E(f"{nm(f'u{slot_of(operand):x}')}({', '.join(i.text for i in idx)})"))
+        elif name in ("FIELD_ALOAD", "FIELD_ASTORE"):
+            rec = pop()
+            n = struct.unpack_from("<H", operand)[0]
+            idx = [pop() for _ in range(n)][::-1]
+            ref = f"{rec.text}.{nm(f'f{slot_of(operand):x}')}({', '.join(i.text for i in idx)})"
+            if name == "FIELD_ALOAD":
+                st.append(E(ref))
+            else:
+                out.append(f"{ref} = {pop().text}")
+        elif name == "STORE.UDT":
+            out.append(f"{nm(f'u{slot_of(operand):x}')} = {pop().text}")
         elif name.startswith("FIELD_SET"):
             rec, v = pop(), pop()
             out.append(f"{rec.text}.{nm(f'f{slot_of(operand):x}')} = {v.text}")
@@ -371,7 +387,7 @@ def lift(code: list[tuple[int, bytes]], ids: dict[int, int] | None = None,
             st.append(E(f"{pop().text}.{nm(f'f{slot_of(operand):x}')}"))
         elif name == "PUSH.L":  # the entry point keeps the literal's radix: 388A hex, 388D decimal
             v = struct.unpack_from("<i", operand)[0]
-            st.append(E(f"&H{v & 0xFFFFFFFF:X}&" if op == 0x388A else
+            st.append(E(f"&H{v & 0xFFFFFFFF:X}&" if op == 0x388A else f"&O{v & 0xFFFFFFFF:o}&" if op == 0x3887 else
                         f"{v}&" if -32768 <= v <= 32767 else str(v), t="L"))
         elif name == "DO":
             out.append("Do")
@@ -424,8 +440,13 @@ def lift(code: list[tuple[int, bytes]], ids: dict[int, int] | None = None,
             st.append(E(f"{nm(f'a{slot:x}').rstrip('$')}$({', '.join(dims)})"))  # 0768: `ReDim a$(...)`
         elif name == "RET_SLOT":
             ret_value.append(len(st))
+        elif name == "REDIM_AS":
+            redim_as = {1: "Integer", 2: "Long", 3: "Single", 4: "Double", 5: "Currency", 7: "String"}.get(
+                struct.unpack_from("<H", operand)[0], "Variant")
         elif name in ("REDIM", "REDIM_PRESERVE"):
-            out.append(("ReDim Preserve " if name == "REDIM_PRESERVE" else "ReDim ") + pop().text)
+            out.append(("ReDim Preserve " if name == "REDIM_PRESERVE" else "ReDim ") + pop().text
+                       + (f" As {redim_as}" if redim_as else ""))
+            redim_as = None
         elif name == "UBOUND":
             st.append(E(f"UBound({pop().text})"))
         elif name == "PUSH_NOTHING":
@@ -463,12 +484,21 @@ def lift(code: list[tuple[int, bytes]], ids: dict[int, int] | None = None,
                 st.append(E(parts[1].rstrip("?")))
             elif name == "PUSH.T":
                 ln = struct.unpack_from("<H", operand, 4)[0]
-                st.append(E('"' + operand[6:6 + ln].decode("latin-1") + '"'))
+                st.append(E('"' + operand[6:6 + ln].decode("latin-1").replace('"', '""') + '"'))
             elif name == "PUSH.R8":
                 st.append(E(repr(struct.unpack_from("<d", operand)[0])))
+            elif name == "PUSH.S":  # shortest text that reads back as the same Single
+                f = struct.unpack_from("<f", operand)[0]
+                txt = next(t for d in range(1, 10) if struct.pack("<f", float(t := f"{f:.{d}g}")) == operand[:4])
+                st.append(E(txt + "!", t="S"))
+            elif name == "PUSH.C":
+                v = struct.unpack_from("<q", operand)[0]
+                txt = f"{v // 10000}" + (f".{v % 10000:04d}".rstrip("0") if v % 10000 else "")
+                st.append(E(txt + "@", t="C"))
             else:
                 v = struct.unpack_from("<h", operand)[0]
-                st.append(E(f"&H{v & 0xFFFF:X}" if op == 0x3831 else str(v)))  # 3831: hex literal
+                st.append(E(f"&H{v & 0xFFFF:X}" if op == 0x3831 else f"&O{v & 0xFFFF:o}" if op == 0x382E
+                            else str(v)))  # 3831: hex literal, 382E: octal
         elif fam in BINOPS:
             b, a = pop(), pop()
             t, p = BINOPS[fam]
@@ -624,7 +654,9 @@ def lift(code: list[tuple[int, bytes]], ids: dict[int, int] | None = None,
     for t in out:
         if merged and merged[-1] == "Else":
             merged[-1] = "Else " + t
-        elif merged and t == "Else" and merged[-1].startswith("If "):
+        elif merged and t.startswith("Else "):  # only single-line Ifs have Else inside a line
+            merged[-1] += " " + t
+        elif merged and t == "Else":
             merged[-1] += " Else"
         elif merged and merged[-1].endswith(" Else"):
             merged[-1] += " " + t

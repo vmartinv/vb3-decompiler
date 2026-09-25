@@ -46,7 +46,7 @@ def main():
     code = header + "\n" + "".join(
         f"\nSub P{j:04d} ()\n" + "".join(f"    {re.sub(r'\bL(\d)\b', rf'L\1x{j}', ln)}\n" for ln in st.split("\n"))
         + "End Sub\n"  # labels are module-wide: L1 -> L1x<j>
-        for j, (_, st) in enumerate(lines))
+        for j, (_, st) in enumerate(lines)) + g.get("footer", "")
     mak = B.write_case_project(WORK / a.probe, a.probe.upper()[:8], [(0, dict(code=code, bas=g.get("bas", False)))])
     if not compile_mak(mak):
         sys.exit(f"compile failed: {mak.with_suffix('.fail.png')}")
@@ -56,10 +56,10 @@ def main():
     seen: dict[str, list[str]] = {}
     for (label, _), p in zip(lines, procs):
         ins, _ = P.decode(rt, segs[p.segment - 1].data, p)
-        ops = [(n, i.op) for i in ins if (n := op_name(rt, i)) not in ("STMT", "RET", "TRAP")]
+        ops = [(n, i.op, i.operand) for i in ins if (n := op_name(rt, i)) not in ("STMT", "RET", "TRAP")]
         if a.a:
-            print(f"{label:24s} {' '.join(n for n, _ in ops)}")
-        for n, op in ops:
+            print(f"{label:24s} " + " ".join(n + (f"({o.hex()})" if o and n.startswith("op_") else "") for n, _, o in ops))
+        for n, op, _ in ops:
             if n.startswith("op_"):
                 seen.setdefault(n, []).append(label)
     for n, labels in sorted(seen.items()):
