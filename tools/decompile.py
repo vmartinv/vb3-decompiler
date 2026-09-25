@@ -1044,10 +1044,14 @@ class Decompiler:
                 names[s] = f"{pre}{s:X}"
         for s, (_, n) in refs.items():
             names[s] = n
+        start = word(self.res.get(1, b""), 4)  # startup: 0xFFFF a form, else Sub Main's record | 1
         for info in infos:
             ev = self.events.get(info.proc.record)
             if ev:
                 info.name, info.event = ev, True
+            elif start != 0xFFFF and info.proc.record == start & ~1:
+                info.name = "Main"
+                self.proc_name[info.proc.record] = "Main"
         self.fit_names(m)
         base = m["image"]
         owned_all = {s for s, v in vars_.items() if v.scope in ("LOC", "REF")} | {r - 2 for r in refs} | set(refs)

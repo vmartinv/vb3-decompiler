@@ -672,6 +672,9 @@ def resolve_symbols(segs: list[Segment], rt: "Runtime", res: dict[int, bytes]) -
                 continue
             if kind == "objvar":
                 continue  # untyped (As Control/Form generic) or not in this image
+            if kind == "control" and w0 >> 8 == 0x60 and w1 >> 8 == 0xC0:  # the form's object property (ActiveForm)
+                mep[slot] = w1 & 0xFF
+                continue
             if kind == "control":
                 idx = w1 & 0x7FFF
                 if not (w1 & 0x8000 and w2 == 0 and w0 >> 8 == 0x40) or fi < 0 \
@@ -968,6 +971,10 @@ class Symbols:
             if n in ("CONTROL", "CTLARRAY", "CTLARRAY_GET", "CTLARRAY_SET", "FORM") and i.operand:
                 slot = struct.unpack_from("<H", i.operand, len(i.operand) - 2)[0]
                 text = sym.get(slot, "")
+                idx = self.meprops.get(seg, {}).get(slot) if n == "CONTROL" else None
+                props = self.rt.property_lists().get(self.form_class.get(form_of_seg, "Form"), [])
+                if not text and idx is not None and idx < len(props) and props[idx]:
+                    text = props[idx]  # an object-valued property of the form itself: `ActiveForm`
             elif n in ("PGET", "PSET", "PGET_IDX", "PSET_IDX") and len(i.operand) >= 2:
                 nn = struct.unpack_from("<H", i.operand, len(i.operand) - 2)[0]
                 props = self.rt.property_lists().get(cls, []) if cls else []
@@ -1018,7 +1025,8 @@ class Symbols:
                 elif n is None and (typed or sym.get(slot)) == "Forms":  # Forms(i)
                     cls, other = "Form", None
                 else:
-                    cls = typed or (self.classes.get((form_of_seg, text)) if text else None)
+                    cls = typed or (self.classes.get((form_of_seg, text)) if text else None) \
+                        or OBJECT_PROPERTY_CLASS.get(text)
                     other = self.tables.get(form_of_seg) if typed == "Form" else None
             elif n in ("CTLARRAY_OF", "SUBOBJ"):
                 f, _, c = text.partition("!")
