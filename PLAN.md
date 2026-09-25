@@ -63,15 +63,27 @@ Remaining, by place (`exediff`, `battery.py <name> --exe`):
   (deftype, types, names, objects, statements cases).
 - modlevel (0/16): global-name sizes shift the global image of every
   later module (one root cause per project).
-- types: Static locals (rec+18, decl+50), Type all fields / nested.
+- types: Static locals (rec+18, decl+50) — confirmed unrecoverable: a
+  scalar `Static x As T` local and a same-type module `Dim` referenced by
+  only one procedure compile to byte-identical p-code (checked by
+  compiling both directly), differing only in these two fields with no
+  data-level marker (unlike Static arrays, which carry an explicit
+  0xC1/0xC2 flag). A single-owning-procedure heuristic was tried and
+  made the types battery net worse (49/69 -> 47/69, plus a p-code
+  regression); not worth revisiting without a new signal. Type all
+  fields / nested still open.
 - declares: Alias/ordinal names (decl+0/+64), parameter types.
 - timecard: two words of a module list swapped (declaration order).
 - biblio: data image (3121 bytes).
 
 ## Phase 4: usage
-- Add a single entry point: `vb3decompile <exe> <outdir>` in `tools/`. It writes the .mak, .frm and .bas files, extracts resources (icons, .frx), and has a `--verify` flag that rebuilds with `/MAKE` and compares.
-- Rewrite the README usage section and the tools list; CLAUDE.md stays short.
-- Final pass: run all batteries plus the samples in `--exe` mode, then commit.
+Done: `tools/vb3decompile.py <exe> <outdir> [--verify]` (icons/.frx are
+already written by `decompile.py`'s generic binary-property handling, so
+no separate icon extraction was needed); README usage section and tools
+list rewritten.
+
+**Remaining:** final pass — run all batteries plus the samples in `--exe`
+mode, then commit.
 
 ## Critical files
 - `tools/decompile.py` (declarations, naming, records)
