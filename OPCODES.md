@@ -467,6 +467,11 @@ still copied from the original source).
   (62A7) doesn't. Code layout is sorted by name, case-insensitively.
 - A module's leading Function/Declare slots can hold another module's
   procedure record: an external call slot allocated at first use.
+- Declare record +24: cumulative offset in the module's Declare/Type
+  table: 20 + 8 per parameter each (types don't count), so an unused
+  Declare's parameter count is the gap to the next one; declarations
+  record +46: where the module's Types start in it (below the Declares'
+  offsets: the Types come first in the text).
 - Declarations record +44: 4/8 if any DefType, 0xFFFF if none (flag
   only; the letters and types aren't stored, and don't type Consts). Each
   DefType range letter is a module name-table entry, shared with a

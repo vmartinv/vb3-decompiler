@@ -6,7 +6,7 @@ VB3 language feature has a battery, and every case round-trips to
 identical p-code and form resources. What's left is whole-exe byte
 identity (Phase 3) and a final usage pass (Phase 4).
 
-Current numbers: batteries 949/969 exe-identical (all p-code identical);
+Current numbers: batteries 962/969 exe-identical (all p-code identical);
 samples 16/22 exe-identical (all 483/483 procedures p-code identical).
 
 "Complete" (Phase 3's target): with names padded to their original
@@ -29,22 +29,16 @@ picking per item based on how many unknowns and constraints it has.
    .bas; `fit_global_inits` pads for the global list's bucket order but
    reverts when that breaks a module's +30 (it keeps only the total).
    Needed: a solver over all modules' +30 plus the project +30 and the
-   bucket order (`initlists` Globals cases, `modlevel` 003/005,
-   `objects` 009, `vbx` 007).
-2. **Static locals**: scalar Statics are recovered from procedure record
-   +18 (module variable table, OPCODES.md; `fit_entries`) when trailing
-   module Dims make the module part too big. Left: `Static Sub`/`Static
-   Function` and Static locals mixed with other failures (names 023,
-   statements 063/064), and modules where the +18 model is still off by
-   2 (item boundary rounding) or too small.
-3. **declares**: Aliases are recovered (from pool lengths); left:
-   `+30` sums with Declare parameters (`ByRef String`, `param types`,
-   `user type param`) and `many declares` (decl +140..).
+   bucket order (`initlists` Globals cases).
+2. **print 236 (Picture.Print)**: unused locals' types (frame size
+   record +0, numbered-local count +10) chosen wrong by `trailing_locals`.
+3. **Samples** (calldlls 53, mdinote 32, recedit 9, mcitest 6, objects 2,
+   textedit 2 bytes): mostly table/+30 and image differences; localize
+   each with hybrid splicing against the original source (CLAUDE.md).
 4. **Init-list order** (see OPCODES.md "Init lists"): fitted for module
    lists, Static arrays and the global list (`fit_inits`,
-   `fit_global_inits`, `order_pads`); fixed `timecard` and `biblio`.
-   `initlists` Globals cases still differ in module/project +30 (global
-   name lengths vs. the modules that reference them: item 1).
+   `fit_global_inits`, `order_pads`). `initlists` Globals cases still
+   differ (item 1).
 5. **Phase 4 final pass**: once the above settle, run every battery
    plus every sample in `--exe` mode and commit. (`tools/vb3decompile.py`
    itself is done; icons/.frx already come for free from

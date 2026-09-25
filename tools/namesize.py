@@ -83,7 +83,7 @@ def identifiers(code: str) -> dict[str, str]:
         if low in BUILTINS and (m.group(2) == "$" or "(" in m.group(3) or low not in PROPS):
             continue
         out.setdefault(low, tk)
-    if "b" in out:  # Line ..., B also registers BF
+    if "b" in out and re.search(r"(?im)\bLine\b.*,\s*B\s*$", code):  # Line ..., B also registers BF
         out.setdefault("bf", "BF")
     return out
 

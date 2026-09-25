@@ -54,7 +54,7 @@ EVENT_PARAMS = {  # conventional parameter names (the IDE's templates)
     "LinkOpen": "Cancel", "Unload": "Cancel", "QueryUnload": "Cancel UnloadMode",
     "LinkExecute": "CmdStr Cancel", "Error": "DataErr Response", "Validate": "Action Save",
     "Collapse": "ListIndex", "Expand": "ListIndex", "PictureClick": "ListIndex",
-    "PictureDblClick": "ListIndex",
+    "PictureDblClick": "ListIndex", "Updated": "Code", "Click": "Value",  # (OLE; Threed's SSCheck/SSOption)
 }
 LABEL, LABEL_WIDE = 0x4965, 0x48BE  # LABEL_WIDE: + spaces before the statement on its line
 OBJ_KINDS = {1: "Form", 2: "MDIForm", 4: "Control", 0x14: "Object"}  # object variable kinds besides control classes
@@ -628,8 +628,9 @@ class Decompiler:
         for k in range(len(items) - 1, -1, -1):
             it = items[k]
             v = m["vars"].get(it[1])
-            if v is None or not v.procs or len(it) > 3 or not (
-                    it[0] == "const" or (it[0] == "dim" and len(v.procs) == 1)):  # a Const: a Global Const's copy
+            filler = len(it) == 4 and it[3] == "filler"  # unused: a procedure's unused Static
+            if not filler and (v is None or not v.procs or len(it) > 3 or not (
+                    it[0] == "const" or (it[0] == "dim" and len(v.procs) == 1))):  # a Const: a Global Const's copy
                 return items
             if size(items[:k], it[1]) == want:
                 m["first_owned"] = it[1]
@@ -933,6 +934,7 @@ class Decompiler:
             if kind == "Function":
                 line += f" As {TYPE_NAME[RET_TYPE.get(t[r + 13], 'V')]}"
             out.append(line)
+            m.setdefault("decl_offs", []).append(word(t, r + 24))
         return out
 
     def fit_tail_alias(self, mods: list[dict]) -> None:
@@ -1041,6 +1043,12 @@ class Decompiler:
                     t = {"L/T": "L", "": "I", "V": "I"}.get(t, t)
                     out.append(f"ByVal {pn}{j + 1} As {TYPE_NAME.get(t, 'Integer')}")
             return out
+        if not words:  # unused: record +24 grows by 20 + 8 per parameter to the next Declare's
+            nxt = next((x for x in range(r + 56, len(self.table) - 55, 8) if x not in self.by_record
+                        and self.is_declare(x)), None)
+            gap = word(self.table, nxt + 24) - word(self.table, r + 24) - 20 if nxt is not None else -1
+            if gap > 0 and gap % 8 == 0 and gap // 8 <= 30:
+                return [f"ByVal {pn}{k + 1} As Integer" for k in range(gap // 8)]  # (types don't matter)
         k = 0
         while words > 0:
             k += 1
@@ -1076,7 +1084,14 @@ class Decompiler:
                 out.append(f"Dim {m['names'].get(it[1], mod_name(it[1]))}{it[2] if it[2][0] in '( ' else ' ' + it[2]}")
         for g in pending:
             out += types[g].lines(gtypes)
-        out = decl_lines + out
+        # declarations record +46: where the module's Types start in the table that
+        # Declare records' +24 also index (Types first: they come before the Declares)
+        ends = [j for j, x in enumerate(out) if x == "End Type"]
+        if ends and decl_lines and word(self.table, word(self.image, m["image"] - 2) + 4 + 46) \
+                < min(m.get("decl_offs", [0])):
+            out = out[:ends[-1] + 1] + decl_lines + out[ends[-1] + 1:]
+        else:
+            out = decl_lines + out
         # declarations record (the word before the module's image + 4):
         # +18 flags (1 Option Base 1, 0x40 Option Explicit, 0x800 Option Compare, 0x8000 tabs), +50 line count
         rec = word(self.image, m["image"] - 2) + 4
@@ -1171,6 +1186,7 @@ class Decompiler:
             want = (word(self.table, word(self.image, m["image"] - 2) + 4 + 12) - word(self.image, m["image"])) // 2
             if d := self.item_count(m) - want:  # unused Variants (2 slots, 1 item) vs other locals
                 m["nv_pick"], m["nv_delta"] = max(0, -d), d
+                m["fill_merge"] = max(0, d)  # too many: unused Statics pair up (Long)
                 m.pop("spans", None)
                 m["lines"] = self.emit_module(m)
         self.renamed: set[str] = set()
@@ -1871,6 +1887,30 @@ class Decompiler:
                 local[:] = [x for x in local if x[1] != s]
                 d = want - name_size("\r\n".join(m["lines"]))
                 break
+        # a Declare's parameters are its own too: they can take a local's name
+        targets = [m["names"][s] for s in locs]
+        for i in reversed(range(len(m["lines"]))):
+            ln = m["lines"][i]
+            if d >= 0 or not re.match(r"(Global\s+)?Declare\s", ln):
+                continue
+            head, _, params = ln.partition("(")
+            for pn in reversed(re.findall(r"(?:^|,)\s*(?:ByVal\s+)?((?:P|Arg)\d+)\b", params)):
+                if d >= 0:
+                    break
+                ln = m["lines"][i]
+                if any(re.search(rf"(?<![\w.]){pn}\b", x, re.I) for j, x in enumerate(m["lines"]) if j != i):
+                    continue
+                inline = {w.lower() for w in re.findall(r"[A-Za-z]\w*", ln)}
+                new = next((t for t in targets if t.lower() not in inline), None)
+                if new is None:
+                    break
+                lines0 = m["lines"]
+                m["lines"] = lines0[:i] + [re.sub(rf"(?<![\w.]){pn}\b", new, ln)] + lines0[i + 1:]
+                if ok0 and not (self.frees_ok(m) and self.inits_ok(m)):
+                    m["lines"] = lines0
+                    continue
+                local[:] = [x for x in local if x[1] != pn.lower()]
+                d = want - name_size("\r\n".join(m["lines"]))
         return d
 
     def fit_size(self, m: dict) -> None:
@@ -1894,6 +1934,8 @@ class Decompiler:
         labels = {mt.group(1).lower() for ln in m["lines"] if (mt := re.match(r"\s*(L[0-9A-Fa-f]+):", ln))}
         labels |= {x.lower() for ln in m["lines"] if ln.startswith(("Declare ", "Global Declare "))
                    for x in re.findall(r"[(,]\s*(?:ByVal\s+)?((?:P|Arg)\d+)\b", ln)}  # Declare parameters
+        labels |= {x.lower() for ln in m["lines"] if re.match(r"(Static\s+)?(Sub|Function)\s", ln)
+                   for x in re.findall(r"[(,]\s*(?:ByVal\s+)?(u\d+)\b", ln)}  # unused parameters
         labels |= {x.lower() for ln in m["lines"] if ln.lstrip().startswith(("Dim ", "Static "))
                    for x in re.findall(r"\b(f[0-9A-F]+)(?:\(.*?\))? As\b", ln)}  # unused locals (fillers)
         local += [(order[n.lower()], s) for s, n in m["names"].items() if n.lower() in order and m["vars"].get(s)
@@ -2409,8 +2451,15 @@ class Decompiler:
                         items.append((z, "dim", f"f{z:X}", f" As {t}", Var(z, "LOC")))
                         z += 4 if t == "Variant" else 2
                 else:
-                    for z in range(end, n - 1, 2):
+                    z = end
+                    while z < n - 1:
+                        if m.get("fill_merge") and z + 2 < n - 1:  # 4 bytes, one item
+                            m["fill_merge"] -= 1
+                            items.append((z, "static", f"f{z:X}", " As Long", Var(z, "MOD")))
+                            z += 4
+                            continue
                         items.append((z, "static", f"f{z:X}", " As Integer", Var(z, "MOD")))
+                        z += 2
         items.sort(key=lambda it: (it[0], it[1]))
 
         texts = [re.sub(r'"[^"]*"', lambda x: " " * len(x.group(0)), t or "") for _, t in body]
@@ -2421,7 +2470,7 @@ class Decompiler:
             if mt and not re.match(r"^\s*(If|ElseIf|For|Select|Case|Do|Loop|While)\b", t, re.I):
                 return mt.group(1) + mt.group(4) + " " + mt.group(3)
             return t
-        texts = [compile_order(t) for t in texts]
+        texts = [":".join(compile_order(x) for x in t.split(":")) for t in texts]  # (strings are blanked)
 
         def appear(name: str):
             base_name = re.escape(name.rstrip("%&!#@$"))
@@ -2447,7 +2496,9 @@ class Decompiler:
             # reference), the variable was declared implicitly there
             pos = 0 if last == (-1, 0) else (last[0] if last[1] < 0 else last[0] + 1)
             implicit_type = "Integer" if m["defint"] else "Variant"
-            if key is not None and key[0] < pos and kind == "dim" and not v.array and not v.udt \
+            # in a Static Sub/Function every local is static: those may be implicit too
+            dimlike = kind == "dim" or (kind == "static" and self.table[info.proc.record + 14] & 0x80 and v is not None)
+            if key is not None and key[0] < pos and dimlike and not v.array and not v.udt \
                     and key[:2] > last and not m["explicit"] and (decl.strip() == f"As {implicit_type}" or key[2]):
                 last = key[:2]
                 self.dim_alloc.append(dict(alloc=(*key[:2], 0)))
@@ -2460,7 +2511,7 @@ class Decompiler:
             dims.setdefault(pos, []).append(f"{word_} {name}{decl if decl[0] in '( ' else ' ' + decl}")
             # could be implicit instead: allocated at its first use
             self.dim_alloc.append(dict(alloc=(pos, -1, j), pos=pos, line=dims[pos][-1], key=key and (*key[:2], 0),
-                                       drop=key is not None and key[0] >= pos and kind == "dim" and not v.array
+                                       drop=key is not None and key[0] >= pos and dimlike and not v.array
                                        and not v.udt and not m["explicit"]
                                        and (decl.strip() == f"As {implicit_type}" or key[2]),
                                        rely=m["defint"] and not (key and key[2])))
