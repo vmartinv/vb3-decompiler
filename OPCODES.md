@@ -392,6 +392,15 @@ still copied from the original source).
   `Option Explicit` (so it orders those lines).
 - Procedures sharing a pool offset (the same general name in several
   modules) get the same name.
+- Global name table: follows the pool's last entry, in text order over
+  the code modules: Globals, Type names, fields (4 + length each). Types
+  and fields store pointers into it, so every Type/field name but the
+  last gets its original length (`fit_types`); the first Type marks the
+  pool's end when no Global precedes it.
+- Procedure record +14 bit 7: `Static Sub`/`Static Function`.
+- RT_RCDATA 1: the word after `FF 01` in each VBX/form entry is a heap
+  address that differs between builds of the same source (`exediff`
+  reports it as `rc1.volatile`, not counted as a difference).
 - Fixed-size array descriptor flags (slot +4): low byte element type
   (1 Integer, 2 Long, 3 Single, 4 Double, 5 Currency, 6 Variant,
   7 String, 8 `String * n`, 9 object; length / object kind in the slot

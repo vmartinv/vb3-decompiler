@@ -108,7 +108,9 @@ def run(mak: Path, runtime: Path, vbx_dirs: list[Path], do_compile: bool, verbos
         return None
     rt = P.Runtime(runtime)
     res = compare(a, b, rt, verbose)
-    res["exe"] = sum(len(v) for v in exediff.diff(a, b).values())
+    dd = {k: v for k, v in exediff.diff(a, b).items() if k != "rc1.volatile"}  # (heap addresses: not source)
+    res["exe"] = sum(len(v) for v in dd.values())
+    res["identical"] = res["identical"] or not dd
     print(f"{mak.stem:10s} procs {res['same']}/{res['procs']}" + ("" if res["count_ok"] else " (count differs)")
           + f"  forms {res['forms_same']}/{res['forms']}  image {'=' if res['image'] else '≠'}  table {'=' if res['table'] else '≠'}"
           + ("  EXE IDENTICAL" if res["identical"] else f"  exe {res['exe']} bytes"), flush=True)

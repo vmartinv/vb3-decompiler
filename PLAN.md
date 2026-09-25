@@ -48,24 +48,25 @@ segment, resource region), `battery.py --exe`, `roundtrip.py` (reports
 the shipped exes carry the build machine's paths and project name).
 
 Done: epilogue free order (name-length solver), name-table size (+30)
-fitting, line counts (+50: implicit Variants, joined Dims, trailing
-blank line), Static arrays, unused locals typed from the records,
-unused event-parameter slots, shared pool names, DefType line order.
-Samples: 12/22 identical (the rest 2-60 bytes; biblio 3121). Batteries:
-all p-code identical; exe-identical 846/941 (builtins, controls,
-expressions, forms, graphics, menus, misc complete; print 237/238).
+fitting, line counts (+50), Static arrays, unused locals typed from the
+records, unused event-parameter slots, shared pool names, DefType line
+order, Type/field name lengths, Static Sub, volatile rc1 words.
+Samples: 14/22 identical (mcitest 6, textedit 2, objects 2, timecard 2,
+recedit 9, mdinote 32, calldlls 59, biblio 3121 bytes). Batteries: all
+p-code identical; exe-identical 846/941.
 
-Remaining, by place (`exediff`):
-- table offset 12 record +30/+34 (project name total): global names are
-  sized per module only; needs the compile-time pool end.
-- rc1 per-file words (VBX/form entries): depend on the `.mak` contents
-  (ExeName, IconForm, file order); test by compiling variants.
-- decl+44 DefType table offset (vbterm), the DefType letter table.
-- procedure record +4 (name pool) in the names battery, +18, +26.
-- rc2 module lists in declaration order (timecard: two entries swapped).
-- Type and field names; unused Declares' parameter types and aliases.
-- print/controls/expressions/modlevel/declares batteries: per-case
-  details from `battery.py <name> --exe`.
+Remaining, by place (`exediff`, `battery.py <name> --exe`):
+- Global variable/constant name lengths: only sums are observable
+  (module +30, project record table offset 12 +30/+34, Type pointers as
+  prefix sums of the global name table); distribution is a guess.
+- decl+30 name sizes where no generated name is free to resize
+  (deftype, types, names, objects, statements cases).
+- modlevel (0/16): global-name sizes shift the global image of every
+  later module (one root cause per project).
+- types: Static locals (rec+18, decl+50), Type all fields / nested.
+- declares: Alias/ordinal names (decl+0/+64), parameter types.
+- timecard: two words of a module list swapped (declaration order).
+- biblio: data image (3121 bytes).
 
 ## Phase 4: usage
 - Add a single entry point: `vb3decompile <exe> <outdir>` in `tools/`. It writes the .mak, .frm and .bas files, extracts resources (icons, .frx), and has a `--verify` flag that rebuilds with `/MAKE` and compares.

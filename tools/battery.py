@@ -165,6 +165,8 @@ def per_case_exe(orig_exe: Path, deco_exe: Path, mak: Path) -> dict:
     bas = [f for f in files if f.lower().endswith(".bas")]
     out: dict = {}
     for place, bs in exediff.diff(orig_exe, deco_exe).items():
+        if place == "rc1.volatile":  # differs between builds of the same source
+            continue
         mod = re.match(r"(?:seg\d+\(|rc2\.)?(\w+)", place).group(1) if "." in place or "(" in place else ""
         if re.fullmatch(r"bas\d+", mod):
             mod = bas[int(mod[3:])] if int(mod[3:]) < len(bas) else ""

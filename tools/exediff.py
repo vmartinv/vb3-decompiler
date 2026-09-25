@@ -8,7 +8,8 @@ Every differing byte is attributed to a place: a module's declarations
 record or a procedure record in the table segment (`decl+30`,
 `Form_Load+50`), a code segment, an RCDATA resource (resource 2 split into
 the global image, name pool and module images), or the NE header. Prints
-one line per place: the differing offsets with both values.
+one line per place: the differing offsets with both values. `rc1.volatile`:
+words that differ between two builds of the same source (heap addresses).
 """
 from __future__ import annotations
 
@@ -48,6 +49,17 @@ def places(exe: Path) -> dict:
     return dict(segs=segs, res=res, recs=recs, seg_mod=seg_mod, regions=regions, exe=exe.read_bytes())
 
 
+def volatile_rc1(r1: bytes) -> set[int]:
+    """RT_RCDATA 1 bytes that differ between builds of the same source: in
+    each VBX/form entry, the word after `FF 01` before the file name (a
+    heap address in the IDE)."""
+    import re
+    out = set()
+    for m in re.finditer(rb"\xff\x01(..).[\x21-\x7e]+?\.(?:VBX|FRM)\x00", r1, re.S | re.I):
+        out |= {m.start(1), m.start(1) + 1}
+    return out
+
+
 def where_table(pl: dict, o: int) -> str:
     r = max((r for r in pl["recs"] if r <= o), default=None)
     return f"table+{o}" if r is None else f"{pl['recs'][r]}+{o - r}"
@@ -77,6 +89,9 @@ def diff(a: Path, b: Path) -> dict[str, list[tuple[int, int, int]]]:
             continue
         if k == 2:
             add("rc2", x, y, lambda o: max(r for r in pa["regions"] if r[0] <= o)[1])
+        elif k == 1:
+            vol = volatile_rc1(x)
+            add("rc1", x, y, lambda o: "rc1.volatile" if o in vol else None)
         else:
             add(f"rc{k}", x, y)
     if not out and pa["exe"] != pb["exe"]:
@@ -98,7 +113,8 @@ def main():
     d = diff(Path(a.orig), Path(a.deco))
     for place, bs in d.items():
         print(f"{place:24s} {len(bs):5d}  " + " ".join(f"{o}:{u:02x}/{v:02x}" for o, u, v in bs[:a.max]))
-    print("identical" if not d else f"{len(d)} places differ")
+    real = [p for p in d if p != "rc1.volatile"]
+    print("identical" if not d else "identical but volatile rc1 words" if not real else f"{len(real)} places differ")
 
 
 if __name__ == "__main__":

@@ -917,12 +917,10 @@ class Decompiler:
         # +44 (DefType table offset): 4, + 2 after a comment line, + 4 after Option Explicit
         dt = word(self.table, rec + 44)
         opt_first = m["defint"] and (dt - 4) & 4
-        if m["defint"] and not opt_first:
-            out.insert(0, "DefInt A-Z")
         if flags & 0x40:
             out.insert(0, "Option Explicit")
-        if opt_first:
-            out.insert(1, "DefInt A-Z")
+        if m["defint"]:  # before Option Explicit unless +44 says after
+            out.insert(1 if opt_first else 0, "DefInt A-Z")
         m["comment_first"] = not m["defint"] or bool((dt - 4) & 2)
         j = 0  # more lines than the original: join declarations (`Dim a As X, b As Y`)
         while count and len(out) + 1 > count and j + 1 < len(out):
@@ -1005,6 +1003,7 @@ class Decompiler:
                 m.pop("spans", None)
                 m["lines"] = self.emit_module(m)
         self.renamed: set[str] = set()
+        self.fit_types(mods)
         for m in mods:
             if m["kind"] == "bas":
                 self.fit_globals(m)
@@ -1112,8 +1111,18 @@ class Decompiler:
                     changed = True
         # declarations record +0: the module path's pool offset; with those, every
         # entry but the last is the gap to the next one (4 + length)
+        # Type and field names follow the pool's last entry: the first Type's name marks its end
+        gl = GlobalImage(self.image, image_layout(self.image, len(self.forms))["global_"])
+        tptr = [gl.w(g) for g in gl.types]
+        # (only if no Global precedes the first Type: global names follow the pool in text order)
+        first = next((m for m in mods if m["kind"] == "bas" and (m.get("types") or any(
+            it[0] == "global" for it in m["items"]))), None)
+        if not tptr or first is None or not first.get("types") or any(
+                it[0] == "global" and it[3] < min(td.g for td in first["types"]) for it in first["items"]):
+            tptr = []
         entries = sorted([(word(t, word(self.image, m["image"] - 2) + 4), ("path", b)) for b, m in enumerate(mods)] +
-                         [(o, ("name", k)) for k, o in enumerate(offs)])
+                         [(o, ("name", k)) for k, o in enumerate(offs)] +
+                         ([(min(tptr), ("end", None))] if tptr else []))
         for (o1, (kind, x)), (o2, _) in zip(entries, entries[1:]):
             n = o2 - o1 - 4
             if kind == "name" and 0 < n <= 40:
@@ -1357,6 +1366,56 @@ class Decompiler:
         m["names"][slot] = new
         pat = re.compile(rf"(?<![\w.]){re.escape(old)}\b", re.I)
         m["lines"] = [pat.sub(new, ln) for ln in m["lines"]]
+
+    def fit_types(self, mods: list[dict]) -> None:
+        """Type and field names of their original lengths: a Type's name and
+        each field's point into the project's name table (4 + length per
+        entry, allocated in text order), so each but the last has the gap to
+        the next pointer as its size."""
+        from namesize import KEYWORDS, BUILTINS
+        gl = self.gimg
+        ptrs = []  # (pointer, kind, Type g, field g)
+        for t, td in gl.types.items():
+            ptrs.append((gl.w(t), "T", t, None))
+            for f in td.fields:
+                ptrs.append((gl.w(f.g), "F", t, f.g))
+        ptrs.sort()
+        taken = {w.lower() for mm in mods for ln in mm["lines"] for w in re.findall(r"[A-Za-z]\w*", ln)}
+        tnew, fnew = {}, {}
+        for (p, kind, t, f), (q, *_) in zip(ptrs, ptrs[1:]):
+            n = q - p - 4
+            if not 1 <= n <= 40 or n == len(f"T{t:X}" if kind == "T" else f"F{f:X}"):
+                continue
+            if kind == "T":
+                old = f"T{t:X}"
+                c = next((c for c in grown(old, n - len(old)) if c.lower() not in taken), None)
+                if c:
+                    tnew[old] = c
+                    taken.add(c.lower())
+            else:
+                old = f"F{f:X}"
+                used = {x.lower() for x in fnew.values()}
+                c = next((c for c in grown(old, n - len(old)) if c.lower() not in used
+                          and c.lower() not in KEYWORDS | BUILTINS), None)
+                if c:
+                    fnew[old] = c
+        if not tnew and not fnew:
+            return
+        tpat = {o: re.compile(rf"\b{o}\b", re.I) for o in tnew}
+        fpat = {o: re.compile(rf"(?:(?<=\.)|(?<=^    )){o}\b", re.I) for o in fnew}
+        for mm in mods:
+            lines, in_type = [], False
+            for ln in mm["lines"]:
+                in_type = in_type or ln.startswith("Type ")
+                for o, pt in tpat.items():
+                    ln = pt.sub(tnew[o], ln)
+                for o, pt in fpat.items():
+                    if in_type or "." in ln:
+                        ln = pt.sub(fnew[o], ln) if in_type else re.sub(rf"(?<=\.){o}\b", fnew[o], ln, flags=re.I)
+                lines.append(ln)
+                in_type = in_type and not ln.startswith("End Type")
+            mm["lines"] = lines
+        self.renamed |= {x.lower() for x in list(tnew.values()) + list(fnew.values())}
 
     def fit_globals(self, m: dict) -> None:
         """Spread a .bas module's name-table size deficit (+30) over the
@@ -1609,6 +1668,8 @@ class Decompiler:
             head = f"{kind} {info.name}{SUFFIX[info.ret]} ({', '.join(params)})"
         else:
             head = f"{kind} {info.name} ({', '.join(params)})" + (f" As {TYPE_NAME[info.ret]}" if info.function else "")
+        if self.table[info.proc.record + 14] & 0x80:  # record +14 bit 7: Static Sub/Function
+            head = "Static " + head
         body = self.statements(info, names)
         self.dim_alloc = []  # slot order: where each local is allocated (Dim or first use)
         dims = self.local_dims(info, vars_, names, base, body)
