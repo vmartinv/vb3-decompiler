@@ -50,10 +50,13 @@ the shipped exes carry the build machine's paths and project name).
 Done: epilogue free order (name-length solver), name-table size (+30)
 fitting, line counts (+50), Static arrays, unused locals typed from the
 records, unused event-parameter slots, shared pool names, DefType line
-order, Type/field name lengths, Static Sub, volatile rc1 words.
+order, Type/field name lengths, Static Sub, volatile rc1 words,
+declarations-join off-by-one (was force-merging 2 already-matching
+Dim/Const lines), inline_const's end-of-image room check (was one byte
+short for an 8-byte Double/Currency at the very end of a module).
 Samples: 14/22 identical (mcitest 6, textedit 2, objects 2, timecard 2,
 recedit 9, mdinote 32, calldlls 59, biblio 3121 bytes). Batteries: all
-p-code identical; exe-identical 846/941.
+p-code identical; exe-identical 854/941.
 
 Remaining, by place (`exediff`, `battery.py <name> --exe`):
 - Global variable/constant name lengths: only sums are observable
