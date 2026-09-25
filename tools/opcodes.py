@@ -26,7 +26,7 @@ def _row(prefix: str, handlers: str) -> dict[int, str]:
 NAMES: dict[int, str] = {
     # --- statements / flow ---------------------------------------------
     0x48AF: "STMT_X",            # statement marker with a u16 operand
-    0x4965: "LABEL",
+    0x4965: "LABEL", 0x48BE: "LABEL_WIDE",
     0x65D9: "RET", 0x0E5E: "TRAP", 0x0E5B: "TRAP",
     0x0E35: "END",
     0x34B7: "JF", 0x3500: "JF.I",           # jump if false (block If / loops)
@@ -82,12 +82,14 @@ NAMES: dict[int, str] = {
     0x62E0: "CALL", 0x62DD: "CALL", 0x62A7: "CALL_FN",
     0x67B1: "ARGS",                          # opens an argument frame
     0x4FC3: "OBJ", 0x3767: "OBJ_SELF",
-    0x6819: "ARG_MISSING", 0x6AD5: "ARG_TEMP",   # ARG_TEMP: by-value temporary for a ByRef parameter
+    0x6819: "ARG_MISSING", 0x6AD5: "ARG_TEMP", 0x6AC5: "ARG_TEMP",  # by-value temporary for a ByRef parameter (6AC5: 4 bytes)
     0x4B61: "METHOD",                        # operand byte 6 = method number
     0x4FFC: "NARGS", 0x376A: "END_CALL",
     0x6A63: "ARG_STR", 0x6A72: "ARGS_FREE", 0x6A02: "ARG_V", 0x6823: "ARG_S", 0x6834: "ARG_D",
     0x320F: "ADDR_LOC.V", 0x3200: "ADDR_LOC", 0x3237: "ADDR_LOC.T",
     0x32B2: "LOAD.LOC.F", 0x32EF: "STORE.LOC.F", 0x32A1: "LOAD.MOD.F", 0x32DE: "STORE.MOD.F",  # String * n
+    0x3264: "ADDR.MOD.F", 0x3275: "ADDR.LOC.F",  # LSet/RSet target, ByRef argument
+    0x6AE2: "ARG_FIX", 0x6B1B: "ARG_FIX_BACK",  # ByRef String * n argument: copied to a temp (BP offset) and back
     0x31C2: "ADDR.MOD.V",  # by reference: For, Input #, Mid$ =, LSet (31B3..31CC: its % & ! # @ $ entries)
     # --- objects -------------------------------------------------------
     0x4A6E: "CONTROL", 0x4AA7: "FORM", 0x4A12: "ME", 0x4A15: "ME_IMPLICIT",

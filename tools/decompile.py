@@ -56,10 +56,16 @@ EVENT_PARAMS = {  # conventional parameter names (the IDE's templates)
     "Collapse": "ListIndex", "Expand": "ListIndex", "PictureClick": "ListIndex",
     "PictureDblClick": "ListIndex",
 }
-LABEL = 0x4965
+LABEL, LABEL_WIDE = 0x4965, 0x48BE  # LABEL_WIDE: + spaces before the statement on its line
 OBJ_KINDS = {1: "Form", 2: "MDIForm", 4: "Control", 0x14: "Object"}  # object variable kinds besides control classes
 VAR_FAMILIES = ("LOAD", "STORE", "ADDR_LOC", "ALOAD", "ASTORE", "ADDR", "AADDR")
 SIZE_TYPES = {2: "I", 4: "L", 8: "D", 16: "V"}  # filler declarations for unused slots
+
+
+def label_number(operand: bytes) -> int:
+    """A LABEL's line number (low word 0xFFFF, number in the high word), or 0xFFFFFFFF for a named label."""
+    (num,) = struct.unpack_from("<I", operand)
+    return num if num == 0xFFFFFFFF or num & 0xFFFF != 0xFFFF else num >> 16
 
 
 @dataclass
@@ -107,7 +113,7 @@ def var_access(name: str) -> tuple[str, str, bool] | None:
     if fam == "ADDR_LOC":
         return "LOC", parts[1] if len(parts) > 1 else "", False
     if fam in ("ADDR", "AADDR"):
-        return (parts[1] if len(parts) > 1 else "GLB"), "", fam == "AADDR"
+        return (parts[1] if len(parts) > 1 else "GLB"), "F" if parts[2:] == ["F"] else "", fam == "AADDR"
     if len(parts) < 2:
         return None
     return parts[1], parts[2] if len(parts) > 2 else "", fam in ("ALOAD", "ASTORE")
@@ -118,7 +124,7 @@ TYPE_OF_SUFFIX = {"%": "I", "&": "L", "!": "S", "#": "D", "@": "C", "$": "T"}
 
 
 def plain_handler(rt: P.Runtime, op: int) -> tuple[str | None, str]:
-    """A variable access written with a type suffix (`b% = 3`) uses another
+    """A variable access or function call written with a type suffix (`b% = 3`, `F%(1)`) uses another
     entry point of the plain handler (usually 3 bytes before it) whose
     interpreter ID carries the suffix type: ID = plain ID | type << 10.
     Returns (plain handler name, suffix)."""
@@ -130,7 +136,7 @@ def plain_handler(rt: P.Runtime, op: int) -> tuple[str | None, str]:
     if oid >> 10 in SUFFIX_OF_ID:
         for k in sorted(range(-16, 17), key=abs):
             n = NAMES.get(op + k)
-            if n and n.split(".")[0] in VAR_FAMILIES and rt.opcode_id(op + k) == oid & 0x3FF:
+            if n and (n.split(".")[0] in VAR_FAMILIES or n == "CALL_FN") and rt.opcode_id(op + k) == oid & 0x3FF:
                 return n, SUFFIX_OF_ID[oid >> 10]
     fam = ID_CLASS.get(oid & 0xFF)  # otherwise by the ID's class; scope from the slot (".X")
     return (f"{fam}.X", SUFFIX_OF_ID.get(oid >> 10, "")) if fam else (None, "")
@@ -1083,9 +1089,18 @@ class Decompiler:
         """Argument types per called record (for Declare parameters)."""
         self.call_types: dict[int, list] = {}
         self.call_modules: dict[int, set] = {}
+        self.call_texts: dict[int, list] = {}
+        self.suffixed: set[int] = set()  # Functions whose name is written with its type suffix somewhere
         for m in mods:
             self.cur_base = m["image"]
             for info in m["infos"]:
+                for i in info.insns:
+                    n, sfx = plain_handler(self.rt, i.op)
+                    if sfx and n == "CALL_FN":
+                        self.suffixed.add(self.value(m["image"], struct.unpack_from("<H", i.operand, 2)[0], False) & 0xFFF8)
+                    elif sfx and info.function and (n or "").startswith("STORE") and \
+                            struct.unpack_from("<H", i.operand, len(i.operand) - 2)[0] == info.ret_slot:
+                        self.suffixed.add(info.proc.record)
                 calls, info.callees = [], []
                 self.statements(info, m["names"], calls)
                 by_name = {n.lower(): x for x, n in m["names"].items()}
@@ -1100,6 +1115,7 @@ class Decompiler:
                     if name != "CALL_FN":  # a Sub call statement allocates the record; a
                         info.callees.append(rec & 0xFFF8)  # function call in an expression doesn't
                     self.call_types.setdefault(rec & 0xFFF8, []).append(types)
+                    self.call_texts.setdefault(rec & 0xFFF8, []).append(texts)
                     self.call_modules.setdefault(rec & 0xFFF8, set()).add(id(m))
 
     def fit_names(self, m: dict) -> None:
@@ -1211,9 +1227,11 @@ class Decompiler:
                     t = "I"
                 pn = names[s]
                 params.append(("ByVal " if byval else "") + pn + ("()" if v.array else "") + f" As {TYPE_NAME[t]}")
-        head = f"{kind} {info.name} ({', '.join(params)})"
-        if info.function:
-            head += f" As {TYPE_NAME[info.ret]}"
+            params = self.unused_params(info, base, params)
+        if info.function and info.proc.record in self.suffixed:
+            head = f"{kind} {info.name}{SUFFIX[info.ret]} ({', '.join(params)})"
+        else:
+            head = f"{kind} {info.name} ({', '.join(params)})" + (f" As {TYPE_NAME[info.ret]}" if info.function else "")
         body = self.statements(info, names)
         dims = self.local_dims(info, vars_, names, base, body)
         # record +50: the procedure's line count, including the comment block
@@ -1230,6 +1248,36 @@ class Decompiler:
             lines.append(("\t" * (col // 8) + " " * (col % 8) if self.cur_mod.get("tabs") else " " * col) + text)
         lines += [f"End {kind}", ""]
         return lines
+
+    def unused_params(self, info: ProcInfo, base: int, params: list[str]) -> list[str]:
+        """Parameters the body never uses have no slot: when the callers pass
+        more arguments, rebuild the list from the BP frame (from the top:
+        a used parameter where its size fits exactly, else a ByRef filler,
+        4 bytes, typed as the callers pass it)."""
+        calls = self.call_types.get(info.proc.record, [])
+        texts = self.call_texts.get(info.proc.record, [])
+        nargs = max((len(c) for c in calls), default=0)
+        if nargs <= len(info.params):
+            return params
+        used = {self.value(base, s): p for s, p in zip(info.params, params)}
+        out, cur = [], 6 + 2 * info.argwords
+        for j in range(nargs):
+            below = [o for o in used if o < cur]
+            if below:
+                o = max(below)
+                p = used[o]
+                size = 4 if not p.startswith("ByVal ") else \
+                    {"Integer": 2, "Double": 8, "Currency": 8, "Variant": 16}.get(p.rpartition(" ")[2], 4)
+                if cur - o == size:
+                    out.append(p)
+                    cur = o
+                    continue
+            seen = [c[j].lstrip("&") for c in calls if j < len(c) and c[j]]
+            t = seen[0] if seen and seen[0] in TYPE_NAME else "V"
+            arr = any(j < len(x) and x[j].endswith("()") for x in texts)
+            out.append(f"u{j}{'()' if arr else ''} As {TYPE_NAME[t]}")
+            cur -= 4
+        return out
 
     def local_dims(self, info: ProcInfo, vars_: dict, names: dict, base: int, body: list) -> dict[int, list[str]]:
         """Dim/Static lines for the procedure's locals, placed so that slots are
@@ -1574,12 +1622,15 @@ class Decompiler:
         """(indentation column, lifted text) per statement (marker to the
         next marker), with label lines."""
         out, cur, curn = [], [], []
-        col, marked = [0], [False]
+        col, marked, join = [0], [False], [None]
 
         def flush():
             if cur and not all(NAMES.get(op, "") in ("RET", "TRAP", "OBJ_FREE") for op, _ in cur):
                 text = lift(cur, self.ids, names=curn, calls=calls)
-                if col[0] == -1 and out:
+                if join[0] is not None and out:
+                    out[-1] = (out[-1][0], out[-1][1] + join[0] + text)
+                    join[0] = None
+                elif col[0] == -1 and out:
                     out[-1] = (out[-1][0], out[-1][1] + ": " + text)
                 else:
                     out.append((max(col[0], 0), text))
@@ -1589,6 +1640,7 @@ class Decompiler:
         for i, note in zip(info.insns, info.notes):
             if self.rt.is_stmt(i.op):
                 flush()
+                join[0] = None
                 if i.op == STMT_SAME_LINE:
                     col[0] = -1  # joins the previous line with `:`
                 else:
@@ -1596,20 +1648,22 @@ class Decompiler:
                     col[0] = 4 if c is None else c
                 marked[0] = True
                 continue
-            if i.op == LABEL:
+            if i.op in (LABEL, LABEL_WIDE):
                 if not cur and marked[0]:  # an empty statement: a blank line kept before a label
                     out.append((0, ""))
                 flush()
-                (num,) = struct.unpack_from("<I", i.operand)
+                num = label_number(i.operand)
                 out.append((0, f"L{i.pc:x}:" if num == 0xFFFFFFFF else f"{num}"))
+                # no marker before the next code: the statement shares the label's line
+                join[0] = " " * (struct.unpack_from("<H", i.operand, 4)[0] if i.op == LABEL_WIDE else 1)
                 marked[0] = False
                 continue
             marked[0] = False
             cur.append((i.op, i.operand))
             curn.append(self.name_for(i, note, names))
         flush()
-        numbered = {i.pc: struct.unpack_from("<I", i.operand)[0] for i in info.insns
-                    if i.op == LABEL and struct.unpack_from("<I", i.operand)[0] != 0xFFFFFFFF}
+        numbered = {i.pc: label_number(i.operand) for i in info.insns
+                    if i.op in (LABEL, LABEL_WIDE) and label_number(i.operand) != 0xFFFFFFFF}
         if numbered:  # line-number labels: jumps name them by number
             out = [(c, re.sub(r"\bL([0-9a-f]+)\b", lambda x: str(numbered.get(int(x.group(1), 16), x.group(0))), t))
                    for c, t in out]
@@ -1617,6 +1671,9 @@ class Decompiler:
 
     def name_for(self, i, note: str, names: dict) -> str | None:
         n = NAMES.get(i.op) or ""
+        sfx = ""
+        if not n and plain_handler(self.rt, i.op)[0] == "CALL_FN":
+            n, sfx = plain_handler(self.rt, i.op)
         slot = struct.unpack_from("<H", i.operand, len(i.operand) - 2)[0] if len(i.operand) >= 2 else None
         if n in ("PGET", "PSET", "PGET_IDX", "PSET_IDX"):
             if "!" in note:  # operand 0x80nn: control nn of the form object, default property
@@ -1640,7 +1697,8 @@ class Decompiler:
             (rec,) = struct.unpack_from("<H", i.operand, 2)
             if n == "CALL_FN" and self.cur_base is not None:  # operand: the function's slot
                 rec = self.value(self.cur_base, rec)
-            return self.proc_name.get(rec & 0xFFF8)
+            name = self.proc_name.get(rec & 0xFFF8)
+            return name and name + sfx
         if slot is not None and slot in names:
             return names[slot] + plain_handler(self.rt, i.op)[1]
         return note or None

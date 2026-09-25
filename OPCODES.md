@@ -313,8 +313,23 @@ still copied from the original source).
   names (per-module name table +30, table offset 76 record +30), the last
   pool entry, Declare aliases.
 - DefType tables beyond `DefInt A-Z` (only form seen in the samples).
-- Batteries (`tools/battery.py`, 664/695): statements 62/68, types
-  57/62; builtins, expressions, print, names, deftype complete.
+- Batteries (`tools/battery.py`, 670/695): types 57/62; builtins,
+  expressions, print, statements, names, deftype complete.
+- Labels: LABEL 4965 `u32` = FFFFFFFF (named) or `FFFF, line number`;
+  48BE adds a word, the spaces before a statement on the label's line.
+  A statement marker after the label = the statement on its own line.
+- A function call written with its suffix (`F%(1)`) uses a suffixed
+  entry of CALL_FN (ID | type << 10, e.g. 62A1 `%`, 6298 `$`), like
+  variable accesses; so does `F% = x` in its body. The record doesn't
+  distinguish `Function F% ()` from `Function F () As Integer`.
+- OPEN/OPEN_LEN word: low byte mode, high byte Access (bits 0-1:
+  Read/Write/Read Write) and lock (bits 4-6: 4 Shared, 3 Lock Read,
+  2 Lock Write, 1 Lock Read Write).
+- `String * n`: 3264/3275 its address (module or Static / local) for
+  LSet/RSet and ByRef arguments; 6AE2/6B1B copy a ByRef argument to a
+  temp and back. 6AC5: ARG_TEMP for 4-byte values.
+- Unused parameters have no slot: their count comes from the callers,
+  their layout from the BP frame (`6 + 2 * argwords`).
 - Procedure/Declare records (56 bytes) follow the module's declarations
   record (`word(image, m.image-2)+4`) and are allocated in first-mention
   text order: a Sub call statement (62DD bare, 62E0 `Call` keyword)

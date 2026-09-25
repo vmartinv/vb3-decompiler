@@ -115,6 +115,14 @@ def var_name(name: str, operand: bytes) -> str:
 STATEMENT_PREFIX = {"CASE"}  # block-end jumps opening ElseIf/Case lines
 
 
+def open_mode(m: int) -> str:
+    """OPEN operand: low byte the mode, high byte Access (bits 0-1) and the lock (bits 4-6)."""
+    mode = {1: "Input", 2: "Output", 4: "Random", 8: "Append", 0x20: "Binary"}.get(m & 0xFF, f"Mode{m:x}")
+    mode += {0x100: " Access Read", 0x200: " Access Write", 0x300: " Access Read Write"}.get(m & 0x300, "")
+    return mode + {0x4000: " Shared", 0x3000: " Lock Read", 0x2000: " Lock Write",
+                   0x1000: " Lock Read Write"}.get(m & 0x7000, "")
+
+
 def lift(code: list[tuple[int, bytes]], ids: dict[int, int] | None = None,
          extra: dict[int, tuple] | None = None, names: list[str | None] | None = None,
          calls: list | None = None) -> str:
@@ -145,7 +153,11 @@ def lift(code: list[tuple[int, bytes]], ids: dict[int, int] | None = None,
     def family(op: int, name: str) -> str:
         if op in NAMES:
             return name
-        low = (ids or {}).get(op, 0) & 0xFF
+        oid = (ids or {}).get(op, 0)
+        low = oid & 0xFF
+        if low == 0x0E and oid >> 10 and any(NAMES.get(op + k) == "CALL_FN" and ids.get(op + k) == oid & 0x3FF
+                                             for k in range(1, 17)):
+            return "CALL_FN"  # a function call written with a type suffix: `F%(1)`
         return {0x0B: "LOAD.X", 0x0C: "STORE.X", 0x0E: "ALOAD.X", 0x0F: "ASTORE.X"}.get(low, name)
 
     prev_name, prev_top = "", None
@@ -191,9 +203,9 @@ def lift(code: list[tuple[int, bytes]], ids: dict[int, int] | None = None,
             st[-1].t = result_type(name)
         if name == "CVT.Ttmp>V" and st and is_call(st[-1].text):
             st[-1].text = re.sub(r"^(\w+)\$", r"\1", st[-1].text)  # Variant form: Left(...), not Left$(...)
-        if fam.startswith("CVT") or name in ("ARGS", "ARGS_FREE", "END_CALL", "TRAP", "LABEL", "NARGS",
+        if fam.startswith("CVT") or name in ("ARGS", "ARGS_FREE", "END_CALL", "TRAP", "LABEL", "LABEL_WIDE", "NARGS",
                                              "ARG_STR", "ARG_V", "ARG_S", "ARG_D", "ARGS_DLL",
-                                             "ARG_T_BYREF", "ARG_PAREN", "ARG_TEMP") or fam in STATEMENT_PREFIX:
+                                             "ARG_T_BYREF", "ARG_PAREN", "ARG_TEMP", "ARG_FIX", "ARG_FIX_BACK") or fam in STATEMENT_PREFIX:
             continue
         if name in ("OBJ", "OBJ_SELF"):
             if name == "OBJ_SELF" or not obj_at or obj_at[-1] != len(st):
@@ -321,16 +333,11 @@ def lift(code: list[tuple[int, bytes]], ids: dict[int, int] | None = None,
             out.append(f"{'Get' if name == 'GET#' else 'Put'} {num.text}, {rec.text}, {var.text}")
         elif name == "FILENUM":
             st.append(E("#" + pop().text))
-        elif name == "OPEN_LEN":
-            ln, num, fname = pop(), pop(), pop()
-            mode = {1: "Input", 2: "Output", 4: "Random", 8: "Append", 0x20: "Binary"}.get(slot_of(operand) & 0xFF, "?")
-            out.append(f"Open {fname.text} For {mode} As {num.text} Len = {ln.text}")
-        elif name == "OPEN":
-            m = slot_of(operand)
-            mode = {1: "Input", 2: "Output", 4: "Random", 8: "Append", 0x20: "Binary"}.get(m & 0xFF, f"Mode{m:x}")
-            mode += {0x100: " Access Read", 0x200: " Access Write", 0x300: " Access Read Write"}.get(m & 0x300, "")
+        elif name in ("OPEN", "OPEN_LEN"):
+            ln = pop() if name == "OPEN_LEN" else None
             num, fname = pop(), pop()
-            out.append(f"Open {fname.text} For {mode} As {num.text}")
+            out.append(f"Open {fname.text} For {open_mode(slot_of(operand))} As {num.text}"
+                       + (f" Len = {ln.text}" if ln else ""))
         elif name == "CLOSE":
             n = slot_of(operand)
             args = [pop() for _ in range(n)][::-1]
@@ -652,6 +659,8 @@ def lift(code: list[tuple[int, bytes]], ids: dict[int, int] | None = None,
         else:
             out.append(f"<{name}>")
     settle()
+    if let_at is not None and len(out) > let_at:
+        out[let_at] = "Let " + out[let_at]
     merged: list[str] = []  # one source line: `If c Then a Else b`, `Next j, i`
     for t in out:
         if merged and merged[-1] == "Else":

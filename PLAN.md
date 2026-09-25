@@ -1,7 +1,7 @@
 # Plan: complete the VB3 decompiler
 
 ## Context
-The decompiler already round-trips every sample: 483/483 procedures and every form are byte-identical (`/MAKE` build vs `/MAKE` build). It passes 664 of 695 generated battery cases.
+The decompiler already round-trips every sample: 483/483 procedures and every form are byte-identical (`/MAKE` build vs `/MAKE` build). It passes 670 of 695 generated battery cases.
 
 "Complete" means three things:
 1. Every VB3 language feature has a battery.
@@ -20,13 +20,7 @@ The loop for every feature is the same:
 
 ### names: done (35/35)
 
-### statements (6 failures)
-- **GoTo line number:** emit numeric labels.
-- **Let explicit:** decide whether the explicit `Let` op is distinct.
-- **LSet/RSet with a local fixed string:** rerun the case.
-- **Open … Access … Lock:** decode the mode word bits.
-- **ByVal/ByRef args:** op 6AC5, plus the name clash between `Fp` and `arr()`.
-- **Function return types:** decode the return-type suffix from the procedure record.
+### statements: done (68/68)
 
 ### types (5 failures)
 - dynamic ReDim
