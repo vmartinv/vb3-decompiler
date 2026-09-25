@@ -22,7 +22,6 @@ Recovery rules (see ../OPCODES.md, "Source recovery"):
 from __future__ import annotations
 
 import argparse
-import os
 import re
 import struct
 import sys
@@ -339,6 +338,7 @@ class Decompiler:
         lay = image_layout(self.image, len(self.forms))
         self.pool = lay["pool"]
         self.lists = lay["lists"]
+        self.gimg_chunk = lay["global_"]
         self.gimg = GlobalImage(self.image, lay["global_"])
         mods = [dict(kind="bas", image=c, form=None, seg=None, start=0x06) for c in lay["modules"]]
         mods += [dict(kind="frm", image=c, form=self.forms[k][0], seg=None, start=0x1A, ctl=cl)
@@ -585,6 +585,13 @@ class Decompiler:
         w, f = self.value(base, s, False), self.value(base, s + 2, False)
         return 4 if w & 0xFF00 == 0x4000 and 1 <= w & 0xFF <= 60 and f >> 8 == 0xC0 and 0 <= f & 0xFF <= 9 else 0
 
+    def init_list(self, chunk: int | None) -> set[int] | None:
+        """The entries of the init list after the image at chunk, if any."""
+        c = self.lists.get(chunk) if chunk is not None else None
+        if c is None:
+            return None
+        return {word(self.image, c + 6 + 2 * k) for k in range(word(self.image, c + 2))}
+
     def is_global_slot(self, base: int, slot: int) -> bool:
         g = self.value(base, slot, False)
         return 6 <= g < self.globals_end and g % 2 == 0
@@ -738,8 +745,11 @@ class Decompiler:
         # `u16 size, u16 length, text, 0` in RT_RCDATA 2 before the global image,
         # in declaration order
         head = self.image[:gl.base or 0]
-        texts = [x.group(3).decode("latin-1") for x in re.finditer(rb"(?s)(..)(..)([\x20-\x7e]+)\x00", head)
-                 if struct.unpack("<H", x.group(2))[0] == len(x.group(3))]
+        texts = []  # records `u16 2 + padded length, u16 length, text` (padded to even with a 0)
+        for x in re.finditer(rb"(?s)(?=(..)(..)([\x20-\x7e]+))", head):
+            size, n, t = struct.unpack("<H", x.group(1))[0], struct.unpack("<H", x.group(2))[0], x.group(3)
+            if n and size == 2 + n + (n & 1) and (len(t) == n if n & 1 else len(t) >= n):
+                texts.append(t[:n].decode("latin-1"))
         for m in mods:
             for k, it in enumerate(m["items"]):
                 if it[0] != "global":
@@ -766,8 +776,10 @@ class Decompiler:
                 if u.get("udt") in gl.types:
                     t, lit = gl.types[u["udt"]].name, None
                 w0, w1 = gl.w(g), gl.w(g + 2)
-                if size == 4 and not u["stored"] and w1 >= 0x100 and set(u["votes"]) <= {"T", "L"}:
-                    t, lit = "T", "\0str"  # string descriptor, text assigned below
+                glist = self.init_list(self.gimg_chunk)
+                if size == 4 and not u["stored"] and set(u["votes"]) <= {"T", "L"} and (
+                        g | 1 in glist if glist is not None else w1 >= 0x100):
+                    t, lit = "T", "\0str"  # string descriptor (in the init list), text assigned below
                 if re.fullmatch(r"F\d+", t):  # String * n
                     lit = None
                 m["items"][k] = ("global", it[1], lit, g, t, name, u["array"])
@@ -779,12 +791,19 @@ class Decompiler:
                 declared |= {it[3] for it in m["items"] if it[0] == "global"}
         pending = [(mi, k) for mi, m in enumerate(mods) for k, it in enumerate(m["items"])
                    if it[0] in ("const", "global") and len(it) > 2 and it[2] == "\0str"]
-        for (mi, k), text in zip(pending, texts):
+        # a descriptor is `handle, segment`; the constants' handles are 0x2A, 0x2C, ...
+        # in text order, and their texts are the header's last ones (form
+        # properties' strings, e.g. a Data control's, come first)
+        def handle(mi: int, k: int) -> int:
+            it = mods[mi]["items"][k]
+            return gl.w(it[3]) if it[0] == "global" else self.value(mods[mi]["image"], it[1], False)
+        hs = {(mi, k): (handle(mi, k) - 0x2A) // 2 for mi, k in pending}
+        n = max(hs.values(), default=-1) + 1
+        ctexts = texts[len(texts) - n:] if 0 < n <= len(texts) and min(hs.values()) >= 0 else None
+        for j, (mi, k) in enumerate(pending):
+            text = ctexts[hs[(mi, k)]] if ctexts is not None else texts[j] if j < len(texts) else ""
             it = mods[mi]["items"][k]
             mods[mi]["items"][k] = it[:2] + ('"' + text + '"',) + it[3:]
-        for mi, k in pending[len(texts):]:  # no text found: keep a placeholder string
-            it = mods[mi]["items"][k]
-            mods[mi]["items"][k] = it[:2] + ('""',) + it[3:]
         # Types: in the module whose globals surround them, else (no Global in
         # any module to go by) distributed across the modules with no other
         # items, greedily by each candidate's own declarations-record line
@@ -1051,6 +1070,7 @@ class Decompiler:
         for m in mods:
             if m["kind"] == "bas":
                 self.fit_globals(m)
+        self.fit_global_inits()
         for m in mods:
             self.fit_frees(m)
             self.fit_inits(m)
@@ -1395,44 +1415,53 @@ class Decompiler:
                 return False
         return True
 
-    def init_target(self, m: dict) -> list[str] | None:
-        """The module's init list (fixed-size arrays, String constants | 1)
-        as names, without the procedures' Static arrays (listed after)."""
+    def init_target(self, m: dict) -> list[tuple[str, int, int]] | None:
+        """The module's init list (fixed-size arrays, String constants | 1):
+        (name, group, bucket mask) per entry. Group 0: the module's own
+        entries (16 buckets); then each procedure's Static arrays (8 buckets),
+        groups numbered in list order."""
         c = self.lists.get(m["image"])
         if c is None:
             return None
-        sarr = {a[0] for a in m.get("static_arrays", [])}
-        out = []
+        sarr = {a[0]: a[2] for a in m.get("static_arrays", [])}
+        out, groups = [], {}
         for k in range(word(self.image, c + 2)):
             s = word(self.image, c + 6 + 2 * k) & ~1
-            if s in sarr:
-                continue
             if s not in m["names"]:
                 return None
-            out.append(m["names"][s].lower())
+            a = self.array_at(m["image"], s)
+            if a and a[1] and s not in sarr:  # a Static array (0xC2): its procedure's
+                v = m["vars"].get(s)
+                sarr[s] = v.procs[0] if v is not None and v.procs else None
+            g = groups.setdefault(sarr[s], len(groups) + 1) if s in sarr else 0
+            out.append((m["names"][s].lower(), g, 7 if g else 15))
         return out
 
     def inits_ok(self, m: dict) -> bool:
-        """The module's predicted init list order is the original's: 16
-        buckets ((name-table offset >> 1) & 15), each in first-appearance order."""
+        """The module's predicted init list order is the original's: per group
+        (see init_target), buckets ((name-table offset >> 1) & mask) in
+        order, each in first-appearance order."""
         from namesize import name_offsets
         target = self.init_target(m)
         if not target or len(target) < 2:
             return True
         offs = name_offsets("\r\n".join(m["lines"]))
         order = {low: j for j, low in enumerate(offs)}
-        if not all(t in offs for t in target):
+        if not all(t in offs for t, _, _ in target):
             return True
-        return sorted(target, key=lambda t: ((offs[t] >> 1) & 15, order[t])) == target
+        return sorted(target, key=lambda x: (x[1], (offs[x[0]] >> 1) & x[2], order[x[0]])) == target
 
     def fit_inits(self, m: dict) -> None:
         """Pad generated names so that the module's init list comes out in the
         original order (see inits_ok); names before the last listed one move
         its entries' buckets."""
         from namesize import FIRST, KEYWORDS, BUILTINS, identifiers
-        target = self.init_target(m)
-        if not target or len(target) < 2 or self.inits_ok(m):
+        full = self.init_target(m)
+        if not full or len(full) < 2 or self.inits_ok(m):
             return
+        target = [t for t, _, _ in full]
+        group = {t: g for t, g, _ in full}
+        mask = {t: k for t, _, k in full}
         ids = list(identifiers("\r\n".join(m["lines"])).items())
         pos = {low: j for j, (low, _) in enumerate(ids)}
         if not all(t in pos for t in target):
@@ -1442,71 +1471,9 @@ class Decompiler:
         slot_of = {n.lower(): s for s, n in m["names"].items()}
         free = [j for j, (low, sp) in enumerate(ids) if low in slot_of and low not in fixed
                 and low not in glob and self.generated(sp)]
-        starts = [FIRST]
-        for _, sp in ids:
-            starts.append(starts[-1] + len(sp) + 4)
-        # only the total shift before each listed name matters (mod 32): one
-        # shift per gap between listed names (by position), spread over the
-        # adjustable names in that gap
-        tpos = sorted(pos[t] for t in target)
-        gaps = [[j for j in free if (tpos[k - 1] if k else -1) <= j < tpos[k]] for k in range(len(tpos))]
-        room = [(sum(1 - len(ids[j][1]) for j in g), sum(40 - len(ids[j][1]) for j in g)) for g in gaps]
-        by_pos = {pos[t]: t for t in target}
-
-        def rep(r: int, lo: int, hi: int) -> int | None:
-            """The shift ≡ r (mod 32) in [lo, hi] closest to 0."""
-            xs = [x for x in range(r % 32 - 64, r % 32 + 65, 32) if lo <= x <= hi]
-            return min(xs, key=abs) if xs else None
-
-        def cost(bucket: dict) -> tuple[int, list] | None:
-            """Cheapest shifts putting each listed name in its bucket: per
-            name (position order) the total shift before it is one of two
-            residues; DP over them."""
-            best = {0: (0, [])}  # total shift mod 32 -> (sum |x|, shifts)
-            for k, p in enumerate(tpos):
-                t, nxt = by_pos[p], {}
-                for c in (2 * bucket[t] - starts[p], 2 * bucket[t] + 1 - starts[p]):
-                    for prev, (w, xs) in best.items():
-                        x = rep(c - prev, *room[k])
-                        if x is not None and (c % 32 not in nxt or w + abs(x) < nxt[c % 32][0]):
-                            nxt[c % 32] = (w + abs(x), xs + [x])
-                best = nxt
-            return min(best.values(), key=lambda v: v[0]) if best else None
-
-        found = [None]
-
-        def buckets(k: int, bucket: dict) -> None:
-            """Every bucket assignment the list order allows: non-decreasing
-            along the list, equal only in first-appearance order."""
-            if k == len(target):
-                c = cost(bucket)
-                if c and (found[0] is None or c[0] < found[0][0]):
-                    found[0] = c
-                return
-            t = target[k]
-            lo = 0
-            if k:
-                pt = target[k - 1]
-                lo = bucket[pt] + (0 if pos[pt] < pos[t] else 1)
-            for b in range(lo, 16):
-                bucket[t] = b
-                buckets(k + 1, bucket)
-            bucket.pop(t, None)
-
-        from math import comb
-        if comb(len(target) + 15, 16) > 300000:
+        pads = order_pads(ids, FIRST, target, group, mask, free)
+        if not pads:
             return
-        buckets(0, {})
-        shift = found[0][1] if found[0] else None
-        if os.environ.get("DBG_INITS"):
-            print("fit_inits", target, room, found[0], file=sys.stderr)
-        if not shift or not any(shift):
-            return
-        pads = {}
-        for g, x in zip(gaps, shift):
-            for j in g:  # grow the first names, shrink down to 1 character
-                p = max(1 - len(ids[j][1]), min(40 - len(ids[j][1]), x))
-                pads[j], x = p, x - p
         taken = KEYWORDS | BUILTINS | glob | {low for low, _ in ids}
         lines0, names0 = m["lines"], dict(m["names"])
         for j, p in pads.items():
@@ -1614,16 +1581,88 @@ class Decompiler:
             if new is None:
                 continue
             taken.add(new.lower())
-            self.renamed.add(new.lower())
-            pat = re.compile(rf"(?<![\w.]){re.escape(n)}\b", re.I)
-            for mm in self.all_mods:
-                mm["lines"] = [pat.sub(new, ln) for ln in mm["lines"]]
-                for sl, x in list(mm["names"].items()):
-                    if x.lower() == n.lower():
-                        mm["names"][sl] = new
-            for g, x in list(self.global_name.items()):
+            self.rename_global(n, new)
+
+    def rename_global(self, n: str, new: str) -> None:
+        """Rename a Global (or Global Const) in every module."""
+        self.renamed.add(new.lower())
+        pat = re.compile(rf"(?<![\w.]){re.escape(n)}\b", re.I)
+        for mm in self.all_mods:
+            mm["lines"] = [pat.sub(new, ln) for ln in mm["lines"]]
+            for sl, x in list(mm["names"].items()):
                 if x.lower() == n.lower():
-                    self.global_name[g] = new
+                    mm["names"][sl] = new
+        for g, x in list(self.global_name.items()):
+            if x.lower() == n.lower():
+                self.global_name[g] = new
+
+    def global_table(self) -> list[tuple[str, str]]:
+        """The global name table (lowercase, spelling), each name once, in
+        load order (.bas modules, then forms): the Globals, Global Consts,
+        Types and fields a .bas declares, and the forms and Screen / App /
+        Printer / Clipboard where first referenced in any module's code.
+        (Declare and procedure names go to the name pool before it.)"""
+        objs = {f[0].lower(): f[0] for f in self.forms} | \
+            {x.lower(): x for x in ("Screen", "App", "Printer", "Clipboard")}
+        ref = re.compile(r"(?<![\w.])(" + "|".join(map(re.escape, objs)) + r")\b", re.I)
+        out: dict[str, str] = {}
+        for mm in self.all_mods:
+            in_type = False
+            for ln in mm["lines"]:
+                t = re.sub(r"'.*", "", re.sub(r'"[^"]*"', '""', ln))  # strings, then the comment
+                if mm["kind"] == "bas" and in_type:
+                    if re.match(r"\s*End Type", t, re.I):
+                        in_type = False
+                    elif mt := re.match(r"\s*([A-Za-z]\w*)", t):
+                        out.setdefault(mt.group(1).lower(), mt.group(1))
+                    continue
+                if mm["kind"] == "bas" and (mt := re.match(r"Type\s+([A-Za-z]\w*)", t, re.I)):
+                    in_type = True
+                    out.setdefault(mt.group(1).lower(), mt.group(1))
+                    continue
+                if mm["kind"] == "bas" and (mt := re.match(r"Global\s+(Const\s+)?(.*)", t, re.I)):
+                    body = re.sub(r"\([^)]*\)", "", mt.group(2))
+                    for part in body.split(","):
+                        if nm := re.match(r"\s*([A-Za-z]\w*)", part):
+                            out.setdefault(nm.group(1).lower().rstrip("%&!#@$"), nm.group(1).rstrip("%&!#@$"))
+                    continue
+                if objs and not re.match(r"\s*(Declare|Global Declare)\b", t, re.I):
+                    for x in ref.findall(t):
+                        out.setdefault(x.lower(), objs[x.lower()])
+        return list(out.items())
+
+    def fit_global_inits(self) -> None:
+        """Pad generated Global names so that the global init list (Global
+        fixed-size arrays and String constants) comes out in the original
+        order: 16 buckets over the global name table, whose end is the
+        project record's +30 - 259; the total length is kept."""
+        from namesize import KEYWORDS, BUILTINS
+        c = self.lists.get(self.gimg_chunk)
+        if c is None or word(self.image, c + 2) < 2:
+            return
+        target = []
+        for k in range(word(self.image, c + 2)):
+            n = self.global_name.get(word(self.image, c + 6 + 2 * k) & ~1)
+            if n is None:
+                return
+            target.append(n.lower())
+        ids = self.global_table()
+        if not all(t in dict(ids) for t in target):
+            return
+        end = word(self.table, 12 + 30) - 259
+        first = end - sum(len(sp) + 4 for _, sp in ids)
+        gnames = {x.lower() for x in self.global_name.values()}
+        free = [j for j, (low, sp) in enumerate(ids) if low in gnames and self.generated(sp)]
+        pads = order_pads(ids, first, target, {t: 0 for t in target}, {t: 15 for t in target}, free, balance=True)
+        if not pads:
+            return
+        taken = KEYWORDS | BUILTINS | self.project_names() | \
+            {w.lower() for mm in self.all_mods for ln in mm["lines"] for w in re.findall(r"[A-Za-z]\w*", ln)}
+        for j, p in pads.items():
+            old = ids[j][1]
+            new = next(c for c in grown(old, p) if c.lower() not in taken)
+            taken.add(new.lower())
+            self.rename_global(old, new)
 
     def fit_size(self, m: dict) -> None:
         """Resize the generated local names that appear last so that the
@@ -2607,6 +2646,90 @@ def bas_stems(d: Decompiler, mods: list[dict], n: int, dir_len: int, used: set[s
         used.add(stem)
         out.append(stem)
     return out
+
+
+def order_pads(ids: list, first: int, target: list, group: dict, mask: dict, free: list,
+               balance: bool = False) -> dict | None:
+    """Name-length changes that put the listed names of a hashed name table
+    in the list's order. ids: the table's names in order (lowercase,
+    spelling); name k's offset is first + sum(len + 4) before it; a listed
+    name t goes to bucket (offset >> 1) & mask[t]; the list runs through its
+    groups in order, each in bucket order, a bucket in table order. free: the
+    positions that may change length (1..40). balance: the total length must
+    stay the same (compensated after the last listed name).
+    Returns {position: change} (empty: nothing to change), None if impossible."""
+    from math import comb
+    pos = {low: j for j, (low, _) in enumerate(ids)}
+    starts = [first]
+    for _, sp in ids:
+        starts.append(starts[-1] + len(sp) + 4)
+    # only the total shift before each listed name matters: one shift per gap
+    # between listed names (by position), spread over the free names in it
+    tpos = sorted(pos[t] for t in target)
+    bounds = [-1] + tpos + ([len(ids)] if balance else [])
+    gaps = [[j for j in free if bounds[k] <= j < bounds[k + 1]] for k in range(len(bounds) - 1)]
+    room = [(sum(1 - len(ids[j][1]) for j in g), sum(40 - len(ids[j][1]) for j in g)) for g in gaps]
+    by_pos = {pos[t]: t for t in target}
+
+    def cost(bucket: dict) -> tuple[int, list] | None:
+        """Cheapest shifts putting each listed name in its bucket: DP over
+        the total shift before each listed name (position order)."""
+        best = {0: (0, [])}  # total shift -> (sum |x|, shifts)
+        for k, p in enumerate(tpos):
+            t, nxt = by_pos[p], {}
+            period = 2 * (mask[t] + 1)  # 32 (16 buckets) or 16 (8): residues mod 32
+            want = {(2 * bucket[t] + e + f - starts[p]) % 32 for f in range(0, 32, period) for e in (0, 1)}
+            lo, hi = room[k]
+            for prev, (w, xs) in best.items():
+                for x in range(max(lo, -64), min(hi, 64) + 1):
+                    c = prev + x
+                    if c % 32 in want and (c not in nxt or w + abs(x) < nxt[c][0]):
+                        nxt[c] = (w + abs(x), xs + [x])
+            if not balance:  # only the residue matters: keep the cheapest per residue
+                keep = {}
+                for c, v in nxt.items():
+                    if c % 32 not in keep or v[0] < nxt[keep[c % 32]][0]:
+                        keep[c % 32] = c
+                nxt = {c: nxt[c] for c in keep.values()}
+            best = nxt
+        if balance:
+            lo, hi = room[-1]
+            best = {0: (w + abs(c), xs + [-c]) for c, (w, xs) in best.items() if lo <= -c <= hi}
+        return min(best.values(), key=lambda v: v[0]) if best else None
+
+    found = [None]
+
+    def buckets(k: int, bucket: dict) -> None:
+        """Every bucket assignment the list order allows: non-decreasing
+        along a group, equal only in table order."""
+        if k == len(target):
+            c = cost(bucket)
+            if c and (found[0] is None or c[0] < found[0][0]):
+                found[0] = c
+            return
+        t = target[k]
+        lo = 0
+        if k and group[target[k - 1]] == group[t]:
+            pt = target[k - 1]
+            lo = bucket[pt] + (0 if pos[pt] < pos[t] else 1)
+        for b in range(lo, mask[t] + 1):
+            bucket[t] = b
+            buckets(k + 1, bucket)
+        bucket.pop(t, None)
+
+    if not all(t in pos for t in target) or comb(len(target) + 15, 16) > 300000:
+        return None
+    buckets(0, {})
+    if found[0] is None:
+        return None
+    pads = {}
+    for g, x in zip(gaps, found[0][1]):
+        for j in g:  # grow the first names, shrink down to 1 character
+            p = max(1 - len(ids[j][1]), min(40 - len(ids[j][1]), x))
+            if p:
+                pads[j] = p
+            x -= p
+    return pads
 
 
 def grown(old: str, d: int):

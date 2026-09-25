@@ -6,8 +6,8 @@ VB3 language feature has a battery, and every case round-trips to
 identical p-code and form resources. What's left is whole-exe byte
 identity (Phase 3) and a final usage pass (Phase 4).
 
-Current numbers: batteries 870/969 exe-identical (all p-code identical);
-samples 15/22 exe-identical (all 483/483 procedures p-code identical).
+Current numbers: batteries 873/969 exe-identical (all p-code identical);
+samples 16/22 exe-identical (all 483/483 procedures p-code identical).
 
 "Complete" (Phase 3's target): with names padded to their original
 lengths, the rebuilt exe is byte-identical to the original.
@@ -50,17 +50,12 @@ picking per item based on how many unknowns and constraints it has.
    resolving it to the real Type name was reverted: it regressed
    `calldlls` by shifting the global image / record allocation order
    relative to a Global in the same module.
-4. **Init-list order** (see OPCODES.md "Init lists"): module lists are
-   fitted (`fit_inits`; fixed `timecard`). Not yet: procedures' Static
-   arrays (8-bucket, after the module entries) and the global list
-   (Global fixed arrays / Global Const Strings, over the global name
-   table). The `initlists` Globals project also differs in its Global
-   Const String texts (rc2 header).
-5. **biblio**: data image diff, 3121 bytes — the largest remaining.
-   Lead: its global init list has 7 entries in the original, 30 in the
-   rebuild, so the rebuild declares many more global String constants /
-   fixed arrays than the original did.
-6. **Phase 4 final pass**: once the above settle, run every battery
+4. **Init-list order** (see OPCODES.md "Init lists"): fitted for module
+   lists, Static arrays and the global list (`fit_inits`,
+   `fit_global_inits`, `order_pads`); fixed `timecard` and `biblio`.
+   `initlists` Globals cases still differ in module/project +30 (global
+   name lengths vs. the modules that reference them: item 1).
+5. **Phase 4 final pass**: once the above settle, run every battery
    plus every sample in `--exe` mode and commit. (`tools/vb3decompile.py`
    itself is done; icons/.frx already come for free from
    `decompile.py`'s generic binary-property handling.)

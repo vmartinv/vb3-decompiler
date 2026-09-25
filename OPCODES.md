@@ -217,8 +217,10 @@ per procedure (`tools/pcode_diff.py` shows instruction diffs). **All 483
 procedures of the 22 samples recompile p-code-identical** (form layouts
 still copied from the original source).
 
-- **RT_RCDATA 2 layout**: a header (with the String constants' texts,
-  `u16 size, u16 len, text, 0`, in declaration order), the global image,
+- **RT_RCDATA 2 layout**: a header (texts `u16 2 + padded length, u16 length,
+  text` padded to even: form properties' strings such as a Data control's,
+  then the String constants', whose descriptors `handle, segment` number
+  them 0x2A, 0x2C, ... in declaration order), the global image,
   the name pool (`u16 size, 0, 0x1A`, 32-bucket hash, entries `u16 link,
   u8, u8 len, name`, offsets from its start + 2; DLL/`Declare` names), then
   each .bas image, then each form image (16 zero bytes, form record at
@@ -388,8 +390,7 @@ still copied from the original source).
   (`namesize.name_offsets`, but the first entry is at 26 mod 32, i.e.
   FIRST + 16); Static arrays come after, ordered by their procedure's
   8-bucket table (as OBJ_FREE). Global list: offsets are the global name
-  table's (text order, `len + 4` per name, the same address space as the
-  Type/field name pointers, which anchor it). The swapped words in
+  table's (below). The swapped words in
   `timecard`'s `Card` are this list.
 - A `Global` fixed-size array in its declaring .bas: slot = global
   offset, then `0x4000 | dims, 0xC000 | element type` (bounds in the
@@ -415,8 +416,14 @@ still copied from the original source).
   `Option Explicit` (so it orders those lines).
 - Procedures sharing a pool offset (the same general name in several
   modules) get the same name.
-- Global name table: follows the pool's last entry, in text order over
-  the code modules: Globals, Type names, fields (4 + length each). Types
+- Global name table: follows the compile-time pool's last entry (Declare
+  and procedure names are pool entries, wherever they appear), `len + 4`
+  per name, in load order (.bas modules, then forms): the Globals, Global
+  Consts, Types and fields a .bas declares, and the forms and Screen /
+  App / Printer / Clipboard where first referenced in any module's code
+  (`Decompiler.global_table`; predicts every Type/field pointer of the
+  samples). `As <class>` names aren't entries. Its end is the project
+  record's +30 - 259. Types
   and fields store pointers into it, so every Type/field name but the
   last gets its original length (`fit_types`); the first Type marks the
   pool's end when no Global precedes it.
