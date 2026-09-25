@@ -6,7 +6,7 @@ VB3 language feature has a battery, and every case round-trips to
 identical p-code and form resources. What's left is whole-exe byte
 identity (Phase 3) and a final usage pass (Phase 4).
 
-Current numbers: batteries 873/969 exe-identical (all p-code identical);
+Current numbers: batteries 911/969 exe-identical (all p-code identical);
 samples 16/22 exe-identical (all 483/483 procedures p-code identical).
 
 "Complete" (Phase 3's target): with names padded to their original
@@ -43,13 +43,9 @@ picking per item based on how many unknowns and constraints it has.
    both reverted after regressions (the second including a p-code
    regression, from converting based on a decl+50 excess that turned
    out to have a different cause in that module).
-3. **declares: Alias/ordinal names (decl+0/+64), parameter types.**
-   Mostly the same name-length issue (item 1). A Declare parameter of a
-   user Type resolving to `As Any` is not itself a bug — it already
-   compiles and matches p-code (`calldlls` sample: 18/18 procs). A fix
-   resolving it to the real Type name was reverted: it regressed
-   `calldlls` by shifting the global image / record allocation order
-   relative to a Global in the same module.
+3. **declares**: Aliases are recovered (from pool lengths); left:
+   `+30` sums with Declare parameters (`ByRef String`, `param types`,
+   `user type param`) and `many declares` (decl +140..).
 4. **Init-list order** (see OPCODES.md "Init lists"): fitted for module
    lists, Static arrays and the global list (`fit_inits`,
    `fit_global_inits`, `order_pads`); fixed `timecard` and `biblio`.

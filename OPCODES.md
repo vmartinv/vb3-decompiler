@@ -225,8 +225,9 @@ still copied from the original source).
   u8, u8 len, name`, offsets from its start + 2; DLL/`Declare` names), then
   each .bas image, then each form image (16 zero bytes, form record at
   0x16); each image followed by its init list (below). Chunks are `u16 len, u16, u16 0x1E`; the word
-  before a module's chunk + 4 is its declarations record (+18 flags: 0x40
-  Option Explicit, 0x800 Option Compare Text, 0x8000 the text contains a
+  before a module's chunk + 4 is its declarations record (+18 flags: 1
+  Option Base 1, 0x40 Option Explicit, 0x800 an Option Compare (+20: 1
+  Text, 0 Binary), 0x8000 the text contains a
   tab; +30 name-table size, +34 the same in 16-byte units; +44 DefType
   table or 0xFFFF; +50 line count).
 - **Slots**: one numbering per module, in compile order (source text
@@ -392,9 +393,13 @@ still copied from the original source).
   8-bucket table (as OBJ_FREE). Global list: offsets are the global name
   table's (below). The swapped words in
   `timecard`'s `Card` are this list.
-- A `Global` fixed-size array in its declaring .bas: slot = global
-  offset, then `0x4000 | dims, 0xC000 | element type` (bounds in the
-  global image).
+- A `Global` array in its declaring .bas: slot = global offset, then
+  `0x4000 | dims` (fixed size; bounds in the global image) or 0 (dynamic),
+  then `0xC000 | element type`.
+- A Declare's `Alias` shows only as its name's length (the compile-time
+  pool entry at record +4): a name as long as the DLL entry's compiles
+  identically either way (`alias_len`, from the pool gaps; the pool's
+  last entry ends at the global name table).
 - Name-table size (+30) is fitted by resizing the last-appearing
   generated names (`fit_size`; Globals first, `fit_globals`).
 - Line counts: procedure record +50 counts its lines, not the blank lines

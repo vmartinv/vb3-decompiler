@@ -309,8 +309,10 @@ class Decompiler:
         self.table = self.segs[P.PROC_TABLE_SEGMENT - 1].data
         self.image = self.res.get(2, b"")
         self.forms = P.form_names(self.res)
+        # entries `FF 01, u16 heap address (varies), u8, file name, 0`: the address
+        # bytes can look like text, so the name starts after them
         self.form_files = [m.decode("latin-1") for m in
-                           re.findall(rb"([\x21-\x7e]+\.FRM)\x00", self.res.get(1, b""), re.I)]
+                           re.findall(rb"(?s)\xff\x01...([\x21-\x7e]+?\.FRM)\x00", self.res.get(1, b""), re.I)]
         self.procs = P.find_procs(self.segs)
         self.by_record = {p.record: p for p in self.procs}
         self.proc_name: dict[int, str] = {}  # record -> emitted procedure name
@@ -579,11 +581,13 @@ class Decompiler:
         m.update(infos=infos, vars=vars_, refs=refs, udt=udt, first_owned=first_owned, call_slots=call_slots)
 
     def global_desc(self, base: int, s: int) -> int:
-        """Bytes of a Global fixed-size array's descriptor at s in its declaring
-        .bas (after the global offset): `0x4000 | dims, 0xC000 | element type`
-        (the bounds are in the global image); 0 if none."""
+        """Bytes of a Global array's descriptor at s in its declaring .bas
+        (after the global offset): `0x4000 | dims` (fixed size; the bounds are
+        in the global image) or 0 (dynamic), then `0xC000 | element type`;
+        0 if none."""
         w, f = self.value(base, s, False), self.value(base, s + 2, False)
-        return 4 if w & 0xFF00 == 0x4000 and 1 <= w & 0xFF <= 60 and f >> 8 == 0xC0 and 0 <= f & 0xFF <= 9 else 0
+        fixed = w & 0xFF00 == 0x4000 and 1 <= w & 0xFF <= 60
+        return 4 if (fixed or w == 0) and f >> 8 == 0xC0 and 0 <= f & 0xFF <= 9 else 0
 
     def init_list(self, chunk: int | None) -> set[int] | None:
         """The entries of the init list after the image at chunk, if any."""
@@ -890,7 +894,8 @@ class Decompiler:
             t = self.table
             dll = pool_name(self.image, self.pool, word(t, r + 40)).rstrip(".")
             fn = self.declare_name(r)
-            alias = f' Alias "#{fn[3:]}"' if pool_name(self.image, self.pool, word(t, r + 46)).startswith("#") else ""
+            entry = self.declare_entry(r)
+            alias = f' Alias "{entry}"' if entry.startswith("#") or entry.lower() != fn.lower() else ""
             kind = "Function" if t[r + 12] == 2 else "Sub"
             params = self.declare_params(r)
             line = f'Declare {kind} {fn} Lib "{dll}"{alias} ({", ".join(params)})'
@@ -899,10 +904,57 @@ class Decompiler:
             out.append(line)
         return out
 
-    def declare_name(self, r: int) -> str:
-        """A Declare's name: its DLL entry name; an ordinal entry (`Alias "#n"`) is named Ord<n>."""
-        fn = pool_name(self.image, self.pool, word(self.table, r + 46))
-        return f"Ord{fn[1:]}" if fn.startswith("#") else fn
+    def fit_tail_alias(self, mods: list[dict]) -> None:
+        """The pool's last entry has no next one to measure it by: when it is a
+        Declare's name, its end is the global name table's start (the project
+        record's +30 - 259 - the table). A length other than its DLL entry's
+        means an Alias: rename it in the text and add the Alias."""
+        if not self.pool_tail:
+            return
+        o, recs = self.pool_tail
+        recs = [r for r in recs if r not in self.by_record and r not in self.events]
+        if not recs:
+            return
+        n = word(self.table, 12 + 30) - 259 - sum(len(sp) + 4 for _, sp in self.global_table()) - o - 4
+        for r in recs:
+            old = self.declare_name(r, assumed=True)
+            if not 1 <= n <= 40 or n == len(old) or r in self.alias_len:
+                continue
+            self.alias_len[r] = n
+            new = self.declare_name(r)
+            self.proc_name[r] = new
+            entry = self.declare_entry(r)
+            pat = re.compile(rf'(?<![\w."]){re.escape(old)}\b', re.I)
+            for mm in mods:
+                lines = []
+                for ln in mm["lines"]:
+                    mt = re.match(rf'(\s*(?:Global\s+)?Declare\s+(?:Sub|Function)\s+){re.escape(old)}(\s+Lib\s+"[^"]*")(\s+Alias\s+"[^"]*")?', ln, re.I)
+                    if mt:
+                        ln = f'{mt.group(1)}{new}{mt.group(2)} Alias "{entry}"' + ln[mt.end():]
+                    else:
+                        ln = pat.sub(new, ln)
+                    lines.append(ln)
+                mm["lines"] = lines
+
+    def declare_entry(self, r: int) -> str:
+        """A Declare's DLL entry name (`#n`: an ordinal)."""
+        return pool_name(self.image, self.pool, word(self.table, r + 46))
+
+    def declare_name(self, r: int, assumed: bool = False) -> str:
+        """A Declare's name: its DLL entry name (an ordinal's: Ord<n>), resized
+        to the name's length in the compile-time pool when that differs (the
+        original used an Alias). assumed: without that correction."""
+        fn = self.declare_entry(r)
+        fn = f"Ord{fn[1:]}" if fn.startswith("#") else fn
+        n = None if assumed else getattr(self, "alias_len", {}).get(r)
+        if n is None or n == len(fn):
+            return fn
+        from namesize import KEYWORDS, BUILTINS
+        base = fn[:n] if n < len(fn) else fn + "x" * (n - len(fn))
+        others = {self.declare_name(x, assumed=True).lower() for x in self.alias_len if x != r}
+        import itertools
+        cands = itertools.chain([base], (base[:-1] + c for c in "xzqjkvw0123456789"), grown(fn, n - len(fn)))
+        return next(c for c in cands if c.lower() not in KEYWORDS | BUILTINS | others and c[0].isalpha())
 
     def declare_home(self, r: int) -> dict:
         """The module a slotless Declare is written in: a module's records
@@ -917,7 +969,7 @@ class Decompiler:
         seen = self.call_types.get(r, [])
         words = self.table[r + 15]
         out = []
-        taken = {self.declare_name(x).lower() for x in range(0, len(self.table) - 55, 8)
+        taken = {self.declare_name(x, assumed=True).lower() for x in range(0, len(self.table) - 55, 8)
                  if x not in self.by_record and self.is_declare(x)}
         pn = "P" if not any(re.fullmatch(r"p\d+", x) for x in taken) else "Arg"
         if seen:
@@ -972,11 +1024,13 @@ class Decompiler:
             out += types[g].lines(gtypes)
         out = decl_lines + out
         # declarations record (the word before the module's image + 4):
-        # +18 flags (0x40 Option Explicit, 0x800 Option Compare Text, 0x8000 tabs), +50 line count
+        # +18 flags (1 Option Base 1, 0x40 Option Explicit, 0x800 Option Compare, 0x8000 tabs), +50 line count
         rec = word(self.image, m["image"] - 2) + 4
         flags, count = word(self.table, rec + 18), word(self.table, rec + 50)
-        if flags & 0x0800:
-            out.insert(0, "Option Compare Text")
+        if flags & 0x0800:  # an Option Compare statement; +20: 1 Text, 0 Binary
+            out.insert(0, "Option Compare Text" if word(self.table, rec + 20) else "Option Compare Binary")
+        if flags & 0x0001:
+            out.insert(0, "Option Base 1")
         # +44 (DefType table offset): 4, + 2 after a comment line, + 4 after Option Explicit
         dt = word(self.table, rec + 44)
         opt_first = m["defint"] and (dt - 4) & 4
@@ -1065,6 +1119,7 @@ class Decompiler:
                 m["nv_pick"], m["nv_delta"] = max(0, -d), d
                 m.pop("spans", None)
                 m["lines"] = self.emit_module(m)
+        self.fit_tail_alias(mods)
         self.renamed: set[str] = set()
         self.fit_types(mods)
         for m in mods:
@@ -1108,7 +1163,7 @@ class Decompiler:
                 if r in self.events:
                     known = len(self.events[r])
                 elif r not in self.by_record:  # Declare: its DLL function name (no Alias assumed)
-                    known = len(self.declare_name(r))
+                    known = len(self.declare_name(r, assumed=True))
             length.append(known)
         files = {b: self.form_files[k] if k < len(self.form_files) else None
                  for k, b in enumerate(b for b, m in enumerate(mods) if m["kind"] == "frm")}
@@ -1198,6 +1253,11 @@ class Decompiler:
                 D[0] = n - 1 - len(files[x])
         self.name_len = {r: length[k] for k, o in enumerate(offs) for r in at[o]
                          if length[k] is not None and 0 < length[k] <= 40}
+        paths = [word(t, word(self.image, m["image"] - 2) + 4) for m in mods]
+        self.pool_tail = (offs[-1], at[offs[-1]]) if offs and not tptr and max(paths, default=0) < offs[-1] else None
+        # a Declare whose name isn't as long as its DLL entry's: the original used an Alias
+        self.alias_len = {r: n for r, n in self.name_len.items() if r not in self.by_record
+                          and r not in self.events and n != len(self.declare_name(r, assumed=True))}
         self.bas_path_len = {b: v for b, v in bas_len.items() if v is not None}
         self.orig_dir_len = D[0]
 
@@ -1677,8 +1737,7 @@ class Decompiler:
         ids = identifiers(code)
         order = {low: j for j, low in enumerate(ids)}
         taken = set(ids) | KEYWORDS | BUILTINS | self.project_names()
-        fixed = {s for i in m["infos"] for s in i.params} | {i.ret_slot for i in m["infos"]} | \
-            {i.name.lower() for i in m["infos"] if i.name}
+        fixed = {i.ret_slot for i in m["infos"]} | {i.name.lower() for i in m["infos"] if i.name}
         glob = {x.lower() for x in self.global_name.values()}
         local = sorted((order[n.lower()], s) for s, n in m["names"].items()  # module-private names
                        if n.lower() in order and m["vars"].get(s) and m["vars"][s].scope in ("LOC", "MOD")
