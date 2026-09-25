@@ -13,24 +13,36 @@ samples 14/22 exe-identical (all 483/483 procedures p-code identical).
 lengths, the rebuilt exe is byte-identical to the original.
 
 ## Remaining items
+VB.EXE is a deterministic compiler: every original exe was produced by
+*some* source text, so a byte-exact reconstruction is possible in
+principle for all of these — none is a dead end, they're just unsolved.
+Where a field's value can't be read off directly, the sums/counts we
+can read (name-table sizes, line counts, etc.) are constraints on the
+source, not the answer by themselves; whatever finds the right source
+detail (derivation, search, cross-checking against another field,
+recompiling and comparing, or something else) is fair game, and worth
+picking per item based on how many unknowns and constraints it has.
 
-1. **Global variable/constant name lengths.** Only the *sums* are
+1. **Global variable/constant name lengths.** Only sums are directly
    observable from the exe (module decl+30, project record decl+30/+34,
-   Type-pointer prefix sums over the global name table); the individual
-   name lengths are a guess. Root cause of most remaining single-case
-   failures across `deftype`, `types`, `names`, `objects`, `statements`,
-   and of `modlevel` (0/16: short synthetic Global names shrink the
-   shared name pool, shifting every later module's data by a few bytes,
+   Type-pointer prefix sums over the global name table) — the individual
+   name lengths aren't stored, but the sums are real constraints on
+   them. Root cause of most remaining single-case failures across
+   `deftype`, `types`, `names`, `objects`, `statements`, and of
+   `modlevel` (0/16: short synthetic Global names shrink the shared
+   name pool, shifting every later module's data by a few bytes,
    project-wide — one root cause, many symptoms).
-2. **types: Static locals (rec+18, decl+50).** Confirmed unrecoverable:
-   a scalar `Static x As T` local and an equivalent single-procedure
-   module `Dim` compile to byte-identical p-code, with no data-level
-   marker distinguishing them (unlike Static arrays, which carry an
-   explicit 0xC1/0xC2 flag — see CLAUDE.md). Two fix attempts (a
-   single-owning-procedure heuristic, and an exact decl+50-arithmetic
-   version) both reverted after net regressions, including a p-code
-   regression from the second. Not worth revisiting without a new
-   signal.
+2. **types: Static locals (rec+18, decl+50).** A scalar `Static x As T`
+   local and an equivalent single-procedure module `Dim` compile to
+   byte-identical p-code (checked directly), and no data-level marker
+   distinguishes them the way Static arrays' explicit 0xC1/0xC2 flag
+   does (see CLAUDE.md) — so this needs a different kind of signal than
+   "read one bit off the data." Two attempts so far, both derived a
+   choice from one field's arithmetic alone and neither verified the
+   result against the actual recompiled exe before applying it broadly;
+   both reverted after regressions (the second including a p-code
+   regression, from converting based on a decl+50 excess that turned
+   out to have a different cause in that module).
 3. **declares: Alias/ordinal names (decl+0/+64), parameter types.**
    Mostly the same name-length issue (item 1). A Declare parameter of a
    user Type resolving to `As Any` is not itself a bug — it already
@@ -39,7 +51,9 @@ lengths, the rebuilt exe is byte-identical to the original.
    `calldlls` by shifting the global image / record allocation order
    relative to a Global in the same module.
 4. **timecard**: two words of a module list swapped (declaration
-   order) — 2 bytes, `rc2.Card` region. Not yet root-caused.
+   order) — 2 bytes, `rc2.Card` region. Not yet root-caused; control
+   declaration order in the .frm text was checked and ruled out (orig
+   and deco match exactly there).
 5. **biblio**: data image diff, 3121 bytes — the largest remaining.
    Not yet broken down by place.
 6. **Phase 4 final pass**: once the above settle, run every battery

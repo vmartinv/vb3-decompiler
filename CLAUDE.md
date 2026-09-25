@@ -41,14 +41,15 @@ Reusable VB3 reverse-engineering tools + findings. Companion to
   module's p-code once bundled. Zero p-code regressions (CODE/CRASH/
   DECOFAIL) is non-negotiable — revert rather than trade a p-code
   regression for an exe-byte win.
-- An exact arithmetic constraint derived from one exe field (e.g. a
-  module's own decl+50 line count) is only trustworthy when it's the
-  *sole* discrepancy source for that module. This corpus has several
-  independently-guessed, entangled sources of exe mismatch already
-  (name lengths, DefType's own line-counting); a derived "this must be
-  the missing piece" value can be misattributed when another source is
-  also active in the same module, and converting on a wrong attribution
-  can itself introduce a p-code regression, not just a wrong guess.
+- VB.EXE is a deterministic compiler, so every original exe has *some*
+  exact-match source; a remaining mismatch means the right source-level
+  detail hasn't been found yet, not that it's unrecoverable. But this
+  corpus has several independent, still-unresolved sources of mismatch
+  active at once (name lengths, per-field line-counting quirks, ...), so
+  a value read off or derived from a single field can be misattributed
+  when more than one source is active in the same module — check it
+  against another independent field, or another way, before applying it
+  broadly; a wrong attribution can cost a p-code match, not just a byte.
 
 ## Key files
 
