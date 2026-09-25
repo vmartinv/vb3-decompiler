@@ -597,10 +597,13 @@ class Decompiler:
         for m in mods:
             items, s = [], m["decl_start"]
             end = m["first_owned"]
+            img_end = word(self.image, m["image"])
             known = sorted(x for x in m["vars"] if x >= s)
             while s < end:
                 v = m["vars"].get(s)
                 nxt = next((x for x in known if x > s), end)
+                if nxt == end == img_end - 1:  # `first_owned`'s "nothing owned" fallback is one
+                    nxt = img_end              # less than the image end (kept odd for `top`, below)
                 g = self.value(m["image"], s, False)
                 if v is None and (a := self.array_at(m["image"], s + 2)) and a[2] in (8, 9):
                     s += 2  # a String * n array's length / an object array's kind
@@ -923,7 +926,7 @@ class Decompiler:
             out.insert(1 if opt_first else 0, "DefInt A-Z")
         m["comment_first"] = not m["defint"] or bool((dt - 4) & 2)
         j = 0  # more lines than the original: join declarations (`Dim a As X, b As Y`)
-        while count and len(out) + 1 > count and j + 1 < len(out):
+        while count and len(out) > count and j + 1 < len(out):
             kw = next((k for k in ("Global Const ", "Const ", "Global ", "Dim ") if out[j].startswith(k)), None)
             if kw and out[j + 1].startswith(kw) and not out[j + 1].startswith(kw + "Const "):
                 out[j:j + 2] = [out[j] + ", " + out[j + 1][len(kw):]]
