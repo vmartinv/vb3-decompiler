@@ -142,7 +142,8 @@ def plain_handler(rt: P.Runtime, op: int) -> tuple[str | None, str]:
     return (f"{fam}.X", SUFFIX_OF_ID.get(oid >> 10, "")) if fam else (None, "")
 
 
-ID_CLASS = {0x0B: "LOAD", 0x0C: "STORE", 0x0E: "ALOAD", 0x0F: "ASTORE"}  # interpreter ID low byte
+ID_CLASS = {0x0B: "LOAD", 0x0C: "STORE", 0x0E: "ALOAD", 0x0F: "ASTORE",  # interpreter ID low byte
+            0x13: "FIELD_ALOAD", 0x14: "FIELD_ASTORE"}
 
 
 def image_layout(image: bytes, nforms: int) -> dict:
@@ -261,6 +262,11 @@ def stmt_column(rt: P.Runtime, op: int, operand: bytes = b"") -> int | None:
     return STMT_COLUMN.get(op)
 
 
+# Print items (`;` / end of line) per value type: the type of what is printed
+PRINT_TYPE = {0x6085: "V", 0x6045: "I", 0x604B: "L", 0x6059: "S", 0x6069: "D", 0x607F: "C", 0x6104: "T",
+              0x60A4: "V", 0x60DE: "I", 0x608F: "L", 0x609D: "S", 0x60AE: "D", 0x60B5: "C", 0x6132: "T"}
+
+
 def lt_hint(nxt: str) -> str:
     """Long or String for a shared 4-byte load, from the handler consuming it."""
     if nxt.startswith("CVT."):
@@ -285,6 +291,7 @@ class Decompiler:
         self.events = P.proc_names(self.segs, rt, self.res)
         rt.event_lists()  # fills P.EVENT_TYPES
         self.ids = {op: rt.opcode_id(op) or 0 for op in range(len(rt.code))}
+        self.col_fixes: list[tuple[str, int]] = []  # (ReDim target, characters too many before a compiled column)
         self.table = self.segs[P.PROC_TABLE_SEGMENT - 1].data
         self.image = self.res.get(2, b"")
         self.forms = P.form_names(self.res)
@@ -463,8 +470,8 @@ class Decompiler:
                 elif sfx:
                     t = TYPE_OF_SUFFIX[sfx]
                 elif t == "L/T":
-                    nxt = NAMES.get(info.insns[j + 1].op, "") if j + 1 < len(info.insns) else ""
-                    t = lt_hint(nxt)
+                    nxt_op = info.insns[j + 1].op if j + 1 < len(info.insns) else None
+                    t = PRINT_TYPE.get(nxt_op) or lt_hint(NAMES.get(nxt_op, ""))
                 if t in SUFFIX or t.startswith("F"):
                     v.votes[t] = v.votes.get(t, 0) + 1
 
@@ -1102,7 +1109,9 @@ class Decompiler:
                             struct.unpack_from("<H", i.operand, len(i.operand) - 2)[0] == info.ret_slot:
                         self.suffixed.add(info.proc.record)
                 calls, info.callees = [], []
+                self.col_fixes = []
                 self.statements(info, m["names"], calls)
+                self.fit_columns(m)
                 by_name = {n.lower(): x for x, n in m["names"].items()}
                 for name, operand, types, texts in calls:
                     for j, (t, tx) in enumerate(zip(types, texts)):
@@ -1117,6 +1126,34 @@ class Decompiler:
                     self.call_types.setdefault(rec & 0xFFF8, []).append(types)
                     self.call_texts.setdefault(rec & 0xFFF8, []).append(texts)
                     self.call_modules.setdefault(rec & 0xFFF8, set()).add(id(m))
+
+    def fit_columns(self, m: dict) -> None:
+        """Rename arrays whose `ReDim ... As` lands in the wrong column to a
+        name of the length that puts it right."""
+        by_name = {n.lower(): x for x, n in m["names"].items()}
+        for target, extra in self.col_fixes:
+            # the variables in `a(i, j)`, the array first; each keeps at least 1 character
+            words = list(dict.fromkeys(w for w in re.findall(r"[A-Za-z]\w*", target) if w.lower() in by_name))
+            sizes = {w: len(w) for w in words}
+            for w in words:
+                cut = extra if extra < 0 else min(extra, sizes[w] - 1)
+                sizes[w] -= cut
+                extra -= cut
+                if extra == 0:
+                    break
+            if extra:
+                continue
+            taken = {n.lower() for mm in self.all_mods for n in mm.get("names", {}).values()} | \
+                {n.lower() for n in self.proc_name.values() if n}
+            for w, size in sizes.items():
+                if size == len(w):
+                    continue
+                new = next(n for c in "abcdefghijklmnopqrstuvwxyz" for k in range(10 ** (size - 1))
+                           if (n := c + (str(k).zfill(size - 1) if size > 1 else "")) not in taken)
+                taken.add(new)
+                m["names"][by_name[w.lower()]] = new
+                by_name[new] = by_name[w.lower()]
+        self.col_fixes = []
 
     def fit_names(self, m: dict) -> None:
         """Names for general procedures (not stored) that keep both orders
@@ -1662,6 +1699,7 @@ class Decompiler:
             cur.append((i.op, i.operand))
             curn.append(self.name_for(i, note, names))
         flush()
+        out = [(c, self.check_columns(c, t)) for c, t in out]
         numbered = {i.pc: label_number(i.operand) for i in info.insns
                     if i.op in (LABEL, LABEL_WIDE) and label_number(i.operand) != 0xFFFFFFFF}
         if numbered:  # line-number labels: jumps name them by number
@@ -1669,8 +1707,21 @@ class Decompiler:
                    for c, t in out]
         return out
 
+    def check_columns(self, c: int, text: str) -> str:
+        """Strip the lifter's `\x01col\x01` marks (text columns compiled into
+        the p-code: `ReDim a(n) As T`) and note, per array name before the
+        mark, how many characters too long the line is there."""
+        while (k := text.find("\x01")) >= 0:
+            e = text.index("\x01", k + 1)
+            want = int(text[k + 1:e])
+            text = text[:k] + text[e + 1:]
+            target = re.search(r"\w+\([^()]*(?:\([^()]*\)[^()]*)*\) $", text[:k])
+            if target and c + k != want:
+                self.col_fixes.append((target.group(0), c + k - want))
+        return text
+
     def name_for(self, i, note: str, names: dict) -> str | None:
-        n = NAMES.get(i.op) or ""
+        n = NAMES.get(i.op) or {0x13: "FIELD_ALOAD", 0x14: "FIELD_ASTORE"}.get(self.ids.get(i.op, 0) & 0xFF, "")
         sfx = ""
         if not n and plain_handler(self.rt, i.op)[0] == "CALL_FN":
             n, sfx = plain_handler(self.rt, i.op)

@@ -313,8 +313,15 @@ still copied from the original source).
   names (per-module name table +30, table offset 76 record +30), the last
   pool entry, Declare aliases.
 - DefType tables beyond `DefInt A-Z` (only form seen in the samples).
-- Batteries (`tools/battery.py`, 670/695): types 57/62; builtins,
-  expressions, print, statements, names, deftype complete.
+- Batteries (`tools/battery.py`, 681/682): types 68/69 (object vars:
+  free order, see below); builtins, expressions, print, statements,
+  names, deftype complete.
+- Type array fields: field "next" | 1, descriptor after the field (see
+  vbdecl.py). FIELD_ALOAD/ASTORE per element type: ID 0x13 / 0x14.
+- REDIM_AS second word: the text column of `As`; generated names are
+  resized to put it there.
+- Print item ops per type (`;` / end of line): V 6085/60A4, I 6045/60DE,
+  L 604B/608F, S 6059/609D, D 6069/60AE, C 607F/60B5, T 6104/6132.
 - Labels: LABEL 4965 `u32` = FFFFFFFF (named) or `FFFF, line number`;
   48BE adds a word, the spaces before a statement on the label's line.
   A statement marker after the label = the statement on its own line.
@@ -328,6 +335,13 @@ still copied from the original source).
 - `String * n`: 3264/3275 its address (module or Static / local) for
   LSet/RSet and ByRef arguments; 6AE2/6B1B copy a ByRef argument to a
   temp and back. 6AC5: ARG_TEMP for 4-byte values.
+- Epilogue frees (OBJ_FREE 4FA6, 505F, Type 6F79) follow the IDE's
+  local symbol table (VB.EXE seg53:3476, iterator 806A/8097): 8 buckets
+  for a procedure (16 at module level), walked in order, each chain in
+  insertion order. Bucket = (name-table offset >> 1) & 7 (seg53:6DB8):
+  a name's offset in the module's name table (entries 4 + length bytes,
+  allocated at first appearance in the module text). So free order is
+  fixed by the lengths and first-mention order of all earlier names.
 - Unused parameters have no slot: their count comes from the callers,
   their layout from the BP frame (`6 + 2 * argwords`).
 - Procedure/Declare records (56 bytes) follow the module's declarations

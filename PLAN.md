@@ -1,7 +1,7 @@
 # Plan: complete the VB3 decompiler
 
 ## Context
-The decompiler already round-trips every sample: 483/483 procedures and every form are byte-identical (`/MAKE` build vs `/MAKE` build). It passes 670 of 695 generated battery cases.
+The decompiler already round-trips every sample: 483/483 procedures and every form are byte-identical (`/MAKE` build vs `/MAKE` build). It passes 681 of 682 generated battery cases.
 
 "Complete" means three things:
 1. Every VB3 language feature has a battery.
@@ -22,11 +22,8 @@ The loop for every feature is the same:
 
 ### statements: done (68/68)
 
-### types (5 failures)
-- dynamic ReDim
-- Const kinds (typed consts, and constant expressions folded into the table)
-- object variables
-- rerun Type all fields and nested Type with an array field
+### types: 68/69
+- object variables: epilogue free order depends on name-table offsets (Phase 3).
 
 ### deftype: done (56/56)
 The DefType letter table itself is still undecoded (declarations record +44 is only a "has DefType" flag); p-code is identical without it, so it moves to Phase 3.
@@ -58,6 +55,8 @@ Build one battery per item, each probed first:
    - hash-bucket order;
    - the record +4 offsets that still differ in `objects` and `recedit`.
    - unused Declares' parameter types (none recorded at +15) and Alias names (the VB-side name isn't at +46).
+   - name-table offsets: epilogue free order of object/Type locals depends on them (bucket = (offset >> 1) & 7); the types case "object vars" needs it.
+   - a module's last Long constant (`&HFFFF&`) is emitted as a Long variable (room cut short by `first_owned`); p-code identical, table not.
    - the DefType letter table (26 types per module), so `DefXxx` lines are recovered rather than inferred.
 3. Pad generated names to their original lengths and keep the hash order, so a rebuild matches the original exe byte for byte. Target: every battery case and every sample identical in `--exe` mode.
 

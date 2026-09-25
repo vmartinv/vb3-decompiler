@@ -5,8 +5,11 @@ Used by decompile.py. Layout rules: see ../OPCODES.md, "Source recovery".
 
 Global image (the first chunk): global offset g is at chunk + 2 + g.
   g 4: head of the Type chain; a Type is `name, next Type, size, first
-       field`; a field is `name, next field, type, offset` (+ a length word
-       before it for fixed-length strings). Names point into the IDE's name
+       field (or its String list)`, fields from +8; a field is `name, next
+       field (| 1: an array), type, offset` (+ a length word before it for
+       fixed-length strings; + an array descriptor after it: count, 0,
+       dims | flags << 8, adjust, element size, shift, then count/lower
+       bound per dimension, last first). Names point into the IDE's name
        table (not stored), so Types and fields get synthetic names; FIELD_*
        operands are field record offsets.
   globals follow from g 6, in declaration order, values inline.
@@ -36,12 +39,15 @@ class Field:
     type: int
     offset: int
     length: int = 0
+    dims: list = field(default_factory=list)  # array field: (count, lower bound) per dimension
 
     def decl(self, types: dict) -> str:
+        bounds = ", ".join(str(n - 1) if lb == 0 else f"{lb} To {lb + n - 1}" for n, lb in self.dims)
+        name = f"F{self.g:X}" + (f"({bounds})" if self.dims else "")
         if self.type == 8:
-            return f"F{self.g:X} As String * {self.length}"
+            return f"{name} As String * {self.length}"
         t = types.get(self.type)
-        return f"F{self.g:X} As " + (t.name if t else TYPE_NAME.get(TYPE_CODE.get(self.type, "V"), "Variant"))
+        return f"{name} As " + (t.name if t else TYPE_NAME.get(TYPE_CODE.get(self.type, "V"), "Variant"))
 
 
 @dataclass
@@ -71,17 +77,22 @@ class GlobalImage:
         while t and t not in seen and t < self.size:
             seen.add(t)
             td = TypeDef(t, self.w(t + 4))
-            f, end = self.w(t + 6), t + 8
+            # t + 6: the first field, or (a Type with Strings) its String list; fields start at t + 8
+            f = self.w(t + 6) if self.w(t + 6) in (t + 8, t + 10) else t + 8
+            end = t + 8
             while f and f < self.size and len(td.fields) < 256:
-                typ = self.w(f + 4)
+                typ, nxt = self.w(f + 4), self.w(f + 2)
                 fl = Field(f, typ, self.w(f + 6), self.w(f - 2) if typ == 8 else 0)
+                if nxt & 1:  # an array field: a descriptor follows (dims in reverse order)
+                    nd = self.w(f + 12) & 0xFF
+                    fl.dims = [(self.w(f + 20 + 4 * k), self.w(f + 22 + 4 * k, True)) for k in range(nd)][::-1]
                 td.fields.append(fl)
                 self.field_type[f] = td
-                end = max(end, f + 8)
-                f = self.w(f + 2)
+                end = max(end, f + 8 + (12 + 4 * len(fl.dims) if fl.dims else 0))
+                f = nxt & ~1
             self.types[t] = td
             self.type_extent.append((min([t] + [x.g - (2 if x.type == 8 else 0) for x in td.fields]), end))
-            t = self.w(t + 2)
+            t = self.w(t + 2) & ~1
 
     def w(self, g: int, signed: bool = False) -> int:
         return word(self.d, self.base + 2 + g, signed)

@@ -34,6 +34,11 @@ cases += [
          extra=[dict(bas=True, code="Type Rec\n    i As Integer\n    l As Long\n    s As Single\n    d As Double\n    c As Currency\n    st As String\n    fs As String * 10\n    v As Variant\nEnd Type\n")]),
     dict(name="Type nested + array field", code=use("    Dim o As Outer\n    o.inn.x = 1\n    o.arr(2) = 3\n    Debug.Print o.inn.x"),
          extra=[dict(bas=True, code="Type Inner\n    x As Integer\nEnd Type\nType Outer\n    inn As Inner\n    arr(5) As Integer\nEnd Type\n")]),
+] + [dict(name=f"Type array field {k}", code=use(f"    Dim r As A{k}\n    r.a({idx}) = {'\"x\"' if 'String' in t else 1}\n    Debug.Print r.b"),
+             extra=[dict(bas=True, code=f"Type A{k}\n    b As Integer\n    a({dims}) As {t}\n    c As Long\nEnd Type\n")])
+    for k, (dims, idx, t) in enumerate([("5", "2", "Integer"), ("2 To 7", "3", "Integer"), ("3, 4", "1, 2", "Integer"),
+                                        ("1 To 2, -1 To 3", "1, 0", "Long"), ("9", "0", "String"),
+                                        ("4", "1", "String * 3"), ("2", "1", "Double")])] + [
     dict(name="array of Type", code=use("    Static a(3) As P2\n    a(1).x = 1\n    Debug.Print a(1).x"),
          extra=[dict(bas=True, code="Type P2\n    x As Long\n    y As Long\nEnd Type\n")]),
     dict(name="Const kinds", code=use("    Debug.Print C1; C2; C3; C4; C5; C6; C7",

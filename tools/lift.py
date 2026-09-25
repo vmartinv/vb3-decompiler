@@ -158,7 +158,8 @@ def lift(code: list[tuple[int, bytes]], ids: dict[int, int] | None = None,
         if low == 0x0E and oid >> 10 and any(NAMES.get(op + k) == "CALL_FN" and ids.get(op + k) == oid & 0x3FF
                                              for k in range(1, 17)):
             return "CALL_FN"  # a function call written with a type suffix: `F%(1)`
-        return {0x0B: "LOAD.X", 0x0C: "STORE.X", 0x0E: "ALOAD.X", 0x0F: "ASTORE.X"}.get(low, name)
+        return {0x0B: "LOAD.X", 0x0C: "STORE.X", 0x0E: "ALOAD.X", 0x0F: "ASTORE.X",
+                0x13: "FIELD_ALOAD", 0x14: "FIELD_ASTORE"}.get(low, name)  # 13/14: per element type
 
     prev_name, prev_top = "", None
 
@@ -449,12 +450,13 @@ def lift(code: list[tuple[int, bytes]], ids: dict[int, int] | None = None,
             st.append(E(f"{nm(f'a{slot:x}').rstrip('$')}$({', '.join(dims)})"))  # 0768: `ReDim a$(...)`
         elif name == "RET_SLOT":
             ret_value.append(len(st))
-        elif name == "REDIM_AS":
-            redim_as = {1: "Integer", 2: "Long", 3: "Single", 4: "Double", 5: "Currency", 7: "String"}.get(
-                struct.unpack_from("<H", operand)[0], "Variant")
+        elif name == "REDIM_AS":  # u16 type, u16 the text column of `As` (marked for the caller to check)
+            t, at = struct.unpack_from("<HH", operand)
+            redim_as = f"\x01{at}\x01As " + {1: "Integer", 2: "Long", 3: "Single", 4: "Double", 5: "Currency",
+                                              7: "String"}.get(t, "Variant")
         elif name in ("REDIM", "REDIM_PRESERVE"):
             out.append(("ReDim Preserve " if name == "REDIM_PRESERVE" else "ReDim ") + pop().text
-                       + (f" As {redim_as}" if redim_as else ""))
+                       + (f" {redim_as}" if redim_as else ""))
             redim_as = None
         elif name == "UBOUND":
             st.append(E(f"UBound({pop().text})"))
