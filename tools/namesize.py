@@ -67,10 +67,12 @@ def identifiers(code: str) -> dict[str, str]:
     code = re.sub(r'"[^"]*"', "", code)
     code = re.sub(r"&[HhOo][0-9A-Fa-f]+&?", "", code)
     code = re.sub(r"'.*", "", code)
-    out: dict[str, str] = {}
-    for m in re.finditer(r"(?m)^(\d+)\b", code):  # numeric labels
-        out.setdefault(m.group(1), m.group(1))
-    for m in _TOKEN.finditer(code):
+    out: dict[str, str] = {}  # in first-appearance order (name-table offsets)
+    for m in re.finditer(r"(?m)^(\d+)\b|" + _TOKEN.pattern, code):
+        if m.group(1):  # numeric label
+            out.setdefault(m.group(1), m.group(1))
+            continue
+        m = _TOKEN.match(code, m.start())
         if m.group(4):
             if m.group(4).lower() not in METHODS:
                 out.setdefault(m.group(4).lower(), m.group(4))
@@ -83,6 +85,18 @@ def identifiers(code: str) -> dict[str, str]:
         out.setdefault(low, tk)
     if "b" in out:  # Line ..., B also registers BF
         out.setdefault("bf", "BF")
+    return out
+
+
+FIRST = 10  # name-table offset of a module's first identifier, mod 16
+
+
+def name_offsets(code: str) -> dict[str, int]:
+    """Name-table offset (mod 16 exact) of each identifier (lowercase)."""
+    out, o = {}, FIRST
+    for low, sp in identifiers(code).items():
+        out[low] = o
+        o += len(sp) + 4
     return out
 
 

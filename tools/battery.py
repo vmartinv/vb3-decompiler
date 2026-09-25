@@ -158,9 +158,26 @@ def per_case(orig_exe: Path, deco_exe: Path, mak: Path) -> dict[int, str]:
     return out
 
 
+def per_case_exe(orig_exe: Path, deco_exe: Path, mak: Path) -> dict:
+    """Whole-exe differences by case (None: places no module owns)."""
+    import exediff
+    files = module_files(mak)
+    bas = [f for f in files if f.lower().endswith(".bas")]
+    out: dict = {}
+    for place, bs in exediff.diff(orig_exe, deco_exe).items():
+        mod = re.match(r"(?:seg\d+\(|rc2\.)?(\w+)", place).group(1) if "." in place or "(" in place else ""
+        if re.fullmatch(r"bas\d+", mod):
+            mod = bas[int(mod[3:])] if int(mod[3:]) < len(bas) else ""
+        i = case_of(mod) if mod else None
+        txt = f"{place} " + " ".join(f"{o}:{u:02x}/{v:02x}" for o, u, v in bs[:4])
+        out[i] = f"{out[i]}; {txt}" if i in out else txt
+    return out
+
+
 class Runner:
-    def __init__(self, battery: str, cases: list[dict], chunk: int):
-        self.battery, self.cases, self.chunk = battery, cases, chunk
+    def __init__(self, battery: str, cases: list[dict], chunk: int, exe: bool = False):
+        self.battery, self.cases, self.chunk, self.exe = battery, cases, chunk, exe
+        self.shared: list[str] = []
         self.result: dict[int, str] = {}
         self.detail: dict[int, str] = {}
         self.nproj = 0
@@ -191,6 +208,12 @@ class Runner:
             return self.split(idx, "DECOFAIL", dmak)
         oexe = next(p for p in orig.parent.iterdir() if p.suffix.lower() == ".exe")
         res = per_case(oexe, dmak.with_suffix(".exe"), orig)
+        if self.exe:
+            for i, why in per_case_exe(oexe, dmak.with_suffix(".exe"), orig).items():
+                if i is None:
+                    self.shared.append(f"{stem}: {why}")
+                elif i not in res:
+                    res[i], self.detail[i] = "EXE", why
         for i in idx:
             self.result[i] = res.get(i, "ok")
 
@@ -234,12 +257,13 @@ def main():
     ap.add_argument("--chunk", type=int, default=24, help="modules per project")
     ap.add_argument("-k", help="only cases whose name contains this")
     ap.add_argument("--check", action="store_true", help="only compile the cases (validate the battery)")
+    ap.add_argument("--exe", action="store_true", help="also require whole-exe identity (EXE: differing places)")
     a = ap.parse_args()
     names = a.battery or sorted(p.stem for p in BATTERIES.glob("*.py"))
     for name in names:
         cases = load(name)
         sel = [i for i, c in enumerate(cases) if not a.k or a.k in c["name"]]
-        r = Runner(name, cases, a.chunk)
+        r = Runner(name, cases, a.chunk, a.exe)
         chunk: list[int] = []
         size = 0
         for i in sel:
@@ -262,6 +286,8 @@ def main():
             if r.result.get(i) != "ok":
                 print(f"  {i:03d} {r.result.get(i)} {cases[i]['name']}" +
                       (f"  ({r.detail[i][:150]})" if i in r.detail else ""), flush=True)
+        for x in r.shared:
+            print(f"  project {x[:200]}", flush=True)
 
 
 if __name__ == "__main__":

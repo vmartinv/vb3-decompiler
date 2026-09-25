@@ -589,6 +589,18 @@ class Decompiler:
                 v = m["vars"].get(s)
                 nxt = next((x for x in known if x > s), end)
                 g = self.value(m["image"], s, False)
+                if v is None and (a := self.array_at(m["image"], s + 2)) and a[2] in (8, 9):
+                    s += 2  # a String * n array's length / an object array's kind
+                    continue
+                if (a := self.array_at(m["image"], s)) and (v is None or v.array) and s not in m["udt"]:
+                    dims, size = self.array_dims(m["image"], s)
+                    if a[1]:  # Static: a procedure's (the first one's if unused)
+                        m.setdefault("static_arrays", []).append(
+                            (s, f"({dims}) As {a[0]}", v.procs[0] if v is not None and v.procs else None))
+                    else:
+                        items.append(("dim", s, f"({dims}) As {a[0]}"))
+                    s += size
+                    continue
                 if v is None and getattr(m["vars"].get(s + 2), "fixed", False):  # a String * n's length
                     s += 2
                     continue
@@ -747,6 +759,24 @@ class Decompiler:
             owner = owner or next((m for m in bas if not m["items"]), bas[0])
             owner.setdefault("types", []).append(td)
 
+    def array_at(self, base: int, slot: int) -> tuple[str, bool, int] | None:
+        """A fixed-size array's descriptor at slot: (element type, Static, type
+        code). Flags word (+4): element type in the low byte (1 Integer ..
+        7 String, 8 String * n, 9 object: length / object kind in the slot
+        before), 0xC2 Static, 0xC1 module level."""
+        w, f = word(self.image, base + slot + 4), word(self.image, base + slot + 6)
+        if w & 0xFF00 != 0x4000 or not 1 <= w & 0xFF <= 60 or f >> 8 not in (0xC1, 0xC2) or not 1 <= f & 0xFF <= 9:
+            return None
+        t, x = f & 0xFF, self.value(base, slot - 2, False)
+        name = {1: "Integer", 2: "Long", 3: "Single", 4: "Double", 5: "Currency", 6: "Variant", 7: "String"}.get(t)
+        if t == 8:
+            name = f"String * {x}"
+        elif t == 9:
+            fbase = 0x46 + len(P.vbx_entries(self.res.get(1, b"")))
+            name = OBJ_KINDS.get(x) or P.CLASS_BY_KIND.get(x) or \
+                (self.forms[x - fbase][0] if 0 <= x - fbase < len(self.forms) else "Control")
+        return name, f >> 8 == 0xC2, t
+
     def array_dims(self, base: int, slot: int, absolute: int | None = None) -> tuple[str, int]:
         """An array's descriptor (inline, from slot + 2): word +2 is 0x4000 |
         dimensions for a fixed-size array, whose last words are (count, lower
@@ -873,10 +903,21 @@ class Decompiler:
             out.insert(0, "DefInt A-Z")
         if flags & 0x40:
             out.insert(0, "Option Explicit")
-        out = ["'"] * max(0, count - len(out) - 1) + out + [""] if count else out
+        j = 0  # more lines than the original: join declarations (`Dim a As X, b As Y`)
+        while count and len(out) + 1 > count and j + 1 < len(out):
+            kw = next((k for k in ("Global Const ", "Const ", "Global ", "Dim ") if out[j].startswith(k)), None)
+            if kw and out[j + 1].startswith(kw) and not out[j + 1].startswith(kw + "Const "):
+                out[j:j + 2] = [out[j] + ", " + out[j + 1][len(kw):]]
+            else:
+                j += 1
+        trailing = count > len(out)  # the file's trailing blank line counts toward the declarations (+50)
+        if count:  # a blank line before a procedure doesn't count
+            out = ["'"] * max(0, count - len(out) - 1) + out + ([""] if m["infos"] else [])
         self.cur_mod = m
         for info in self.text_order(m):
             out += self.emit_proc(info, m["form"], m["vars"], m["names"], m["image"])
+        if trailing:
+            out.append("")
         if m["tabs"] and out and not any("\t" in s for s in out):
             i = out.index("'") if "'" in out else 0  # flag 0x8000 needs a tab somewhere
             out[i] = out[i] + ("\t" if out[i] == "'" else "\t'")
@@ -932,6 +973,13 @@ class Decompiler:
         self.decl_home = next((m for m in mods if m["kind"] == "bas"), mods[0])
         for m in mods:
             m["lines"] = self.emit_module(m)
+        self.renamed: set[str] = set()
+        for m in mods:
+            if m["kind"] == "bas":
+                self.fit_globals(m)
+        for m in mods:
+            self.fit_frees(m)
+            self.fit_size(m)
         self._mods = mods
         return mods
 
@@ -1170,6 +1218,199 @@ class Decompiler:
                     self.call_texts.setdefault(rec & 0xFFF8, []).append(texts)
                     self.call_modules.setdefault(rec & 0xFFF8, set()).add(id(m))
 
+    def fit_frees(self, m: dict) -> None:
+        """Pad local names so that each procedure frees its object/Type locals
+        in the original order. The epilogue walks the IDE's local symbol
+        table: 8 buckets in order, each in declaration order; the bucket is
+        (name-table offset >> 1) & 7, and offsets follow from the lengths
+        and first-appearance order of all earlier names (namesize)."""
+        from namesize import FIRST, identifiers
+        base, vars_, names = m["image"], m["vars"], m["names"]
+        from namesize import KEYWORDS, BUILTINS
+        taken = KEYWORDS | BUILTINS | self.project_names()
+        for info in self.text_order(m):
+            frees = [struct.unpack_from("<h", i.operand)[0] for i in info.insns if NAMES.get(i.op) == "OBJ_FREE"]
+            if len(frees) < 2:
+                continue
+            k = m["infos"].index(info)
+            local = {s for s, v in vars_.items() if v.procs and v.procs[0] == k and v.scope == "LOC"
+                     and s not in info.params and s != info.ret_slot and s in names and self.generated(names[s])}
+            bp = {self.value(base, s): names[s].lower() for s in local}
+            if not all(f in bp for f in frees):
+                continue
+            target = [bp[f] for f in frees]
+            ids = list(identifiers("\r\n".join(m["lines"])).items())
+            pos = {low: j for j, (low, _) in enumerate(ids)}
+            if not all(t in pos for t in target):
+                continue
+            adj = sorted(pos[names[s].lower()] for s in local if names[s].lower() in pos)
+            starts = [FIRST]
+            for _, sp in ids:
+                starts.append(starts[-1] + len(sp) + 4)
+
+            def ok(offs: dict) -> bool:
+                have = [t for t in target if t in offs]
+                return sorted(have, key=lambda t: ((offs[t] >> 1) & 7, pos[t])) == have
+
+            def dfs(j: int, pads: list) -> list | None:
+                # offsets are known up to the next adjustable name (or the end)
+                hi = adj[j] if j < len(adj) else len(ids)
+                offs = {t: starts[pos[t]] + sum(p for a, p in zip(adj, pads) if a < pos[t])
+                        for t in target if pos[t] <= hi}
+                if not ok(offs):
+                    return None
+                if j == len(adj):
+                    return pads
+                cur = len(ids[adj[j]][1])  # try lengths 1.., nearest to the current one first
+                for p in sorted(range(1 - cur, 17), key=lambda p: (abs(p), p)):
+                    r = dfs(j + 1, pads + [p])
+                    if r is not None:
+                        return r
+                return None
+
+            pads = dfs(0, [])
+            if not pads or not any(pads):
+                continue
+            taken |= {low for low, _ in ids}
+            for j, p in zip(adj, pads):
+                if p:
+                    old = ids[j][1]
+                    new = next(c for c in grown(old, p) if c.lower() not in taken)
+                    taken.add(new.lower())
+                    self.rename(m, next(s for s in local if names[s].lower() == old.lower()), new)
+
+    def frees_ok(self, m: dict) -> bool:
+        """Every procedure's predicted epilogue free order is the original's."""
+        from namesize import name_offsets
+        offs = name_offsets("\r\n".join(m["lines"]))
+        order = {low: j for j, low in enumerate(offs)}
+        for info in m["infos"]:
+            frees = [struct.unpack_from("<h", i.operand)[0] for i in info.insns if NAMES.get(i.op) == "OBJ_FREE"]
+            if len(frees) < 2:
+                continue
+            k = m["infos"].index(info)
+            bp = {self.value(m["image"], s): n.lower() for s, n in m["names"].items()
+                  if (v := m["vars"].get(s)) and v.procs and v.procs[0] == k and v.scope == "LOC"}
+            target = [bp.get(f) for f in frees]
+            if None in target or not all(t in offs for t in target):
+                continue
+            if sorted(target, key=lambda t: ((offs[t] >> 1) & 7, order[t])) != target:
+                return False
+        return True
+
+    def project_names(self) -> set[str]:
+        """Names visible in every module: globals, procedures, forms."""
+        return {x.lower() for x in self.global_name.values()} | \
+            {x.lower() for x in self.proc_name.values() if x} | {f[0].lower() for f in self.forms}
+
+    def generated(self, name: str) -> bool:
+        """A name the decompiler made up (free to resize), not a built-in
+        object/collection or a recovered name."""
+        return bool(re.fullmatch(r"[vmgfsKGL][0-9A-Fa-f]+", name)) or name.lower() in self.renamed
+
+    def rename(self, m: dict, slot: int, new: str) -> None:
+        self.renamed.add(new.lower())
+        old = m["names"][slot]
+        m["names"][slot] = new
+        pat = re.compile(rf"(?<![\w.]){re.escape(old)}\b", re.I)
+        m["lines"] = [pat.sub(new, ln) for ln in m["lines"]]
+
+    def fit_globals(self, m: dict) -> None:
+        """Spread a .bas module's name-table size deficit (+30) over the
+        Global names it declares (renamed in every module)."""
+        from namesize import name_size
+        want = word(self.table, word(self.image, m["image"] - 2) + 4 + 30)
+        d = want - name_size("\r\n".join(m["lines"]))
+        glob = [it[5] for it in m["items"] if it[0] == "global" and len(it) > 5 and it[5] and self.generated(it[5])]
+        if not d or not glob:
+            return
+        taken = {w.lower() for mm in self.all_mods for ln in mm["lines"] for w in re.findall(r"[A-Za-z]\w*", ln)}
+        new_len = {n: len(n) for n in glob}
+        others = [" ".join(mm["lines"]).lower() for mm in self.all_mods if mm is not m]
+        used = {n: sum(bool(re.search(rf"(?<![\w.]){re.escape(n.lower())}\b", t)) for t in others) for n in glob}
+        for grp in sorted({used[n] for n in glob}):  # names no other module mentions first
+            names = [n for n in glob if used[n] == grp]
+            for k, n in enumerate(names):
+                share = d // (len(names) - k) if d > 0 else -((-d) // (len(names) - k))
+                size = max(1, min(40, len(n) + share))
+                d -= size - len(n)
+                new_len[n] = size
+            if not d:
+                break
+        for n in glob:
+            if new_len[n] == len(n):
+                continue
+            new = next((c for c in grown(n, new_len[n] - len(n)) if c.lower() not in taken), None)
+            if new is None:
+                continue
+            taken.add(new.lower())
+            self.renamed.add(new.lower())
+            pat = re.compile(rf"(?<![\w.]){re.escape(n)}\b", re.I)
+            for mm in self.all_mods:
+                mm["lines"] = [pat.sub(new, ln) for ln in mm["lines"]]
+                for sl, x in list(mm["names"].items()):
+                    if x.lower() == n.lower():
+                        mm["names"][sl] = new
+            for g, x in list(self.global_name.items()):
+                if x.lower() == n.lower():
+                    self.global_name[g] = new
+
+    def fit_size(self, m: dict) -> None:
+        """Resize the generated local names that appear last so that the
+        module's name-table size (declarations record +30) is the original's:
+        an identifier's length moves only the names after it."""
+        from namesize import KEYWORDS, BUILTINS, identifiers, name_size
+        want = word(self.table, word(self.image, m["image"] - 2) + 4 + 30)
+        code = "\r\n".join(m["lines"])
+        d = want - name_size(code)
+        if not d:
+            return
+        ids = identifiers(code)
+        order = {low: j for j, low in enumerate(ids)}
+        taken = set(ids) | KEYWORDS | BUILTINS | self.project_names()
+        fixed = {s for i in m["infos"] for s in i.params} | {i.ret_slot for i in m["infos"]} | \
+            {i.name.lower() for i in m["infos"] if i.name}
+        glob = {x.lower() for x in self.global_name.values()}
+        local = sorted((order[n.lower()], s) for s, n in m["names"].items()  # module-private names
+                       if n.lower() in order and m["vars"].get(s) and m["vars"][s].scope in ("LOC", "MOD")
+                       and s not in fixed and n.lower() not in fixed and n.lower() not in glob and self.generated(n))
+        labels = {mt.group(1).lower() for ln in m["lines"] if (mt := re.match(r"\s*(L[0-9A-Fa-f]+):", ln))}
+        labels |= {x.lower() for ln in m["lines"] if ln.startswith(("Declare ", "Global Declare "))
+                   for x in re.findall(r"[(,]\s*(?:ByVal\s+)?((?:P|Arg)\d+)\b", ln)}  # Declare parameters
+        local = sorted(local + [(order[x], x) for x in labels if x in order])
+        ok0 = self.frees_ok(m)
+        for _, s in reversed(local):
+            if not d:
+                break
+            if isinstance(s, str):  # a label: rename in the text only
+                old = ids[s]
+                size = max(1, min(40, len(old) + d))
+                new = next((c for c in grown(old, size - len(old)) if c.lower() not in taken), None)
+                if size == len(old) or new is None:
+                    continue
+                pat = re.compile(rf"(?<![\w.]){re.escape(old)}\b", re.I)
+                lines0 = m["lines"]
+                m["lines"] = [pat.sub(new, ln) for ln in lines0]
+                if ok0 and not self.frees_ok(m):
+                    m["lines"] = lines0
+                    continue
+                taken.add(new.lower())
+                d -= len(new) - len(old)
+                continue
+            old = m["names"][s]
+            size = max(1, min(40, len(old) + d))
+            if size == len(old):
+                continue
+            new = next((c for c in grown(old, size - len(old)) if c.lower() not in taken), None)
+            if new is None:
+                continue
+            self.rename(m, s, new)
+            if ok0 and not self.frees_ok(m):
+                self.rename(m, s, old)
+                continue
+            taken.add(new.lower())
+            d -= len(new) - len(old)
+
     def fit_columns(self, m: dict) -> None:
         """Rename arrays whose `ReDim ... As` lands in the wrong column to a
         name of the length that puts it right."""
@@ -1313,11 +1554,33 @@ class Decompiler:
         else:
             head = f"{kind} {info.name} ({', '.join(params)})" + (f" As {TYPE_NAME[info.ret]}" if info.function else "")
         body = self.statements(info, names)
+        self.dim_alloc = []  # slot order: where each local is allocated (Dim or first use)
         dims = self.local_dims(info, vars_, names, base, body)
         # record +50: the procedure's line count, including the comment block
         # above it (comments aren't compiled): pad with empty comments
         (count,) = struct.unpack_from("<H", self.table, info.proc.record + 50)
         ndims = sum(len(x) for x in dims.values())
+        dropped: list = []  # more lines than the original: implicit Variants, keeping the slot order
+        while count and len(body) + ndims + 2 > count:
+            for a in reversed(self.dim_alloc):
+                if a.get("drop") and a not in dropped:
+                    seq = [(b["key"] if b in dropped or b is a else b["alloc"]) for b in self.dim_alloc]
+                    if all(x < y for x, y in zip(seq, seq[1:])):
+                        dropped.append(a)
+                        dims[a["pos"]].remove(a["line"])
+                        ndims -= 1
+                        break
+            else:
+                break
+        for x in dims.values():  # then join Dims (`Dim a As X, b As Y`)
+            j = 0
+            while count and len(body) + ndims + 2 > count and j + 1 < len(x):
+                kw = x[j].split()[0]
+                if x[j + 1].split()[0] == kw and kw in ("Dim", "Static"):
+                    x[j:j + 2] = [x[j] + ", " + x[j + 1][len(kw) + 1:]]
+                    ndims -= 1
+                else:
+                    j += 1
         lines = ["'"] * max(0, count - len(body) - ndims - 2) + [head]
         for k, (col, text) in enumerate(body + [(0, None)]):
             lines += ["    " + d for d in dims.get(k, [])]
@@ -1326,7 +1589,7 @@ class Decompiler:
             if info.function:
                 text = re.sub(r"\bExit Sub\b", "Exit Function", text)
             lines.append(("\t" * (col // 8) + " " * (col % 8) if self.cur_mod.get("tabs") else " " * col) + text)
-        lines += [f"End {kind}", ""]
+        lines += [f"End {kind}"]
         return lines
 
     def unused_params(self, info: ProcInfo, base: int, params: list[str]) -> list[str]:
@@ -1394,8 +1657,9 @@ class Decompiler:
             implicit = decl == " As Variant" and not m.get("defint") and info.insns \
                 and info.insns[0].op in (LABEL, LABEL_WIDE)
             items.append((s, "fixed" if implicit else "dim", names[s], decl, v))
+        sarr = {a[0] for a in m.get("static_arrays", [])}
         for s, v in vars_.items():
-            if v.scope == "MOD" and v.procs and v.procs[0] == k and s >= m["first_owned"] \
+            if v.scope == "MOD" and v.procs and v.procs[0] == k and s >= m["first_owned"] and s not in sarr \
                     and (v.procs == [k] or not names[s].startswith(("s", "K"))):
                 lit = None if v.stored or v.array else self.inline_const(base, s, v.type(), 16)
                 if not names[s].startswith(("K", "s")):
@@ -1407,6 +1671,11 @@ class Decompiler:
                     items.append((s, "static", names[s], dims + f" As {TYPE_NAME[v.type()]}", v))
             elif v.scope == "GLB" and v.procs and v.procs[0] == k and s >= m["first_owned"]:
                 items.append((s, "fixed", names[s], None, v))
+        first = self.text_order(m)[0] is info
+        for s, decl, kk in m.get("static_arrays", []):
+            if kk == k or (kk is None and first):
+                names.setdefault(s, f"s{s:X}")
+                items.append((s, "static", names[s], decl, Var(s, "MOD", array=True)))
         for s, (kk, n) in m["refs"].items():
             if kk == k:
                 items.append((s, "fixed", n, None, None))
@@ -1517,13 +1786,19 @@ class Decompiler:
                             ns = max(0, numbered - nv)  # the other numbered ones: Strings
                         else:
                             nv = min(numbered, (y - x) // 4)
+                    sizes = None
+                    if not framed and nxt_s is None and y >= hi and \
+                            (ts := self.trailing_locals(info, base, known, (y - x) // 2, prev_bp)) is not None:
+                        nv, ns = ts.count("Variant"), ts.count("String")
+                        sizes = [{"Double": 8, "Long": 4, "Integer": 2}[t] for t in ts if t not in ("Variant", "String")]
+                        extra = sum(sizes)
                     while x < y:
                         if nv > 0:
                             vt, step, nv = "Variant", 4, nv - 1
                         elif ns > 0:
                             vt, step, ns = "String", 2, ns - 1
                         elif extra >= 2:  # the rest of the frame gap: numeric locals
-                            size = 8 if extra >= 8 else 4 if extra >= 4 else 2
+                            size = sizes.pop(0) if sizes else 8 if extra >= 8 else 4 if extra >= 4 else 2
                             vt = {8: "Double", 4: "Long", 2: "Integer"}[size]
                             extra -= size
                             step = 2
@@ -1565,8 +1840,17 @@ class Decompiler:
         if k == len(m["infos"]) - 1:  # zeros after every procedure's slots: unused locals too
             end, n = self.prev_end(m, k + 1), word(self.image, base)
             if end < n - 1 and all(self.value(base, z) == 0 for z in range(end, n - 1, 2)):
-                for z in range(end, n - 1, 2):
-                    items.append((z, "static", f"f{z:X}", " As Integer", Var(z, "MOD")))
+                known_k = [x for x, v in vars_.items() if v.procs and v.procs[0] == k and v.scope in ("LOC", "REF")]
+                prev_bp = min([self.value(base, z) for z in known_k if self.value(base, z) < 0] + [-22])
+                ts = self.trailing_locals(info, base, known_k, len(range(end, n - 1, 2)), prev_bp)
+                if ts and any(t != "Integer" for t in ts) or ts and word(self.table, info.proc.record) > -prev_bp:
+                    z = end
+                    for t in ts:
+                        items.append((z, "dim", f"f{z:X}", f" As {t}", Var(z, "LOC")))
+                        z += 4 if t == "Variant" else 2
+                else:
+                    for z in range(end, n - 1, 2):
+                        items.append((z, "static", f"f{z:X}", " As Integer", Var(z, "MOD")))
         items.sort(key=lambda it: (it[0], it[1]))
 
         texts = [re.sub(r'"[^"]*"', lambda x: " " * len(x.group(0)), t or "") for _, t in body]
@@ -1596,6 +1880,7 @@ class Decompiler:
             if kind == "fixed":
                 if key is not None and key[:2] > last:
                     last = key[:2]
+                    self.dim_alloc.append(dict(alloc=key[:2]))
                 continue
             # declare at the earliest point after the previous item; if that is
             # past the first use (same statement as a preceding control
@@ -1605,13 +1890,38 @@ class Decompiler:
             if key is not None and key[0] < pos and kind == "dim" and not v.array and not v.udt \
                     and key[:2] > last and not m["explicit"] and (decl.strip() == f"As {implicit_type}" or key[2]):
                 last = key[:2]
+                self.dim_alloc.append(dict(alloc=key[:2]))
                 continue
             if key is not None and key[0] < pos:
                 pos = key[0]  # conflicting order: at least keep it compilable
             word_ = {"static": "Static", "const": "Const"}.get(kind, "Dim")
             dims.setdefault(pos, []).append(f"{word_} {name}{decl if decl[0] in '( ' else ' ' + decl}")
+            # could be implicit instead: allocated at its first use
+            self.dim_alloc.append(dict(alloc=(pos, -1), pos=pos, line=dims[pos][-1], key=key and key[:2],
+                                       drop=key is not None and key[0] >= pos and kind == "dim" and not v.array
+                                       and not v.udt and not m["explicit"] and decl.strip() == f"As {implicit_type}"))
             last = (pos, -1)
         return dims
+
+    def trailing_locals(self, info: ProcInfo, base: int, known, slots: int, prev_bp: int) -> list[str] | None:
+        """Types of a procedure's last `slots` unused locals from its record:
+        +0 is 22 + the frame size, +10 the count of numbered locals (Strings
+        and Variants). Variants take 2 slots and 16 frame bytes, Strings 1
+        slot and no frame, numbers 1 slot and 2/4/8 bytes. None: no solution."""
+        rec = info.proc.record
+        extra = max(0, prev_bp + word(self.table, rec))
+        have = sum(1 for z in known if 0 < self.value(base, z) < 200 and self.value(base, z) % 2)
+        left = max(0, word(self.table, rec + 10) - have)
+        for nv in range(min(left, slots // 2, extra // 16), -1, -1):
+            ns, nn, f = left - nv, slots - 2 * nv - (left - nv), extra - 16 * nv
+            if ns >= 0 and nn >= 0 and (f == 0 if nn == 0 else 2 * nn <= f <= 8 * nn and f % 2 == 0):
+                out = ["Variant"] * nv + ["String"] * ns
+                for r in range(nn, 0, -1):
+                    z = next(z for z in (8, 4, 2) if 2 * (r - 1) <= f - z <= 8 * (r - 1))
+                    out.append({8: "Double", 4: "Long", 2: "Integer"}[z])
+                    f -= z
+                return out
+        return None
 
     def proc_spans(self, m: dict) -> dict:
         """Slot intervals each procedure allocates (text order: each one's
@@ -1828,6 +2138,23 @@ def bas_stems(d: Decompiler, mods: list[dict], n: int, dir_len: int, used: set[s
         used.add(stem)
         out.append(stem)
     return out
+
+
+def grown(old: str, d: int):
+    """Candidate names d characters longer (or shorter) than old."""
+    import itertools
+    from namesize import KEYWORDS, BUILTINS
+    if d > 0:
+        for x in "xyzqwjk":
+            yield old + x * d
+    n = len(old) + d
+    if d < 0 and n >= len(old[0]):
+        yield old[:n]
+    rest = "abcdefghijklmnopqrstuvwxyz0123456789"
+    for c in "vabcdefghijklmnopqrstuwxyz":
+        for t in itertools.product(rest, repeat=n - 1):
+            if (s := c + "".join(t)) not in KEYWORDS and s not in BUILTINS:
+                yield s
 
 
 def write_project(d: Decompiler, out: Path, layout_from: Path | None, name: str) -> Path:

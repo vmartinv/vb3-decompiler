@@ -307,14 +307,8 @@ still copied from the original source).
 
 ## Next steps
 
-- Whole-exe identity: data images still differ in 6 samples (names
-  of Types/fields, symbol-hash order). Procedure names now take their
-  original lengths from the name pool; still to size: variable/label
-  names (per-module name table +30, table offset 76 record +30), the last
-  pool entry, Declare aliases.
+- Whole-exe identity: see PLAN.md Phase 3 for the remaining places.
 - DefType tables beyond `DefInt A-Z` (only form seen in the samples).
-- Batteries (`tools/battery.py`, 940/941): all complete except types
-  68/69 (object vars: free order, see below).
 - 4D51/4CFD: a control array element's default property, `c(i)` /
   `c(i) = v` (u16 dims, u16 slot). METHOD 0x2A PopupMenu. A method's
   object is the first object marked after the call's ARGS (object
@@ -372,11 +366,23 @@ still copied from the original source).
   temp and back. 6AC5: ARG_TEMP for 4-byte values.
 - Epilogue frees (OBJ_FREE 4FA6, 505F, Type 6F79) follow the IDE's
   local symbol table (VB.EXE seg53:3476, iterator 806A/8097): 8 buckets
-  for a procedure (16 at module level), walked in order, each chain in
-  insertion order. Bucket = (name-table offset >> 1) & 7 (seg53:6DB8):
-  a name's offset in the module's name table (entries 4 + length bytes,
-  allocated at first appearance in the module text). So free order is
-  fixed by the lengths and first-mention order of all earlier names.
+  walked in order, each in declaration order. Bucket = (name-table
+  offset >> 1) & 7; offsets start at 10 (mod 16) and grow by 4 + length
+  per identifier in first-appearance order (`namesize.name_offsets`;
+  fits 120/120 random probe procedures). `Decompiler.fit_frees` picks
+  generated name lengths that reproduce the original order.
+- Name-table size (+30) is fitted by resizing the last-appearing
+  generated names (`fit_size`; Globals first, `fit_globals`).
+- Line counts: procedure record +50 counts its lines, not the blank lines
+  before it; declarations +50 counts the declarations plus the file's
+  trailing blank line. More deco lines than the count: undeclared
+  (implicit) Variants, then joined `Dim a, b`.
+- Procedure record +0: 22 + frame bytes; +10: count of numbered locals
+  (Strings and Variants). Unused trailing locals are typed to fit both.
+- Fixed-size array descriptor flags (slot +4): low byte element type
+  (1 Integer, 2 Long, 3 Single, 4 Double, 5 Currency, 6 Variant,
+  7 String, 8 `String * n`, 9 object; length / object kind in the slot
+  before), high byte 0xC2 `Static` (in a procedure), 0xC1 module `Dim`.
 - Unused parameters have no slot: their count comes from the callers,
   their layout from the BP frame (`6 + 2 * argwords`).
 - Procedure/Declare records (56 bytes) follow the module's declarations

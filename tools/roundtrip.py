@@ -29,6 +29,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import pcode_disasm as P  # noqa: E402
 from decompile import Decompiler, write_project  # noqa: E402
+import exediff  # noqa: E402
 
 REPO = Path(__file__).resolve().parent.parent
 WORK = REPO / "work" / "rt"
@@ -85,11 +86,15 @@ def run(mak: Path, runtime: Path, vbx_dirs: list[Path], do_compile: bool, verbos
         for f in orig.iterdir():
             if f.suffix.lower() == ".exe":
                 f.unlink()
-    d = Decompiler(exe, runtime, vbx_dirs)
+    if build_orig and not compile_mak(orig / mak.name):
+        print(f"{mak.stem}: compile failed: {mak.name}", flush=True)
+        return None
+    # decompile our own /MAKE build: the shipped exe differs in build-machine paths and project name
+    d = Decompiler(a if a.exists() else exe, runtime, vbx_dirs)
     shutil.rmtree(deco, ignore_errors=True)
     dmak = write_project(d, deco, mak.parent if source_layout else None, mak.stem.lower())
     if do_compile:
-        for m in ([orig / mak.name] if build_orig else []) + [dmak]:
+        for m in [dmak]:
             ok = compile_mak(m)
             logs = [f for f in m.parent.iterdir() if f.suffix.lower() == ".log"]  # load errors
             if not ok or logs:
@@ -103,9 +108,10 @@ def run(mak: Path, runtime: Path, vbx_dirs: list[Path], do_compile: bool, verbos
         return None
     rt = P.Runtime(runtime)
     res = compare(a, b, rt, verbose)
+    res["exe"] = sum(len(v) for v in exediff.diff(a, b).values())
     print(f"{mak.stem:10s} procs {res['same']}/{res['procs']}" + ("" if res["count_ok"] else " (count differs)")
           + f"  forms {res['forms_same']}/{res['forms']}  image {'=' if res['image'] else '≠'}  table {'=' if res['table'] else '≠'}"
-          + ("  EXE IDENTICAL" if res["identical"] else ""), flush=True)
+          + ("  EXE IDENTICAL" if res["identical"] else f"  exe {res['exe']} bytes"), flush=True)
     return res
 
 
@@ -122,13 +128,15 @@ def main():
     args.vbx_dir = args.vbx_dir or [REPO / "work/ide"]
     args.mak = args.mak or sorted((m for m in (REPO / "work/root/vb/samples").rglob("*")
                                    if m.suffix.lower() == ".mak" and find_exe(m)), key=lambda m: m.stem.lower())
-    tot = [0, 0]
+    tot = [0, 0, 0, 0]
     for mak in args.mak:
         r = run(mak, args.runtime, args.vbx_dir, not args.no_compile, args.v, args.source_layout)
         if r:
             tot[0] += r["same"]
             tot[1] += r["procs"]
-    print(f"TOTAL procs {tot[0]}/{tot[1]}")
+            tot[2] += r["identical"]
+            tot[3] += 1
+    print(f"TOTAL procs {tot[0]}/{tot[1]}  exe identical {tot[2]}/{tot[3]}")
 
 
 if __name__ == "__main__":

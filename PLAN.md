@@ -22,8 +22,7 @@ The loop for every feature is the same:
 
 ### statements: done (68/68)
 
-### types: 68/69
-- object variables: epilogue free order depends on name-table offsets (Phase 3).
+### types: done (69/69)
 
 ### deftype: done (56/56)
 The DefType letter table itself is still undecoded (declarations record +44 is only a "has DefType" flag); p-code is identical without it, so it moves to Phase 3.
@@ -43,17 +42,29 @@ object's one-byte `OleObjectBlob` is known).
 **Exit:** each battery at 100%, samples still identical. Update the OPCODES.md counts and commit after each battery or pair of batteries.
 
 ## Phase 3: whole-exe identity
-1. Add an exe comparison mode to `battery.py` (`--exe`) and to the samples roundtrip. It diffs the full NE image and reports the differing words by structure (table records, name tables, hash).
-2. Decode the remaining name-dependent words:
-   - record offsets 42/46/106/110, which are module name tables;
-   - Type and field name storage;
-   - hash-bucket order;
-   - the record +4 offsets that still differ in `objects` and `recedit`.
-   - unused Declares' parameter types (none recorded at +15) and Alias names (the VB-side name isn't at +46).
-   - name-table offsets: epilogue free order of object/Type locals depends on them (bucket = (offset >> 1) & 7); the types case "object vars" needs it.
-   - a module's last Long constant (`&HFFFF&`) is emitted as a Long variable (room cut short by `first_owned`); p-code identical, table not.
-   - the DefType letter table (26 types per module), so `DefXxx` lines are recovered rather than inferred.
-3. Pad generated names to their original lengths and keep the hash order, so a rebuild matches the original exe byte for byte. Target: every battery case and every sample identical in `--exe` mode.
+Tools: `tools/exediff.py` (differing bytes by place: record field, code
+segment, resource region), `battery.py --exe`, `roundtrip.py` (reports
+`exe N bytes` / `EXE IDENTICAL`; decompiles our own /MAKE build, since
+the shipped exes carry the build machine's paths and project name).
+
+Done: epilogue free order (name-length solver), name-table size (+30)
+fitting, line counts (+50: implicit Variants, joined Dims, trailing
+blank line), Static arrays, unused trailing locals typed from the frame
+size. Samples: 10/22 identical, the rest 1-65 bytes (biblio 3121).
+Batteries: all p-code identical; exe-identical per battery in the last
+`--exe` run: builtins 116/125, graphics, menus all, others partial.
+
+Remaining, by place (`exediff`):
+- table offset 12 record +30/+34 (project name total): global names are
+  sized per module only; needs the compile-time pool end.
+- rc1 per-file words (VBX/form entries): depend on the `.mak` contents
+  (ExeName, IconForm, file order); test by compiling variants.
+- decl+44 DefType table offset (vbterm), the DefType letter table.
+- procedure record +4 (name pool) in the names battery, +18, +26.
+- rc2 module lists in declaration order (timecard: two entries swapped).
+- Type and field names; unused Declares' parameter types and aliases.
+- print/controls/expressions/modlevel/declares batteries: per-case
+  details from `battery.py <name> --exe`.
 
 ## Phase 4: usage
 - Add a single entry point: `vb3decompile <exe> <outdir>` in `tools/`. It writes the .mak, .frm and .bas files, extracts resources (icons, .frx), and has a `--verify` flag that rebuilds with `/MAKE` and compares.
