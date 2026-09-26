@@ -28,7 +28,18 @@ from .symbols import CLASS_BY_KIND, is_objarr
 
 class AnalyzeMixin:
     def analyze_module(self, m: Module) -> None:
-        seg, base = m.seg, m.image
+        """Decodes the module's procedures and fills its vars/infos (the
+        variables per slot), refs (control/form slots), udt, call_slots and
+        first_owned (where the procedures' slots start)."""
+        infos = self.decode_procs(m)
+        vars_, udt = self.collect_vars(m, infos)
+        self.retype_objects(m.seg, vars_, infos)
+        refs = self.control_refs(infos)
+        m.vars, m.infos, m.refs, m.udt = vars_, infos, refs, udt
+        m.first_owned, m.call_slots = self.owned_start(m)
+
+    def decode_procs(self, m: Module) -> list[ProcInfo]:
+        seg = m.seg
         procs = [p for p in self.procs if p.segment == seg] if seg else []  # layout order
         infos = []
         for p in procs:
@@ -39,8 +50,11 @@ class AnalyzeMixin:
             info.ret = RET_TYPE.get(self.table[p.record + PROC_RET_TYPE], "V")
             info.argwords = self.table[p.record + PROC_ARG_WORDS]
             infos.append(info)
+        return infos
 
-        # variables: scope/type per slot; globals referenced through this module's slots
+    def collect_vars(self, m: Module, infos: list[ProcInfo]) -> tuple[dict[int, Var], dict[int, int]]:
+        """Variables: scope/type per slot; globals referenced through this module's slots."""
+        seg, base = m.seg, m.image
         vars_: dict[int, Var] = {}
         udt: dict[int, int] = {}  # UDT variable slot -> Type offset
         for k, info in enumerate(infos):
@@ -137,8 +151,10 @@ class AnalyzeMixin:
                     t = PRINT_TYPE.get(nxt_op) or lt_hint(NAMES.get(nxt_op, ""))
                 if t in SUFFIX or t.startswith("F"):
                     v.votes[t] = v.votes.get(t, 0) + 1
+        return vars_, udt
 
-        # object variables' classes (from their records) name their properties: annotate again
+    def retype_objects(self, seg: int | None, vars_: dict[int, Var], infos: list[ProcInfo]) -> None:
+        """Object variables' classes (from their records) name their properties: annotate again."""
         typed = {x: v.obj for x, v in vars_.items() if v.obj}
         if seg and any(self.sym.objvar_types.get(seg, {}).get(x) != c for x, c in typed.items()):
             known = self.sym.objvar_types.setdefault(seg, {})
@@ -147,7 +163,8 @@ class AnalyzeMixin:
             for info in infos:
                 info.notes = self.sym.annotate(seg, info.insns)
 
-        # control/form slots referenced by each procedure
+    def control_refs(self, infos: list[ProcInfo]) -> dict[int, tuple[int, str]]:
+        """Control/form slots referenced by each procedure."""
         refs: dict[int, tuple[int, str]] = {}  # slot -> (first proc, name)
         for k, info in enumerate(infos):
             for i, note in zip(info.insns, info.notes):
@@ -158,7 +175,12 @@ class AnalyzeMixin:
                 elif n in ("PGET_ME", "PSET_ME") and i.operand and note:  # `Readout`, `Left`
                     slot = struct.unpack_from("<H", i.operand)[0]
                     refs.setdefault(slot, (k, note.rpartition(".")[2]))
+        return refs
 
+    def owned_start(self, m: Module) -> tuple[int, dict[int, int]]:
+        """The first slot the procedures own (the declarations end before it),
+        and the slots of calls into other modules (slot -> first procedure)."""
+        base, vars_, infos, refs = m.image, m.vars, m.infos, m.refs
         owned = {s for s, v in vars_.items() if v.scope in ("LOC", "REF")}
         # other slots procedures allocate at first use: calls to functions of other
         # modules, object variables, and (in forms) references to globals
@@ -203,7 +225,6 @@ class AnalyzeMixin:
         first_owned = min(first_owned, word(self.image, base) - 1)  # nothing owned: the image's end
         # procedures (record order) before the first one owning a used slot: their
         # parameters, used or not, have slots (unused ByRef 2 bytes, Control 4: kind, 0)
-        m.vars, m.infos = vars_, infos
         pb = 0
         for k in sorted(range(len(infos)), key=lambda k: infos[k].proc.record):
             if any(v.procs and v.procs[0] == k for v in vars_.values()) or any(kk == k for kk, _ in refs.values()) \
@@ -214,7 +235,7 @@ class AnalyzeMixin:
         if pb and top - pb >= m.decl_start and all(
                 self.value(base, z, False) in (0, 1, 4) for z in range(top - pb, top, 2)):
             first_owned = top - pb
-        m.refs, m.udt, m.first_owned, m.call_slots = refs, udt, first_owned, call_slots
+        return first_owned, call_slots
 
     def collect_calls(self, mods: list[Module]) -> None:
         """Argument types per called record (for Declare parameters)."""
