@@ -1,18 +1,14 @@
-#!/usr/bin/env python3
 """
 Model of a module's compile-time name table (the IDE's identifier list):
 each unique identifier (case-insensitive) in first-appearance order, len + 4
 bytes each, the first at FIRST (mod 32). The p-code depends on it in one
 place: a procedure frees its object/Type locals in the order of the table's
-8 hash buckets ((offset >> 1) & 7), see Decompiler.fit_frees.
+8 hash buckets ((offset >> 1) & 7), see naming.py (fit_frees).
 """
 from __future__ import annotations
 
 import re
-import sys
-from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 BASE = 349
 

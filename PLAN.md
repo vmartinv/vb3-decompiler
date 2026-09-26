@@ -1,65 +1,32 @@
 # Plan: complete the VB3 decompiler
 
+## Goal
+The decompiled source recompiles to the **same p-code and form
+resources** as the original executable. Byte-identical executables are
+not a goal: they depend on the original identifier lengths (name-table
+sizes, hash orders, compile-time pool offsets), which the exe doesn't
+store; fitting them made the code large and the names ugly.
+
 ## Status
-Phases 1 (feature batteries) and 2 (uncovered features) are done: every
-VB3 language feature has a battery, and every case round-trips to
-identical p-code and form resources. What's left is whole-exe byte
-identity (Phase 3) and a final usage pass (Phase 4).
-
-Current numbers: batteries 962/969 exe-identical (all p-code identical);
-samples 16/22 exe-identical (all 483/483 procedures p-code identical).
-
-"Complete" (Phase 3's target): with names padded to their original
-lengths, the rebuilt exe is byte-identical to the original.
+Every VB3 language feature has a battery; all 969 cases (20 batteries)
+and all 22 samples (483/483 procedures, all forms) round-trip to
+identical p-code and form resources. The decompiler lives in `src/`,
+split by pass (README.md).
 
 ## Remaining items
-VB.EXE is a deterministic compiler: every original exe was produced by
-*some* source text, so a byte-exact reconstruction is possible in
-principle for all of these — none is a dead end, they're just unsolved.
-Where a field's value can't be read off directly, the sums/counts we
-can read (name-table sizes, line counts, etc.) are constraints on the
-source, not the answer by themselves; whatever finds the right source
-detail (derivation, search, cross-checking against another field,
-recompiling and comparing, or something else) is fair game, and worth
-picking per item based on how many unknowns and constraints it has.
-
-1. **Global variable/constant name lengths.** Only sums are observable
-   (each module's +30 counts the Globals it declares or references, the
-   project +30 the global table). `fit_globals` fits only the declaring
-   .bas; `fit_global_inits` pads for the global list's bucket order but
-   reverts when that breaks a module's +30 (it keeps only the total).
-   Needed: a solver over all modules' +30 plus the project +30 and the
-   bucket order (`initlists` Globals cases).
-2. **print 236 (Picture.Print)**: unused locals' types (frame size
-   record +0, numbered-local count +10) chosen wrong by `trailing_locals`.
-3. **Samples** (calldlls 53, mdinote 32, recedit 9, mcitest 6, objects 2,
-   textedit 2 bytes): mostly table/+30 and image differences; localize
-   each with hybrid splicing against the original source (CLAUDE.md).
-4. **Init-list order** (see OPCODES.md "Init lists"): fitted for module
-   lists, Static arrays and the global list (`fit_inits`,
-   `fit_global_inits`, `order_pads`). `initlists` Globals cases still
-   differ (item 1).
-5. **Phase 4 final pass**: once the above settle, run every battery
-   plus every sample in `--exe` mode and commit. (`tools/vb3decompile.py`
-   itself is done; icons/.frx already come for free from
-   `decompile.py`'s generic binary-property handling.)
-
-## Critical files
-- `tools/decompile.py` (declarations, naming, records)
-- `tools/lift.py` (statements)
-- `tools/opcodes.py` (NAMES/SEM)
-- `tools/formblob.py` (controls/menus)
-- `tools/exediff.py`, `tools/battery.py --exe` (exe-identity diffing)
-- README.md, OPCODES.md
+1. **Form layouts with VBX controls, decoded (no `--layout-from`)**: the
+   `vbx` battery's projects raise `IndexError` in `forms.py` when their
+   layouts are decoded instead of copied (the battery copies them, so it
+   passes). A foreign exe using VBX controls would hit this.
+2. **Readable names**: generated names are slot-based (`v1C`, `m1A`,
+   `G6`); procedure names are constrained by sort order (`A01`). Better
+   names (from usage: loop counters, control events, types) are free
+   to choose as long as the sort order and the object-local free order
+   (`naming.py`, `fit_frees`) are kept.
 
 ## Verification
-- Per change, run the affected battery in isolation first
-  (`DISPLAY=:99 python3 tools/battery.py <name> --exe -k "<case>"`), then
-  the *whole* battery (`--chunk 48`, no `-k`): several remaining bugs
-  only show up once a module shares a project/global-image with others,
-  and a fix validated only in isolation can still regress the bundle.
-- Before committing any fix: full `tools/battery.py --exe --chunk 48`
-  (all batteries) and full `tools/roundtrip.py` (all samples), looking
-  for CODE/CRASH/DECOFAIL, not just EXE byte counts. Zero p-code
-  regressions is non-negotiable — revert rather than ship a net exe-byte
-  win that costs even one p-code mismatch.
+Before committing any change: full `tools/battery.py --chunk 48` (all
+batteries) and full `tools/roundtrip.py` (all samples), looking for
+CODE/FORM/CRASH/DECOFAIL and any procedure or form mismatch. Zero p-code
+regressions is non-negotiable. For a pure refactor, also diff the
+decompiled text of every battery/sample exe before and after.

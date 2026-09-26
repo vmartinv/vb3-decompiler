@@ -31,7 +31,7 @@ form's code segment (see `OPCODES.md`: code segment = 4 + directory index).
   elements share one). Empty entries are deleted controls and still count
   as indices.
 - **Data blob**: the form's control tree with its design-time
-  properties. Decoded by `tools/formblob.py` (all sample forms decode;
+  properties. Decoded by `src/forms.py` (all sample forms decode;
   the round-trip rebuilds forms from it).
 
 ### Data blob
@@ -104,5 +104,5 @@ ComboBox.Style, …).
 ## Tools
 
 - `tools/ne_parser.py <exe>`: NE header + resource table, dumps resources.
-- `tools/formblob.py <exe>`: decodes form blobs to `.frm` descriptions.
+- `tools/formdump.py <exe>`: prints the decoded form blobs as `.frm` descriptions.
 - `tools/extract_bitmaps.py`: extracts embedded BMPs from resource dumps.

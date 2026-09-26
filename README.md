@@ -12,27 +12,40 @@ p-code). Findings: [`OPCODES.md`](OPCODES.md) (p-code) and
 ## What's here
 
 ```
-tools/
-  vb3decompile.py        entry point: exe -> project (.mak/.frm/.bas/.frx), --verify
-  ne_parser.py           NE header + resource table parser
-  extract_bitmaps.py     pulls embedded BMPs out of raw RCDATA dumps
-  parse_form_headers.py  decodes form captions/control names
-  segment_parser.py      NE segment table parser, p-code string scanner
-  pcode_disasm.py        full p-code disassembler (needs your VBRUN300.DLL
-                         + `pip install capstone`)
+src/                     the decompiler (exe -> .mak/.frm/.bas/.frx)
+  vb3decompile.py        command line
+  decompiler.py          Decompiler: runs the passes below; write_project
+  layout.py              module list and data-image layout
+  analyze.py             per-module p-code analysis: variables, calls
+  declarations.py        module declarations: Globals, Dims, Consts, Types, Declares
+  naming.py              names (procedure sort order, object-local free order)
+  localvars.py           local declarations, unused locals/parameters
+  emit.py                source text: headers, procedures, statements
+  lift.py                p-code statements -> BASIC expressions/statements
+  model.py               shared types and helpers
+  forms.py               form/control resources -> .frm text (+ .frx)
+  dataimage.py           global/module data images (Types, globals)
+  nametable.py           model of the IDE's per-module name table
+  ne.py                  NE segments, relocations, resources, procedure table
+  runtime.py             VBRUN300.DLL interpreter model, p-code decoder
+  symbols.py             control/form/procedure/object names
   opcodes.py             handler names
+tools/                   everything else (analysis, testing, the IDE)
+  verify.py              decompile + rebuild with VB.EXE + compare p-code/forms
+  battery.py             feature batteries (batteries/*.py): generated cases, round-tripped
+  roundtrip.py           recompiles the decompiled samples in the IDE, compares
+  opprobe.py             opcode discovery probes (probes/*.py)
+  pcode_disasm.py        p-code disassembler (needs your VBRUN300.DLL + capstone)
+  pcode_diff.py          instruction-level diff of two builds
+  exediff.py             whole-exe diff by structure (record/segment/resource)
+  formdump.py            prints decoded form layouts
+  lift_score.py          scores the lifter against the aligned corpus
   align_source.py        aligns a compiled project with its source, per statement
   corpus.py              builds/queries the aligned corpus (names handlers)
   validate.py            scores recovered names against sample source
-  lift.py                lifts statements to BASIC; scores against the corpus
-  decompile.py           rebuilds a project (.mak/.frm/.bas) from an exe (used by vb3decompile.py)
-  formblob.py            decodes form/control resources (.frm layout, .frx)
-  vbdecl.py              declarations from the data images (Types, globals)
-  roundtrip.py           recompiles decompiled samples in the IDE, compares p-code
-  exediff.py             whole-exe diff by structure (record/segment/resource)
-  battery.py             feature batteries (batteries/*.py): generated cases, round-tripped
-  opprobe.py             opcode discovery probes (probes/*.py)
-  pcode_diff.py          instruction-level diff of two builds
+  ne_parser.py           NE header + resource table dump
+  extract_bitmaps.py     pulls embedded BMPs out of raw RCDATA dumps
+  segment_parser.py      NE segment table parser, p-code string scanner
   vb3ide/
     kwaj_extract.py      decompresses VB3 setup-disk files (libmspack via ctypes)
     restore_install.py   rebuilds the install tree (incl. sample projects)
@@ -40,17 +53,16 @@ tools/
     compile_project.py   compiles .mak projects with `VB.EXE /MAKE`
 ```
 
-All Python, standard library only except `vb3ide/kwaj_extract.py` (needs
-`libmspack`, see Setup) and `pcode_disasm.py` (needs `capstone`). No build
-step.
+All Python, standard library only except `capstone` (p-code decoding) and
+`vb3ide/kwaj_extract.py` (needs `libmspack`, see Setup). No build step.
 
 ```sh
 # reconstruct a project from a compiled exe
-python3 tools/vb3decompile.py some.exe src/
+python3 src/vb3decompile.py some.exe out/
 
-# ... and check the reconstruction by rebuilding it with a real VB3 IDE
-# (needs the Setup below) and diffing the result against some.exe
-python3 tools/vb3decompile.py some.exe src/ --verify
+# ... and check it by rebuilding with a real VB3 IDE (needs the Setup below):
+# same p-code and form resources as some.exe
+python3 tools/verify.py some.exe out/
 
 python3 tools/pcode_disasm.py some.exe --runtime VBRUN300.DLL --check
 python3 tools/pcode_disasm.py some.exe --runtime VBRUN300.DLL --out listing.lst
@@ -61,8 +73,7 @@ python3 tools/pcode_disasm.py some.exe --runtime VBRUN300.DLL --out listing.lst
 You need your own legally-obtained copy of Visual Basic 3.0 to use
 `tools/vb3ide/` (empirical opcode research) — not included here, and not
 covered by this repo's license (see `LICENSE`). The resource-extraction
-tools (`ne_parser.py`, `extract_bitmaps.py`, `parse_form_headers.py`,
-`segment_parser.py`) only need a VB3-compiled `.exe` to analyze, not VB3
+tools (`ne_parser.py`, `extract_bitmaps.py`, `segment_parser.py`) only need a VB3-compiled `.exe` to analyze, not VB3
 itself.
 
 ### Getting the VB3 IDE running (for `vb3ide/`)
@@ -139,17 +150,11 @@ python3 tools/corpus.py examples work/corpus --runtime VBRUN300.DLL --exe some.e
 
 ## Status
 
-- Resources: form layouts decoded to `.frm` text (`formblob.py`);
-  recompiled form resources are byte-identical on all samples.
-- P-code: decompiles to source that recompiles to identical p-code on
-  all samples and on all 941 generated feature cases (`battery.py`, 19
-  batteries).
-- Whole exe: 14 of 22 samples and 846 of 941 feature cases rebuild byte-identical (`roundtrip.py`,
-  `exediff.py`, `battery.py --exe`).
-
-"Complete" means: every language feature has a battery, every case
-round-trips to identical p-code and form resources, and, with names
-padded to their original lengths, to an identical executable.
+The decompiled source recompiles to identical p-code and form resources on
+all 22 sample projects (483 procedures) and on all 969 generated feature
+cases (`battery.py`, 20 batteries). Byte-identical executables are not a
+goal: they depend on the original identifier lengths, which aren't stored
+(`exediff.py` still shows where two builds differ).
 
 Plan: see [PLAN.md](PLAN.md).
 

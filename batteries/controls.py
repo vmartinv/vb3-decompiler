@@ -4,7 +4,7 @@
 from pathlib import Path
 
 import pcode_disasm as P  # battery.py runs from tools/ (on sys.path)
-from decompile import EVENT_PARAMS, EVENT_TYPE
+from model import EVENT_PARAMS, EVENT_TYPE  # src/ (also on sys.path)
 
 rt = P.Runtime(Path(P.__file__).resolve().parent.parent / "work" / "ide" / "VBRUN300.DLL")
 EVENTS = rt.event_lists()

@@ -27,8 +27,9 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 import pcode_disasm as P  # noqa: E402
-from decompile import Decompiler, write_project  # noqa: E402
+from decompiler import Decompiler, write_project  # noqa: E402
 import exediff  # noqa: E402
 
 REPO = Path(__file__).resolve().parent.parent

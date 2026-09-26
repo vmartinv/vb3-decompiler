@@ -2,7 +2,8 @@
 
 Findings on the VB3 p-code format, derived from `VBRUN300.DLL` and from
 compiling known-source test programs with a real VB3 compiler.
-`tools/pcode_disasm.py` implements everything here.
+`src/` implements everything here (`ne.py`, `runtime.py`, `symbols.py`, the
+decompiler passes); `tools/pcode_disasm.py` prints listings.
 
 ## Executable layout
 
@@ -169,7 +170,7 @@ parameters); a global used from another module (loaded by `FORM`) `kind,
 global offset`. `As New frmX` variables and arrays: `0x80NN` (the form's
 NN), then the frame or global offset.
 
-`pcode_disasm.py` resolves these. A segment's form comes from its event
+`src/symbols.py` resolves these. A segment's form comes from its event
 procedures (below); its data image is the chunk resolving the most slots.
 Against sample source (`tools/validate.py`): 1,458/1,458 references
 correct, plus 9 object variables.
@@ -199,23 +200,23 @@ Handlers are named from those pairs.
 
 ## Lifting to source
 
-`tools/lift.py` lifts each statement back to BASIC on a symbolic expression
+`src/lift.py` lifts each statement back to BASIC on a symbolic expression
 stack (operators, builtins, objects/properties, methods, calls, If/ElseIf/
 Else/End If, Do/Loop, For/Next, Select Case, Exit/End/GoTo/On Error).
-`lift.py infer` proposes semantics for unknown handlers by searching
+`tools/lift_score.py infer` proposes semantics for unknown handlers by searching
 (function/statement, name from the source line, arity) for the reading
 that makes the corpus lines lift exactly; accepted readings go in
-`opcodes.SEM`. `lift.py score` compares every aligned corpus statement with its source
+`opcodes.SEM`. `tools/lift_score.py score` compares every aligned corpus statement with its source
 line (identifiers normalised): 3,335/3,335 match (samples + generated
 tests), 0 differ, 0 unsupported.
 
 ## Source recovery
 
-`tools/decompile.py` rebuilds the project from the exe; `tools/roundtrip.py`
+`src/vb3decompile.py` rebuilds the project from the exe; `tools/roundtrip.py`
 recompiles it in the IDE next to the original source and compares p-code
 per procedure (`tools/pcode_diff.py` shows instruction diffs). **All 483
-procedures of the 22 samples recompile p-code-identical** (form layouts
-still copied from the original source).
+procedures of the 22 samples recompile p-code-identical**, with identical
+form resources (layouts decoded, not copied).
 
 - **RT_RCDATA 2 layout**: a header (texts `u16 2 + padded length, u16 length,
   text` padded to even: form properties' strings such as a Data control's,
@@ -261,7 +262,7 @@ still copied from the original source).
   slots are sorted by name, so synthetic names are fitted between the
   stored ones), variables, Types/fields, labels.
 - **Encoded source details**: statement markers give the indentation
-  column (table in `decompile.py`; `48AF` + u16 for 25+, `4958` a `:`
+  column (table in `src/model.py`; `48AF` + u16 for 25+, `4958` a `:`
   statement; a marker before a `LABEL` is a blank line); `49CE` explicit
   parentheses; literal radix (`3831`/`388A` hex, `3834`/`388D` decimal);
   a type suffix at a use (`b%`) selects another handler entry (ID `| type
@@ -299,8 +300,8 @@ still copied from the original source).
   there). Names are shared: the same name in two modules has one entry.
   Controls, variables, comments and form properties don't take entries.
   The exe keeps only the Declare names, but the offsets give each unstored
-  name's length and each module path's length (`Decompiler.pool_lengths`;
-  the original build directory's length follows from any form boundary).
+  name's length and each module path's length (the original build
+  directory's length follows from any form boundary).
   The model predicts all 483 sample records. The project record (table
   offset 12, +30) is the pool end + 259 + the global names.
 - Unused `Const`s are not neutral padding: each changes
@@ -317,11 +318,11 @@ still copied from the original source).
   object is the first object marked after the call's ARGS (object
   arguments are marked too). Menu records have type byte 5.
 - Form blob class bytes: 03 Frame, 0A VScrollBar, 16 Shape, 17 Line,
-  25 Data (besides those in formblob.CLASS_IDS). A stored font with
+  25 Data (besides those in forms.CLASS_IDS). A stored font with
   default values comes from an attribute the control drops (FontItalic
   on a DirListBox): emitting it reproduces the record.
 - Type array fields: field "next" | 1, descriptor after the field (see
-  vbdecl.py). FIELD_ALOAD/ASTORE per element type: ID 0x13 / 0x14.
+  src/dataimage.py). FIELD_ALOAD/ASTORE per element type: ID 0x13 / 0x14.
 - REDIM_AS second word: the text column of `As`; generated names are
   resized to put it there.
 - Print item ops per type (`;` / end of line): V 6085/60A4, I 6045/60DE,
@@ -371,13 +372,12 @@ still copied from the original source).
   local symbol table (VB.EXE seg53:3476, iterator 806A/8097): 8 buckets
   walked in order, each in declaration order. Bucket = (name-table
   offset >> 1) & 7; offsets start at 10 (mod 16) and grow by 4 + length
-  per identifier in first-appearance order (`namesize.name_offsets`;
-  fits 120/120 random probe procedures). `Decompiler.fit_frees` picks
-  generated name lengths that reproduce the original order.
-- **Init lists** (the only exe bytes that depend on individual name
-  lengths once the name-table sums are fixed; found by shift experiments:
-  lengthen the first name by d, shorten the last by d, compile d = 0..32,
-  diff). The global image and every module image in `RT_RCDATA(2)` are
+  per identifier in first-appearance order (`nametable.name_offsets`;
+  fits 120/120 random probe procedures). This is the one name-length
+  effect on p-code: `naming.py` (`fit_frees`) picks generated name
+  lengths that reproduce the original order.
+- **Init lists** (exe bytes that depend on individual name lengths; not
+  reproduced, since exe identity isn't a goal). The global image and every module image in `RT_RCDATA(2)` are
   followed by a chunk `u16 len, u16 count, 1E 00, count x u16`
   (`image_layout()["lists"]`; `len 4, count 0` when empty). Entries: the
   image offset of each fixed-size array's slot and each String
@@ -388,7 +388,7 @@ still copied from the original source).
   16-bucket name hash (seg53:0x78c3 `and ax, 0x1e`), bucket =
   (name-table offset >> 1) & 15, buckets in order, each in declaration
   order (FIFO). Module list: offsets are the module name table's
-  (`namesize.name_offsets`, but the first entry is at 26 mod 32, i.e.
+  (`nametable.name_offsets`, but the first entry is at 26 mod 32, i.e.
   FIRST + 16); Static arrays come after, ordered by their procedure's
   8-bucket table (as OBJ_FREE). Global list: offsets are the global name
   table's (below). The swapped words in
@@ -397,18 +397,11 @@ still copied from the original source).
   `0x4000 | dims` (fixed size; bounds in the global image) or 0 (dynamic),
   then `0xC000 | element type`.
 - A Declare's `Alias` shows only as its name's length (the compile-time
-  pool entry at record +4): a name as long as the DLL entry's compiles
-  identically either way (`alias_len`, from the pool gaps; the pool's
-  last entry ends at the global name table, which also gives a general
-  procedure there its length: `fit_tail_proc`).
-- Name-table size (+30) is fitted by resizing the last-appearing
-  generated names (`fit_size`; Globals first, `fit_globals`). Locals and
-  parameters of different procedures can share a name, i.e. one entry
-  (`merge_locals`, when the table is too big).
+  pool entry at record +4); it compiles to the same p-code either way, so
+  it isn't recovered (only ordinals `#n` get an Alias, needed to compile).
 - Line counts: procedure record +50 counts its lines, not the blank lines
   before it; declarations +50 counts the declarations plus the file's
-  trailing blank line. More deco lines than the count: undeclared
-  (implicit) Variants, then joined `Dim a, b`.
+  trailing blank line (not reproduced: exe-only).
 - Procedure record +0: 22 + frame bytes; +10: count of numbered locals
   (Strings and Variants). Runs of unused locals (zero slots) are typed
   jointly to fit both, the BP gaps and numbering of the used locals
@@ -429,15 +422,11 @@ still copied from the original source).
   per name, in load order (.bas modules, then forms): the Globals, Global
   Consts, Types and fields a .bas declares, and the forms and Screen /
   App / Printer / Clipboard where first referenced in any module's code
-  (`Decompiler.global_table`; predicts every Type/field pointer of the
-  samples). `As <class>` names aren't entries. Its end is the project
+  (predicts every Type/field pointer of the samples). `As <class>` names aren't entries. Its end is the project
   record's +30 - 259. Types
-  and fields store pointers into it, so every Type/field name gets its
-  original length (`fit_types`): equal pointers are one shared name (a
-  field name reused by another Type), the gap to the next pointer is the
-  length, and the last one ends where the table's later names start
-  (table end minus their sizes); the first Type marks the
-  pool's end when no Global precedes it.
+  and fields store pointers into it (equal pointers: one shared name, a
+  field name reused by another Type; the gap to the next pointer is the
+  length); the first Type marks the pool's end when no Global precedes it.
 - Procedure record +14 bit 7: `Static Sub`/`Static Function`.
 - Procedure record +18: offset in the IDE's per-module variable table.
   It starts at 0x2c (a form; a .bas 0x2a), then an entry per module-level

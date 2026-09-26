@@ -27,63 +27,42 @@ Reusable VB3 reverse-engineering tools + findings. Companion to
 - Builds use `VB.EXE /MAKE` (~2 s, no GUI clicks). Its output differs
   from a GUI "Make EXE" build in one word of RT_RCDATA 1, so compare
   /MAKE builds only with /MAKE builds.
-- Whole-exe identity work (Phase 3, see PLAN.md): before touching
-  `decompile.py`, isolate the field in question by hand-writing two
-  minimal `.frm`s that differ only in the one thing being tested and
-  compiling them directly with `tools/vb3ide/compile_project.py`
-  (bypassing the decompiler entirely) — this gives ground truth about
-  what a field actually encodes before any decompiler logic is written
-  against it.
-- A fix must be validated against the *whole* battery (`battery.py --exe`
-  with no `-k`) and the full sample roundtrip, not just the isolated
-  case: several modules share one project's global image/name pool, and
-  a change that's correct alone can still cascade into an unrelated
-  module's p-code once bundled. Zero p-code regressions (CODE/CRASH/
-  DECOFAIL) is non-negotiable — revert rather than trade a p-code
-  regression for an exe-byte win.
-- VB.EXE is a deterministic compiler, so every original exe has *some*
-  exact-match source; a remaining mismatch means the right source-level
-  detail hasn't been found yet, not that it's unrecoverable. But this
-  corpus has several independent, still-unresolved sources of mismatch
-  active at once (name lengths, per-field line-counting quirks, ...), so
-  a value read off or derived from a single field can be misattributed
-  when more than one source is active in the same module — check it
-  against another independent field, or another way, before applying it
-  broadly; a wrong attribution can cost a p-code match, not just a byte.
-- For a *sample* with known original source (unlike a foreign target
-  exe), localize a mismatch by splicing hybrid `.frm`/`.bas` files —
-  original text with one aspect swapped in from the reconstruction
-  (comments, identifier names, explicit types, control/property order,
-  half the procedures, ...) — recompiling each, and diffing against the
-  true original with `exediff.py`. This narrows *which kind* of
-  difference matters fast. Get the true slot/record <-> name
-  correspondence from `tools/align_source.py` (matches by first-mention
-  order + p-code), not by guessing from file position: procedure record
-  order can legitimately differ from a renamed reconstruction's text
-  order even though each procedure's own p-code matches. This technique
-  has a real limit, though: once it shows the mismatch depends on exact
-  *string content* (not decomposable into "this one name" via more
-  bisection), that's the signal to stop guessing black-box and switch to
-  reading VB.EXE's own logic (next bullet) — splicing tells you *that*
-  naming matters and roughly how, not the actual mechanism.
-- To find what depends on individual name *lengths* (vs. their sums),
-  use a **shift experiment**: one hand-written project, first name
-  lengthened by d and last name shortened by d (sums constant),
-  compiled for d = 0..32 and diffed against d = 0. Only length-dependent
-  bytes change, and their period in d gives the hash (32 = 16 buckets of
-  2 bytes). This is how the init lists (OPCODES.md) were found.
-- **VB.EXE's own logic is readable, and often the faster path once
-  black-box testing finds something naming/order-related** (a
-  hash/bucket structure, an emission rule) rather than a pure sum:
+- Target: the decompiled source recompiles to the **same p-code and form
+  resources** (PLAN.md). Don't add fitting for exe-only fields (name-table
+  sizes, init-list/hash orders, pool offsets, line counts): exe byte
+  identity is not a goal. The one name-length effect that reaches p-code
+  (object locals' free order) is handled in `src/naming.py`.
+- Code layout: the decompiler lives flat in `src/` (only the decompiler);
+  everything else (testing, analysis, the IDE) in `tools/`, whose scripts
+  add `src/` to `sys.path`. A tool must not share a module name with
+  `src/` (the script's own directory wins).
+- Before changing what the decompiler emits for some construct, get
+  ground truth: hand-write two minimal `.frm`s that differ only in that
+  construct and compile them directly with
+  `tools/vb3ide/compile_project.py`, then compare their p-code.
+- A fix must be validated against the *whole* battery (`battery.py` with
+  no `-k`) and the full sample roundtrip, not just the isolated case:
+  several modules share one project's global image, and a change that's
+  correct alone can still cascade into an unrelated module's p-code once
+  bundled. Zero p-code regressions (CODE/FORM/CRASH/DECOFAIL) is
+  non-negotiable. For a pure refactor, also check that the decompiled
+  text of every battery/sample exe is unchanged.
+- For a *sample* with known original source, localize a p-code mismatch
+  by splicing hybrid `.frm`/`.bas` files (original text with one aspect
+  swapped in from the reconstruction), recompiling each and diffing the
+  p-code (`tools/pcode_diff.py`). Get the true slot/record <-> name
+  correspondence from `tools/align_source.py`, not from file position.
+- **VB.EXE's and VBRUN300's own logic is readable**, and often the faster
+  path once black-box probing stalls on an ordering/emission rule:
   decompile the relevant segment with Ghidra instead of guessing further
   from input/output pairs. Ghidra is installed (`pacman -S ghidra`,
   official `extra` repo — `pacman` is aliased to `yay` here, so AUR
   works too if something's not in `extra`). It decompiles a raw NE
   segment cleanly once imported as `x86:LE:16:Real Mode` with the plain
   binary loader at base 0 (segment bytes are already one contiguous
-  blob once pulled via `pcode_disasm.parse_ne(...)[n].data`) — far more
+  blob once pulled via `ne.parse_ne(...)[n].data`, src/ne.py) — far more
   legible than manually walking capstone output, which is fine for a
-  short handler body (as `pcode_disasm.py` already does for
+  short handler body (as `src/runtime.py` already does for
   VBRUN300.DLL) but not for tracing control flow through a real
   compiler. Headless recipe:
   `analyzeHeadless <proj-dir> <name> -import <segment.bin> -processor
@@ -101,12 +80,13 @@ Reusable VB3 reverse-engineering tools + findings. Companion to
   bytes is an unresolved NE relocation, not a real target — the plain
   `BinaryLoader` import here doesn't see the NE relocation table at all
   (it's outside the raw segment blob), so don't assume Ghidra resolved
-  it either; check `Segment.relocs` from `pcode_disasm.parse_ne(...)`
+  it either; check `Segment.relocs` from `ne.parse_ne(...)`
   for the real fixup if one of those matters.
 
 ## Key files
 
-- `OPCODES.md`: p-code format; `tools/pcode_disasm.py` implements it.
+- `OPCODES.md`: p-code format; `src/ne.py`, `src/runtime.py`, `src/symbols.py`
+  implement it (`tools/pcode_disasm.py`: the disassembler command line).
 - `RESOURCE_FORMAT.md`: NE resources / forms.
 
 ## Local data (`work/`, gitignored)
@@ -126,5 +106,5 @@ Reusable VB3 reverse-engineering tools + findings. Companion to
 ```sh
 python3 tools/validate.py work/root/vb/samples \
     --runtime work/ide/VBRUN300.DLL --vbx-dir work/ide -v
-python3 tools/lift.py score work/corpus --runtime work/ide/VBRUN300.DLL
+python3 tools/lift_score.py score work/corpus --runtime work/ide/VBRUN300.DLL
 ```

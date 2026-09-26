@@ -1,7 +1,7 @@
 """
 Module declarations recovered from the data images (RT_RCDATA 2): Types,
 Global variables and constants, module variables and constants, Declares.
-Used by decompile.py. Layout rules: see ../OPCODES.md, "Source recovery".
+Layout rules: see ../OPCODES.md, "Source recovery".
 
 Global image (the first chunk): global offset g is at chunk + 2 + g.
   g 4: head of the Type chain; a Type is `name, next Type, size, first
@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import struct
 from dataclasses import dataclass, field
+
 
 TYPE_CODE = {1: "I", 2: "L", 3: "S", 4: "D", 5: "C", 6: "V", 7: "T"}  # Type fields, records
 TYPE_NAME = {"I": "Integer", "L": "Long", "S": "Single", "D": "Double", "C": "Currency", "T": "String",

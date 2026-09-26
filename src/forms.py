@@ -1,21 +1,16 @@
-#!/usr/bin/env python3
 """
 Compiled form layouts (per-form RT_RCDATA data blob, see RESOURCE_FORMAT.md)
 decoded to control trees and .frm description text.
-
-  python3 tools/formblob.py <exe> [--runtime VBRUN300.DLL] [--vbx-dir DIR]
-
-prints each form's `Begin Form ... End` block.
 """
 from __future__ import annotations
 
 import struct
-import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-import pcode_disasm as P  # noqa: E402
+from ne import form_names, rcdata
+from runtime import PROP_STD, PROP_TYPES, Runtime
+
 
 # Record class byte -> standard class.
 CLASS_IDS = {
@@ -42,12 +37,12 @@ class Control:
 
 
 class FormDecoder:
-    def __init__(self, rt: P.Runtime):
+    def __init__(self, rt: Runtime):
         self.rt = rt
         self.plists = rt.property_lists()
 
     def props(self, cls: str, b: bytes, pos: int, form: bool, prior: list = ()) -> tuple[list, int]:
-        names, types = self.plists.get(cls, []), P.PROP_TYPES.get(cls, [])
+        names, types = self.plists.get(cls, []), PROP_TYPES.get(cls, [])
         out: list = []
         while b[pos] != 0xFF:
             pid = b[pos]
@@ -57,7 +52,7 @@ class FormDecoder:
             t = types[pid] if pid < len(types) else None
             if t is not None and t & 0x80:  # flag bit over the data type (e.g. Label.Alignment 0x86)
                 t &= 0x7F
-            std = P.PROP_STD.get(cls, [])
+            std = PROP_STD.get(cls, [])
             if name == "Left" and (names[pid + 1:pid + 4] == ["Top", "Width", "Height"]
                                    or pid < len(std) and std[pid] and cls != "Timer"):
                 size = 4 if form else 2  # Left, Top, Width, Height as one record
@@ -254,12 +249,12 @@ def form_text(c: Control, frx: bytearray, frx_name: str, depth: int = 0) -> list
     return out
 
 
-def forms(exe: Path, rt: P.Runtime) -> list[Control]:
-    res = P.rcdata(exe)
+def forms(exe: Path, rt: Runtime) -> list[Control]:
+    res = rcdata(exe)
     rt.load_project_vbx(res)
     dec = FormDecoder(rt)
     blobs = [res[k] for k in sorted(res) if res[k][:2] == b"\xff\xcc"]
-    return [dec.decode(b, n) for b, n in zip(blobs, P.form_names(res))]
+    return [dec.decode(b, n) for b, n in zip(blobs, form_names(res))]
 
 
 def dump(c: Control, depth: int = 0) -> list[str]:
@@ -271,20 +266,3 @@ def dump(c: Control, depth: int = 0) -> list[str]:
         out += dump(ch, depth + 1)
     out.append(f"{ind}End")
     return out
-
-
-def main():
-    import argparse
-    ap = argparse.ArgumentParser()
-    ap.add_argument("exe", type=Path)
-    ap.add_argument("--runtime", type=Path, default=Path(__file__).resolve().parent.parent / "work/ide/VBRUN300.DLL")
-    ap.add_argument("--vbx-dir", type=Path, action="append", default=[])
-    a = ap.parse_args()
-    rt = P.Runtime(a.runtime)
-    rt.vbx_dirs = a.vbx_dir or [a.runtime.parent]
-    for f in forms(a.exe, rt):
-        print("\n".join(dump(f)))
-
-
-if __name__ == "__main__":
-    main()
