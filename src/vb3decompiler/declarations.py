@@ -7,10 +7,10 @@ from __future__ import annotations
 import re
 import struct
 
-from dataimage import MOD_SIZE, const_literal, word
-from model import OBJ_KINDS, RET_TYPE, TYPE_NAME, pool_name
-from ne import vbx_entries
-from symbols import CLASS_BY_KIND
+from .dataimage import MOD_SIZE, const_literal, word
+from .model import OBJ_KINDS, RET_TYPE, TYPE_NAME, pool_name
+from .ne import vbx_entries
+from .symbols import CLASS_BY_KIND
 
 
 class DeclarationsMixin:

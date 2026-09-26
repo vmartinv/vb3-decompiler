@@ -9,17 +9,17 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from analyze import AnalyzeMixin
-from dataimage import word
-from declarations import DeclarationsMixin
-from emit import EmitMixin
-from forms import form_text, forms
-from layout import LayoutMixin
-from localvars import LocalsMixin
-from naming import NamingMixin
-from ne import PROC_TABLE_SEGMENT, find_procs, form_names, parse_ne, rcdata, vbx_entries
-from runtime import Runtime
-from symbols import Symbols, proc_names
+from .analyze import AnalyzeMixin
+from .dataimage import word
+from .declarations import DeclarationsMixin
+from .emit import EmitMixin
+from .forms import form_text, forms
+from .layout import LayoutMixin
+from .localvars import LocalsMixin
+from .naming import NamingMixin
+from .ne import PROC_TABLE_SEGMENT, find_procs, form_names, parse_ne, rcdata, vbx_entries
+from .runtime import Runtime
+from .symbols import Symbols, proc_names
 
 
 class Decompiler(LayoutMixin, AnalyzeMixin, DeclarationsMixin, NamingMixin, LocalsMixin, EmitMixin):

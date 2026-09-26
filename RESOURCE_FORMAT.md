@@ -31,7 +31,7 @@ form's code segment (see `OPCODES.md`: code segment = 4 + directory index).
   elements share one). Empty entries are deleted controls and still count
   as indices.
 - **Data blob**: the form's control tree with its design-time
-  properties. Decoded by `src/forms.py` (all sample forms decode;
+  properties. Decoded by `src/vb3decompiler/forms.py` (all sample forms decode;
   the round-trip rebuilds forms from it).
 
 ### Data blob

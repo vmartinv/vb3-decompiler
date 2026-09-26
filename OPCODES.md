@@ -2,7 +2,7 @@
 
 Findings on the VB3 p-code format, derived from `VBRUN300.DLL` and from
 compiling known-source test programs with a real VB3 compiler.
-`src/` implements everything here (`ne.py`, `runtime.py`, `symbols.py`, the
+`src/vb3decompiler/` implements everything here (`ne.py`, `runtime.py`, `symbols.py`, the
 decompiler passes); `tools/pcode_disasm.py` prints listings.
 
 ## Executable layout
@@ -170,7 +170,7 @@ parameters); a global used from another module (loaded by `FORM`) `kind,
 global offset`. `As New frmX` variables and arrays: `0x80NN` (the form's
 NN), then the frame or global offset.
 
-`src/symbols.py` resolves these. A segment's form comes from its event
+`src/vb3decompiler/symbols.py` resolves these. A segment's form comes from its event
 procedures (below); its data image is the chunk resolving the most slots.
 Against sample source (`tools/validate.py`): 1,458/1,458 references
 correct, plus 9 object variables.
@@ -200,7 +200,7 @@ Handlers are named from those pairs.
 
 ## Lifting to source
 
-`src/lift.py` lifts each statement back to BASIC on a symbolic expression
+`src/vb3decompiler/lift.py` lifts each statement back to BASIC on a symbolic expression
 stack (operators, builtins, objects/properties, methods, calls, If/ElseIf/
 Else/End If, Do/Loop, For/Next, Select Case, Exit/End/GoTo/On Error).
 `tools/lift_score.py infer` proposes semantics for unknown handlers by searching
@@ -212,7 +212,7 @@ tests), 0 differ, 0 unsupported.
 
 ## Source recovery
 
-`src/vb3decompile.py` rebuilds the project from the exe; `tests/roundtrip.py`
+`vb3decompile` (`src/vb3decompiler/cli.py`) rebuilds the project from the exe; `tests/roundtrip.py`
 recompiles it in the IDE next to the original source and compares p-code
 per procedure (`tools/pcode_diff.py` shows instruction diffs). **All 483
 procedures of the 22 samples recompile p-code-identical**, with identical
@@ -262,7 +262,7 @@ form resources (layouts decoded, not copied).
   slots are sorted by name, so synthetic names are fitted between the
   stored ones), variables, Types/fields, labels.
 - **Encoded source details**: statement markers give the indentation
-  column (table in `src/model.py`; `48AF` + u16 for 25+, `4958` a `:`
+  column (table in `src/vb3decompiler/model.py`; `48AF` + u16 for 25+, `4958` a `:`
   statement; a marker before a `LABEL` is a blank line); `49CE` explicit
   parentheses; literal radix (`3831`/`388A` hex, `3834`/`388D` decimal);
   a type suffix at a use (`b%`) selects another handler entry (ID `| type
@@ -322,7 +322,7 @@ form resources (layouts decoded, not copied).
   default values comes from an attribute the control drops (FontItalic
   on a DirListBox): emitting it reproduces the record.
 - Type array fields: field "next" | 1, descriptor after the field (see
-  src/dataimage.py). FIELD_ALOAD/ASTORE per element type: ID 0x13 / 0x14.
+  src/vb3decompiler/dataimage.py). FIELD_ALOAD/ASTORE per element type: ID 0x13 / 0x14.
 - REDIM_AS second word: the text column of `As`; generated names are
   resized to put it there.
 - Print item ops per type (`;` / end of line): V 6085/60A4, I 6045/60DE,

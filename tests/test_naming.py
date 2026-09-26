@@ -6,7 +6,7 @@ import re
 
 import pytest
 
-from naming import NamingMixin, sort_name
+from vb3decompiler.naming import NamingMixin, sort_name
 
 IDENT = re.compile(r"[A-Za-z][A-Za-z0-9_]*")
 

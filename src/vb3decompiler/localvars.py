@@ -7,9 +7,9 @@ from __future__ import annotations
 
 import re
 
-from dataimage import MOD_SIZE, word
-from model import LABEL, LABEL_WIDE, ProcInfo, TYPE_NAME, Var
-from runtime import EVENT_TYPES, MASTER_EVENT_TYPES
+from .dataimage import MOD_SIZE, word
+from .model import LABEL, LABEL_WIDE, ProcInfo, TYPE_NAME, Var
+from .runtime import EVENT_TYPES, MASTER_EVENT_TYPES
 
 
 class LocalsMixin:

@@ -8,9 +8,9 @@ from __future__ import annotations
 import struct
 from dataclasses import dataclass, field
 
-from ne import Proc
-from opcodes import NAMES
-from runtime import Runtime
+from .ne import Proc
+from .opcodes import NAMES
+from .runtime import Runtime
 
 
 SUFFIX = {"I": "%", "L": "&", "S": "!", "D": "#", "C": "@", "T": "$", "V": ""}

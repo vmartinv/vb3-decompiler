@@ -8,16 +8,16 @@ from __future__ import annotations
 import re
 import struct
 
-from dataimage import word
-from model import Var, mod_name
-from opcodes import NAMES
-from runtime import decode
+from .dataimage import word
+from .model import Var, mod_name
+from .opcodes import NAMES
+from .runtime import decode
 
 
 def grown(old: str, d: int):
     """Candidate names d characters longer (or shorter) than old."""
     import itertools
-    from nametable import KEYWORDS, BUILTINS
+    from .nametable import KEYWORDS, BUILTINS
     if d > 0:
         for x in "xyzqwjk":
             yield old + x * d
@@ -226,7 +226,7 @@ class NamingMixin:
                 if shared.lower() > lo.lower() and (hi is None or shared.lower() < hi.lower()):
                     info.name = shared
                     self.proc_name[info.proc.record] = shared
-        from nametable import BUILTINS, KEYWORDS
+        from .nametable import BUILTINS, KEYWORDS
         taken |= KEYWORDS | BUILTINS | {x.lower() for x in self.global_name.values()} | \
             {n.lower() for f in self.forms for n in f if n}
         for k, info in enumerate(infos):  # in layout order: each name fits between its neighbours
@@ -259,9 +259,9 @@ class NamingMixin:
         table: 8 buckets in order, each in declaration order; the bucket is
         (name-table offset >> 1) & 7, and offsets follow from the lengths
         and first-appearance order of all earlier names (nametable.py)."""
-        from nametable import FIRST, identifiers
+        from .nametable import FIRST, identifiers
         base, vars_, names = m["image"], m["vars"], m["names"]
-        from nametable import KEYWORDS, BUILTINS
+        from .nametable import KEYWORDS, BUILTINS
         taken = KEYWORDS | BUILTINS | self.project_names()
         for info in self.text_order(m):
             frees = [struct.unpack_from("<h", i.operand)[0] for i in info.insns if NAMES.get(i.op) == "OBJ_FREE"]

@@ -7,14 +7,14 @@ from __future__ import annotations
 import re
 import struct
 
-from dataimage import word
-from lift import lift
-from model import (EVENT_PARAMS, EVENT_TYPE, LABEL, LABEL_WIDE, OBJ_KINDS, ProcInfo, STMT_SAME_LINE, SUFFIX,
+from .dataimage import word
+from .lift import lift
+from .model import (EVENT_PARAMS, EVENT_TYPE, LABEL, LABEL_WIDE, OBJ_KINDS, ProcInfo, STMT_SAME_LINE, SUFFIX,
                    TYPE_NAME, label_number, mod_name, plain_handler, stmt_column)
-from ne import vbx_entries
-from opcodes import NAMES
-from runtime import EVENT_TYPES, MASTER_EVENT_TYPES
-from symbols import CLASS_BY_KIND
+from .ne import vbx_entries
+from .opcodes import NAMES
+from .runtime import EVENT_TYPES, MASTER_EVENT_TYPES
+from .symbols import CLASS_BY_KIND
 
 
 class EmitMixin:

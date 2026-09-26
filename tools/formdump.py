@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Prints each form's decoded description block (`Begin Form ... End`) from a
-compiled executable (src/forms.py).
+compiled executable (src/vb3decompiler/forms.py).
 
   python3 tools/formdump.py <exe> [--runtime VBRUN300.DLL] [--vbx-dir DIR]
 """
@@ -11,8 +11,8 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
-from forms import dump, forms  # noqa: E402
-from runtime import Runtime  # noqa: E402
+from vb3decompiler.forms import dump, forms  # noqa: E402
+from vb3decompiler.runtime import Runtime  # noqa: E402
 
 def main():
     import argparse

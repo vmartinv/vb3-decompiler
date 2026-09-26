@@ -10,7 +10,7 @@ store; fitting them made the code large and the names ugly.
 ## Status
 Every VB3 language feature has a battery; all 969 cases (20 batteries)
 and all 22 samples (483/483 procedures, all forms) round-trip to
-identical p-code and form resources. The decompiler lives in `src/`,
+identical p-code and form resources. The decompiler is the `vb3decompiler` package (`src/vb3decompiler/`),
 split by pass (README.md).
 
 ## Remaining items

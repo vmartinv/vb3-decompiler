@@ -6,12 +6,12 @@ from __future__ import annotations
 
 import struct
 
-from dataimage import word
-from model import (OBJ_KINDS, PRINT_TYPE, ProcInfo, RET_TYPE, SUFFIX, TYPE_OF_SUFFIX, Var, lt_hint,
+from .dataimage import word
+from .model import (OBJ_KINDS, PRINT_TYPE, ProcInfo, RET_TYPE, SUFFIX, TYPE_OF_SUFFIX, Var, lt_hint,
                    plain_handler, var_access)
-from opcodes import NAMES
-from runtime import decode
-from symbols import CLASS_BY_KIND, is_objarr
+from .opcodes import NAMES
+from .runtime import decode
+from .symbols import CLASS_BY_KIND, is_objarr
 
 
 class AnalyzeMixin:

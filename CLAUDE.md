@@ -39,12 +39,15 @@ https://github.com/vmartinv/vb3-decompiler. Companion to `~/qrace`
   resources** (PLAN.md). Don't add fitting for exe-only fields (name-table
   sizes, init-list/hash orders, pool offsets, line counts): exe byte
   identity is not a goal. The one name-length effect that reaches p-code
-  (object locals' free order) is handled in `src/naming.py`.
-- Code layout: the decompiler lives flat in `src/` (only the decompiler);
+  (object locals' free order) is handled in `src/vb3decompiler/naming.py`.
+- Code layout: the decompiler is the `vb3decompiler` package in
+  `src/vb3decompiler/` (only the decompiler; `pyproject.toml`, `pip install .`
+  gives the `vb3decompile` command);
   the regression tests in `tests/` (batteries, probes and their runners);
   everything else (analysis, the IDE driver) in `tools/`. Scripts add
-  `src/` (and `tools/`) to `sys.path`; no module name may repeat across
-  the three (the script's own directory wins).
+  `src/` (and `tools/`) to `sys.path` and import `vb3decompiler.*`, so
+  they run without installing; tests/ and tools/ module names must not
+  repeat (the script's own directory wins).
 - Before changing what the decompiler emits for some construct, get
   ground truth: hand-write two minimal `.frm`s that differ only in that
   construct and compile them directly with
@@ -69,9 +72,9 @@ https://github.com/vmartinv/vb3-decompiler. Companion to `~/qrace`
   works too if something's not in `extra`). It decompiles a raw NE
   segment cleanly once imported as `x86:LE:16:Real Mode` with the plain
   binary loader at base 0 (segment bytes are already one contiguous
-  blob once pulled via `ne.parse_ne(...)[n].data`, src/ne.py) — far more
+  blob once pulled via `ne.parse_ne(...)[n].data`, src/vb3decompiler/ne.py) — far more
   legible than manually walking capstone output, which is fine for a
-  short handler body (as `src/runtime.py` already does for
+  short handler body (as `src/vb3decompiler/runtime.py` already does for
   VBRUN300.DLL) but not for tracing control flow through a real
   compiler. Headless recipe:
   `analyzeHeadless <proj-dir> <name> -import <segment.bin> -processor
@@ -94,7 +97,8 @@ https://github.com/vmartinv/vb3-decompiler. Companion to `~/qrace`
 
 ## Key files
 
-- `OPCODES.md`: p-code format; `src/ne.py`, `src/runtime.py`, `src/symbols.py`
+- `OPCODES.md`: p-code format; `ne.py`, `runtime.py`, `symbols.py` in
+  `src/vb3decompiler/`
   implement it (`tools/pcode_disasm.py`: the disassembler command line).
 - `RESOURCE_FORMAT.md`: NE resources / forms.
 

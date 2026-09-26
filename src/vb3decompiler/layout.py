@@ -7,11 +7,11 @@ from __future__ import annotations
 import re
 import struct
 
-from dataimage import GlobalImage, MOD_SIZE, const_literal, word
-from model import OBJ_KINDS, pool_name
-from ne import vbx_entries
-from runtime import RECORD_FORM, SEG_IMAGE
-from symbols import CLASS_BY_KIND
+from .dataimage import GlobalImage, MOD_SIZE, const_literal, word
+from .model import OBJ_KINDS, pool_name
+from .ne import vbx_entries
+from .runtime import RECORD_FORM, SEG_IMAGE
+from .symbols import CLASS_BY_KIND
 
 
 def image_layout(image: bytes, nforms: int) -> dict:

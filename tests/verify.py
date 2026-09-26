@@ -20,9 +20,9 @@ REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "tools"))
-from decompiler import Decompiler, write_project  # noqa: E402
+from vb3decompiler.decompiler import Decompiler, write_project  # noqa: E402
 from roundtrip import compare, compile_mak  # noqa: E402
-from runtime import Runtime  # noqa: E402
+from vb3decompiler.runtime import Runtime  # noqa: E402
 
 
 def main():

@@ -20,7 +20,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
-from ne import PREDEFINED_TYPES, NamedResource, NEFile  # noqa: E402,F401
+from vb3decompiler.ne import PREDEFINED_TYPES, NamedResource, NEFile  # noqa: E402,F401
 
 # Predefined NE resource type IDs (high bit of rtTypeID set => integer type,
 # low byte is one of these). See MSDN "NE Executable Format" / Wine's

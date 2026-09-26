@@ -1,7 +1,7 @@
 """The model of a module's compile-time name table (nametable.py)."""
 from __future__ import annotations
 
-from nametable import FIRST, identifiers, name_offsets
+from vb3decompiler.nametable import FIRST, identifiers, name_offsets
 
 
 def test_identifiers_first_appearance_case_insensitive():

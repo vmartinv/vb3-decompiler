@@ -11,7 +11,7 @@ from __future__ import annotations
 import re
 import struct
 
-from opcodes import METHODS, NAMES, SEM
+from .opcodes import METHODS, NAMES, SEM
 
 
 BINOPS = {  # family -> (text, precedence; higher binds tighter)

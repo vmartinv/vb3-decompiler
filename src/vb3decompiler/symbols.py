@@ -8,9 +8,9 @@ from __future__ import annotations
 import re
 import struct
 
-from ne import Segment, find_procs, form_names, vbx_entries
-from opcodes import NAMES
-from runtime import (CLASSES, FORM_CLASS, KINDS, MEPROPS, OBJVAR_TYPES, RECORD_FORM, SEG_FORM, SEG_IMAGE,
+from .ne import Segment, find_procs, form_names, vbx_entries
+from .opcodes import NAMES
+from .runtime import (CLASSES, FORM_CLASS, KINDS, MEPROPS, OBJVAR_TYPES, RECORD_FORM, SEG_FORM, SEG_IMAGE,
                      decode, reset_state)
 
 

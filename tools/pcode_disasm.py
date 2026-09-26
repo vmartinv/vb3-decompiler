@@ -2,7 +2,7 @@
 """
 Disassembles the p-code of a VB3-compiled executable, procedure by procedure.
 
-The decoding lives in src/ (ne.py, runtime.py, symbols.py); this module
+The decoding lives in the vb3decompiler package (ne, runtime, symbols); this module
 re-exports it for the tools (`import pcode_disasm as P`) and is the
 disassembler's command line. Two findings make this possible (see ../OPCODES.md, "Threaded code" and
 "Procedure -> segment resolution"):
@@ -34,10 +34,10 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
-from ne import *  # noqa: E402,F401,F403
-from opcodes import NAMES  # noqa: E402,F401
-from runtime import *  # noqa: E402,F401,F403
-from symbols import *  # noqa: E402,F401,F403
+from vb3decompiler.ne import *  # noqa: E402,F401,F403
+from vb3decompiler.opcodes import NAMES  # noqa: E402,F401
+from vb3decompiler.runtime import *  # noqa: E402,F401,F403
+from vb3decompiler.symbols import *  # noqa: E402,F401,F403
 
 
 def main():

@@ -8,8 +8,8 @@ import struct
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from ne import form_names, rcdata
-from runtime import PROP_STD, PROP_TYPES, Runtime
+from .ne import form_names, rcdata
+from .runtime import PROP_STD, PROP_TYPES, Runtime
 
 
 # Record class byte -> standard class.

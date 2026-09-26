@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Scores the statement lifter (src/lift.py) against the source-aligned sample
+Scores the statement lifter (src/vb3decompiler/lift.py) against the source-aligned sample
 corpus (tools/corpus.py), and proposes names for unnamed handlers.
 
   python3 tools/lift_score.py score <corpus-dir> --runtime VBRUN300.DLL [-v]
@@ -20,7 +20,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from lift import FUNCS, lift  # noqa: E402
+from vb3decompiler.lift import FUNCS, lift  # noqa: E402
 KEYWORDS = {"and", "or", "not", "mod", "xor", "eqv", "imp", "if", "then", "else", "elseif", "true", "false",
             "do", "loop", "while", "until", "wend", "redim", "preserve", "set", "is", "nothing", "typeof",
             "local", "ubound", "to", "open", "input", "output", "append", "random", "binary", "as", "close",

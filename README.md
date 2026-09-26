@@ -12,8 +12,8 @@ p-code). Findings: [`OPCODES.md`](OPCODES.md) (p-code) and
 ## What's here
 
 ```
-src/                     the decompiler (exe -> .mak/.frm/.bas/.frx)
-  vb3decompile.py        command line
+src/vb3decompiler/       the decompiler package (exe -> .mak/.frm/.bas/.frx)
+  cli.py                 the `vb3decompile` command (also `python -m vb3decompiler`)
   decompiler.py          Decompiler: runs the passes below; write_project
   layout.py              module list and data-image layout
   analyze.py             per-module p-code analysis: variables, calls
@@ -63,7 +63,8 @@ No build step.
 
 ```sh
 # reconstruct a project from a compiled exe
-python3 src/vb3decompile.py some.exe out/
+pip install .          # or: pip install -e '.[test]'
+vb3decompile some.exe out/ --runtime VBRUN300.DLL
 
 # ... and check it by rebuilding with a real VB3 IDE (needs the Setup below):
 # same p-code and form resources as some.exe

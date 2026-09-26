@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "vb3decompiler"
+version = "0.1.0"
+description = "Decompiler for Visual Basic 3.0 executables: p-code and forms back to .frm/.bas source that recompiles to identical p-code"
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.10"
+dependencies = ["capstone"]
+
+[project.optional-dependencies]
+test = ["pytest"]
+
+[project.scripts]
+vb3decompile = "vb3decompiler.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/vmartinv/vb3-decompiler"
+
+[tool.setuptools.packages.find]
+where = ["src"]
