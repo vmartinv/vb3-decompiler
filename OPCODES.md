@@ -112,6 +112,11 @@ image in `RT_RCDATA` 2 (see `RESOURCE_FORMAT.md`):
   (below); `0xC0FE` = `.Controls` (`SUBOBJ`) / `.Controls(i)`
   (`CTLARRAY_OF`). Separator as written: `4A57`/`4EA9` `!`, `4A63`/`4EB0`
   `.` (150/150 in the samples).
+  `nn` is the control's index in the form's name table. Built by `/MAKE`
+  from source, that table is in `.FRM` text order (the control records'
+  order too); an exe made in the session where the form was designed keeps
+  the controls' creation order, with holes for deleted ones (qrace.exe), so
+  no source text gives its `nn` and its form resource together.
 - Object arrays (`Forms(i)`, `Document(i)` of `Global Document() As New
   frmNotePad`): unnamed handlers with interpreter ID `0x0E` (`4CD5`,
   `4DEA`; store `0x0F`) and operand `u16 argc, u16 slot`.

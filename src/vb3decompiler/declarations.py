@@ -170,13 +170,14 @@ class DeclarationsMixin:
             else:
                 items.append(("dim", s, "As Integer", "filler"))
             s += 2
-        if all(len(it) == 4 and it[3] == "filler" for it in items):
-            items = []  # only zeros before the procedures: not declarations
+        if items and all(len(it) == 4 and it[3] == "filler" for it in items):
+            # only zeros before the procedures: their unused locals, not declarations
+            # (before a global's reference they stay: unused module variables)
             fv = m.vars.get(m.first_owned)
             if fv is not None and fv.scope in ("LOC", "REF"):
-                m.first_owned = m.decl_start  # leading unused locals of the first procedure
+                items, m.first_owned = [], m.decl_start  # leading unused locals of the first procedure
             elif fv is None and m.infos and m.first_owned >= word(self.image, m.image) - 1:
-                m.first_owned = m.decl_start  # nothing used at all: the procedures' unused locals
+                items, m.first_owned = [], m.decl_start  # nothing used at all: the procedures' unused locals
         return items
 
     def module_var_item(self, m: Module, s: int, v, nxt: int, items: list) -> int:

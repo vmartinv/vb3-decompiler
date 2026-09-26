@@ -32,4 +32,6 @@ cases = [
     dict(name="global in two modules", bas=True, code="Global Shared1 As Long\n",
          extra=[dict(bas=True, code="Sub Bump ()\n    Shared1 = Shared1 + 1\nEnd Sub\n"),
                 dict(code=S("    Bump\n    Debug.Print Shared1"))]),
-]
+] + [dict(name=f"form unused {d}, global used", bas=True, code="Global Gu As Variant\n",
+          extra=[dict(code=f"{d}\n\n" + S("    Gu = 1"))])
+     for d in ("Dim u As Integer", "Dim u As Long", "Dim u As Integer, v As Integer")]
