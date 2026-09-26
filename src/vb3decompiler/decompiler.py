@@ -18,6 +18,7 @@ from .layout import LayoutMixin
 from .localvars import LocalsMixin
 from .naming import NamingMixin
 from .ne import PROC_TABLE_SEGMENT, find_procs, form_names, parse_ne, rcdata, vbx_entries
+from .records import DECL_ITEMS_END, decl_record
 from .runtime import Runtime
 from .symbols import Symbols, proc_names
 
@@ -74,7 +75,8 @@ class Decompiler(LayoutMixin, AnalyzeMixin, DeclarationsMixin, NamingMixin, Loca
         self.slotted = {r for m in mods for _, r in m["funcs"]}
         for m in mods:
             m["lines"] = self.emit_module(m)
-            want = (word(self.table, word(self.image, m["image"] - 2) + 4 + 12) - word(self.image, m["image"])) // 2
+            items_end = word(self.table, decl_record(self.image, m["image"]) + DECL_ITEMS_END)
+            want = (items_end - word(self.image, m["image"])) // 2
             if d := self.item_count(m) - want:  # unused Variants (2 slots, 1 item) vs other locals
                 m["nv_pick"], m["nv_delta"] = max(0, -d), d
                 m["lines"] = self.emit_module(m)

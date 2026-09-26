@@ -11,6 +11,8 @@ import struct
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from .records import PROC_CODE_END, PROC_CODE_START, PROC_SEGMENT
+
 # ---------------------------------------------------------------------------
 # Resource table
 # ---------------------------------------------------------------------------
@@ -249,10 +251,10 @@ def find_procs(segs: list[Segment]) -> list[Proc]:
         if r.kind != 0 or r.additive:
             continue
         for site in table.fixup_sites(r):
-            rec = site - 38
+            rec = site - PROC_SEGMENT
             (tag,) = struct.unpack_from("<H", table.data, rec)
-            (start,) = struct.unpack_from("<H", table.data, rec + 24)
-            (end,) = struct.unpack_from("<H", table.data, rec + 36)
+            (start,) = struct.unpack_from("<H", table.data, rec + PROC_CODE_START)
+            (end,) = struct.unpack_from("<H", table.data, rec + PROC_CODE_END)
             procs.append(Proc(rec, tag, r.target1, start, end))
     return sorted(procs, key=lambda p: (p.segment, p.start))
 

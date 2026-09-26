@@ -20,6 +20,7 @@ from .model import (
     var_access,
 )
 from .opcodes import NAMES
+from .records import PROC_ARG_WORDS, PROC_KIND, PROC_RET_TYPE
 from .runtime import decode
 from .symbols import CLASS_BY_KIND, is_objarr
 
@@ -32,11 +33,10 @@ class AnalyzeMixin:
         for p in procs:
             insns, err = decode(self.rt, self.segs[seg - 1].data, p)
             notes = self.sym.annotate(seg, insns)
-            rec = self.table[p.record:p.record + 20]
             info = ProcInfo(p, insns, notes)
-            info.function = rec[12] == 2
-            info.ret = RET_TYPE.get(rec[13], "V")
-            info.argwords = rec[15]
+            info.function = self.table[p.record + PROC_KIND] == 2
+            info.ret = RET_TYPE.get(self.table[p.record + PROC_RET_TYPE], "V")
+            info.argwords = self.table[p.record + PROC_ARG_WORDS]
             infos.append(info)
 
         # variables: scope/type per slot; globals referenced through this module's slots

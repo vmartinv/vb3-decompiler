@@ -26,6 +26,7 @@ from .model import (
 )
 from .ne import vbx_entries
 from .opcodes import NAMES
+from .records import DECL_COMPARE, DECL_FLAGS, DECL_TYPES_START, OPTION_EXPLICIT, PROC_FLAGS, PROC_STATIC, decl_record
 from .runtime import EVENT_TYPES, MASTER_EVENT_TYPES
 from .symbols import CLASS_BY_KIND
 
@@ -62,22 +63,22 @@ class EmitMixin:
         # declarations record +46: where the module's Types start in the table that
         # Declare records' +24 also index (Types first: they come before the Declares)
         ends = [j for j, x in enumerate(out) if x == "End Type"]
-        if ends and decl_lines and word(self.table, word(self.image, m["image"] - 2) + 4 + 46) \
+        if ends and decl_lines and word(self.table, decl_record(self.image, m["image"]) + DECL_TYPES_START) \
                 < min(m.get("decl_offs", [0])):
             out = out[:ends[-1] + 1] + decl_lines + out[ends[-1] + 1:]
         else:
             out = decl_lines + out
         # declarations record (the word before the module's image + 4): +18 flags
         # (1 Option Base 1, 0x40 Option Explicit, 0x800 Option Compare; +20: 1 Text, 0 Binary)
-        rec = word(self.image, m["image"] - 2) + 4
-        flags = word(self.table, rec + 18)
-        head = ["Option Explicit"] if flags & 0x40 else []
+        rec = decl_record(self.image, m["image"])
+        flags = word(self.table, rec + DECL_FLAGS)
+        head = ["Option Explicit"] if flags & OPTION_EXPLICIT else []
         if m["defint"]:
             head.append("DefInt A-Z")
         if flags & 0x0001:
             head.append("Option Base 1")
         if flags & 0x0800:
-            head.append("Option Compare Text" if word(self.table, rec + 20) else "Option Compare Binary")
+            head.append("Option Compare Text" if word(self.table, rec + DECL_COMPARE) else "Option Compare Binary")
         out = head + out
         if out and m["infos"]:
             out.append("")
@@ -162,7 +163,7 @@ class EmitMixin:
             head = f"{kind} {info.name}{SUFFIX[info.ret]} ({', '.join(params)})"
         else:
             head = f"{kind} {info.name} ({', '.join(params)})" + (f" As {TYPE_NAME[info.ret]}" if info.function else "")
-        if self.table[info.proc.record + 14] & 0x80:  # record +14 bit 7: Static Sub/Function
+        if self.table[info.proc.record + PROC_FLAGS] & PROC_STATIC:
             head = "Static " + head
         body = self.statements(info, names)
         dims = self.local_dims(info, vars_, names, base, body)

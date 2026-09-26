@@ -10,6 +10,17 @@ import struct
 from .dataimage import MOD_SIZE, GlobalImage, const_literal, word
 from .model import OBJ_KINDS, pool_name
 from .ne import vbx_entries
+from .records import (
+    DECL_DEFTYPE,
+    DECL_FLAGS,
+    DECLARE_ENTRY,
+    DECLARE_FLAGS,
+    OPTION_EXPLICIT,
+    PROC_FLAGS,
+    PROC_KIND,
+    RECORD_SIZE,
+    decl_record,
+)
 from .runtime import RECORD_FORM, SEG_IMAGE
 from .symbols import CLASS_BY_KIND
 
@@ -78,8 +89,9 @@ class LayoutMixin:
 
     def is_declare(self, r: int) -> bool:
         t = self.table
-        return 0 <= r <= len(t) - 56 and r % 8 == 0 and t[r + 14] == 0x0C and t[r + 12] in (1, 2) \
-            and self.pool is not None and pool_name(self.image, self.pool, word(t, r + 46)).isprintable()
+        return 0 <= r <= len(t) - RECORD_SIZE and r % 8 == 0 and t[r + PROC_FLAGS] == DECLARE_FLAGS \
+            and t[r + PROC_KIND] in (1, 2) \
+            and self.pool is not None and pool_name(self.image, self.pool, word(t, r + DECLARE_ENTRY)).isprintable()
 
     def module_list(self) -> list[dict]:
         """Every module (from the data images) with its code segment, if any."""
@@ -93,11 +105,11 @@ class LayoutMixin:
         mods = [dict(kind="bas", image=c, form=None, seg=None, start=0x06) for c in lay["modules"]]
         mods += [dict(kind="frm", image=c, form=self.forms[k][0], seg=None, start=0x1A, ctl=cl)
                  for k, (c, cl) in enumerate(lay["forms"])]
-        for m in mods:  # declarations record: word before the image + 4 (+18 flags: 0x40 Option Explicit;
-            rec = word(self.image, m["image"] - 2) + 4  # +44: DefType table, 0xFFFF if none)
-            m["explicit"] = bool(word(self.table, rec + 18) & 0x40)
-            m["defint"] = word(self.table, rec + 44) != 0xFFFF  # the samples' only DefType: DefInt A-Z
-        decl_recs = sorted(word(self.image, m["image"] - 2) + 4 for m in mods)
+        for m in mods:
+            rec = decl_record(self.image, m["image"])
+            m["explicit"] = bool(word(self.table, rec + DECL_FLAGS) & OPTION_EXPLICIT)
+            m["defint"] = word(self.table, rec + DECL_DEFTYPE) != 0xFFFF  # the samples' only DefType: DefInt A-Z
+        decl_recs = sorted(decl_record(self.image, m["image"]) for m in mods)
 
         def owner(r: int) -> int:  # a module's records follow its declarations record
             return max((r0 for r0 in decl_recs if r0 < r), default=-1)

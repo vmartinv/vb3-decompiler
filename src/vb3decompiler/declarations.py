@@ -10,6 +10,19 @@ import struct
 from .dataimage import MOD_SIZE, const_literal, word
 from .model import OBJ_KINDS, RET_TYPE, TYPE_NAME, pool_name
 from .ne import vbx_entries
+from .records import (
+    DECL_LINES,
+    DECL_TYPES_START,
+    DECLARE_DLL,
+    DECLARE_ENTRY,
+    DECLARE_PARAMS,
+    PROC_ARG_WORDS,
+    PROC_KIND,
+    PROC_RET_TYPE,
+    PROC_VAR_TABLE,
+    RECORD_SIZE,
+    decl_record,
+)
 from .symbols import CLASS_BY_KIND
 
 
@@ -23,7 +36,7 @@ class DeclarationsMixin:
         Statics (same slots and p-code as a module Dim)."""
         if not m["infos"] or not items:
             return items
-        want = min(word(self.table, i.proc.record + 18) for i in m["infos"])
+        want = min(word(self.table, i.proc.record + PROC_VAR_TABLE) for i in m["infos"])
         base = (0x2c if m["kind"] == "frm" else 0x2a) - m["start"] + 8 * len(m["funcs"])
         size = lambda its, end: base + 8 * sum(it[0] != "typeref" for it in its) + end
         if size(items, m["first_owned"] & ~1) <= want:
@@ -249,7 +262,7 @@ class DeclarationsMixin:
         # else distributed greedily by each candidate's declarations line count
         # (rec+50), as many Types (in chain order) as fit before the next one.
         bas = [m for m in mods if m["kind"] == "bas"] or mods
-        typed = [m for m in bas if word(self.table, word(self.image, m["image"] - 2) + 4 + 46) != 0xFFFF]
+        typed = [m for m in bas if word(self.table, decl_record(self.image, m["image"]) + DECL_TYPES_START) != 0xFFFF]
         unowned: list = []
         for td in gl.types.values():
             owner = None
@@ -268,12 +281,12 @@ class DeclarationsMixin:
             else:
                 owner.setdefault("types", []).append(td)
         candidates = typed or [m for m in bas if not m["items"]] or [bas[0]]
-        ci, budget = 0, word(self.table, word(self.image, candidates[0]["image"] - 2) + 4 + 50)
+        ci, budget = 0, word(self.table, decl_record(self.image, candidates[0]["image"]) + DECL_LINES)
         for td in unowned:
             need = len(td.lines(gl.types))
             while budget <= 0 and ci + 1 < len(candidates):
                 ci += 1
-                budget = word(self.table, word(self.image, candidates[ci]["image"] - 2) + 4 + 50)
+                budget = word(self.table, decl_record(self.image, candidates[ci]["image"]) + DECL_LINES)
             candidates[ci].setdefault("types", []).append(td)
             budget -= need
 
@@ -282,7 +295,7 @@ class DeclarationsMixin:
         recs = [r for _, r in m["funcs"]]
         # Declare Subs (and unused Declares) have no slot: found by scanning the
         # table; declared in the module whose records surround them
-        for r in sorted(r for r in range(0, len(self.table) - 55, 8) if r not in self.by_record
+        for r in sorted(r for r in range(0, len(self.table) - RECORD_SIZE + 1, 8) if r not in self.by_record
                         and r not in self.slotted and self.is_declare(r)):
             if self.declare_home(r) is m:
                 recs.append(r)
@@ -291,22 +304,22 @@ class DeclarationsMixin:
             if r in self.by_record or self.declare_home(r) is not m:  # a Function's slot in a calling module
                 continue
             t = self.table
-            dll = pool_name(self.image, self.pool, word(t, r + 40)).rstrip(".")
+            dll = pool_name(self.image, self.pool, word(t, r + DECLARE_DLL)).rstrip(".")
             fn = self.declare_name(r)
             entry = self.declare_entry(r)
             alias = f' Alias "{entry}"' if entry.startswith("#") or entry.lower() != fn.lower() else ""
-            kind = "Function" if t[r + 12] == 2 else "Sub"
+            kind = "Function" if t[r + PROC_KIND] == 2 else "Sub"
             params = self.declare_params(r)
             line = f'Declare {kind} {fn} Lib "{dll}"{alias} ({", ".join(params)})'
             if kind == "Function":
-                line += f" As {TYPE_NAME[RET_TYPE.get(t[r + 13], 'V')]}"
+                line += f" As {TYPE_NAME[RET_TYPE.get(t[r + PROC_RET_TYPE], 'V')]}"
             out.append(line)
-            m.setdefault("decl_offs", []).append(word(t, r + 24))
+            m.setdefault("decl_offs", []).append(word(t, r + DECLARE_PARAMS))
         return out
 
     def declare_entry(self, r: int) -> str:
         """A Declare's DLL entry name (`#n`: an ordinal)."""
-        return pool_name(self.image, self.pool, word(self.table, r + 46))
+        return pool_name(self.image, self.pool, word(self.table, r + DECLARE_ENTRY))
 
     def declare_name(self, r: int) -> str:
         """A Declare's name: its DLL entry name (an ordinal `#n`: Ord<n>, with an Alias)."""
@@ -324,9 +337,9 @@ class DeclarationsMixin:
         """DLL parameters from the argument types at call sites (arguments are
         converted to the declared type), else from the argument size."""
         seen = self.call_types.get(r, [])
-        words = self.table[r + 15]
+        words = self.table[r + PROC_ARG_WORDS]
         out = []
-        taken = {self.declare_name(x).lower() for x in range(0, len(self.table) - 55, 8)
+        taken = {self.declare_name(x).lower() for x in range(0, len(self.table) - RECORD_SIZE + 1, 8)
                  if x not in self.by_record and self.is_declare(x)}
         pn = "P" if not any(re.fullmatch(r"p\d+", x) for x in taken) else "Arg"
         if seen:
@@ -345,9 +358,10 @@ class DeclarationsMixin:
                     out.append(f"ByVal {pn}{j + 1} As {TYPE_NAME.get(t, 'Integer')}")
             return out
         if not words:  # unused: record +24 grows by 20 + 8 per parameter to the next Declare's
-            nxt = next((x for x in range(r + 56, len(self.table) - 55, 8) if x not in self.by_record
-                        and self.is_declare(x)), None)
-            gap = word(self.table, nxt + 24) - word(self.table, r + 24) - 20 if nxt is not None else -1
+            nxt = next((x for x in range(r + RECORD_SIZE, len(self.table) - RECORD_SIZE + 1, 8)
+                        if x not in self.by_record and self.is_declare(x)), None)
+            gap = word(self.table, nxt + DECLARE_PARAMS) - word(self.table, r + DECLARE_PARAMS) - 20 \
+                if nxt is not None else -1
             if gap > 0 and gap % 8 == 0 and gap // 8 <= 30:
                 return [f"ByVal {pn}{k + 1} As Integer" for k in range(gap // 8)]  # (types don't matter)
         k = 0

@@ -11,6 +11,7 @@ import struct
 from .dataimage import word
 from .model import Var, mod_name
 from .opcodes import NAMES
+from .records import PROC_POOL_NAME
 from .runtime import decode
 
 
@@ -221,7 +222,7 @@ class NamingMixin:
 
         self.pool_names = getattr(self, "pool_names", {})  # pool offset -> name (one entry per name)
         for k, info in enumerate(infos):  # a name another module already entered in the pool
-            shared = self.pool_names.get(word(self.table, info.proc.record + 4))
+            shared = self.pool_names.get(word(self.table, info.proc.record + PROC_POOL_NAME))
             if not info.name and shared:
                 lo, hi = bounds(k)
                 if shared.lower() > lo.lower() and (hi is None or shared.lower() < hi.lower()):
@@ -237,7 +238,7 @@ class NamingMixin:
                 taken.add(info.name.lower())
         for info in infos:
             if info.name and info.proc.record not in self.events:
-                self.pool_names.setdefault(word(self.table, info.proc.record + 4), info.name)
+                self.pool_names.setdefault(word(self.table, info.proc.record + PROC_POOL_NAME), info.name)
 
     def name_bounds(self, m: dict, k: int) -> tuple[str, str | None]:
         """(lo, hi): the names procedure k of module m must sort between (code

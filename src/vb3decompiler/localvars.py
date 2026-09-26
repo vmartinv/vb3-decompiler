@@ -9,6 +9,7 @@ import re
 
 from .dataimage import MOD_SIZE, word
 from .model import LABEL, LABEL_WIDE, TYPE_NAME, ProcInfo, Var
+from .records import PROC_FLAGS, PROC_FRAME, PROC_NUMBERED, PROC_STATIC
 from .runtime import EVENT_TYPES, MASTER_EVENT_TYPES
 
 
@@ -154,7 +155,8 @@ class LocalsMixin:
                 if pe < fo and all(self.value(base, z) == 0 for z in range(pe, fo, 2)):
                     # typed from the record (frame, numbered count) if they account for them
                     ts = self.trailing_locals(info, base, [], len(range(pe, fo, 2)), -22)
-                    if ts and (word(self.table, info.proc.record) > 22 or word(self.table, info.proc.record + 10)):
+                    if ts and (word(self.table, info.proc.record + PROC_FRAME) > 22
+                               or word(self.table, info.proc.record + PROC_NUMBERED)):
                         z = pe
                         for t in ts:
                             items.append((z, "dim", f"f{z:X}", f" As {t}", Var(z, "LOC")))
@@ -282,7 +284,8 @@ class LocalsMixin:
                 prev_bp = min([self.value(base, z) for z in known_k if self.value(base, z) < 0] + [-22])
                 ts = getattr(self, "run_solution", {}).get((base, k, end)) or \
                     self.trailing_locals(info, base, known_k, len(range(end, n - 1, 2)), prev_bp)
-                if ts and any(t != "Integer" for t in ts) or ts and word(self.table, info.proc.record) > -prev_bp:
+                if ts and any(t != "Integer" for t in ts) \
+                        or ts and word(self.table, info.proc.record + PROC_FRAME) > -prev_bp:
                     z = end
                     for t in ts:
                         items.append((z, "dim", f"f{z:X}", f" As {t}", Var(z, "LOC")))
@@ -326,7 +329,8 @@ class LocalsMixin:
             pos = 0 if last == (-1, 0) else (last[0] if last[1] < 0 else last[0] + 1)
             implicit_type = "Integer" if m["defint"] else "Variant"
             # in a Static Sub/Function every local is static: those may be implicit too
-            dimlike = kind == "dim" or (kind == "static" and self.table[info.proc.record + 14] & 0x80 and v is not None)
+            dimlike = kind == "dim" or (
+                kind == "static" and self.table[info.proc.record + PROC_FLAGS] & PROC_STATIC and v is not None)
             if key is not None and key[0] < pos and dimlike and not v.array and not v.udt \
                     and key[:2] > last and not m["explicit"] and (decl.strip() == f"As {implicit_type}" or key[2]):
                 last = key[:2]
@@ -373,7 +377,8 @@ class LocalsMixin:
             frame = sum(size.get(info.ret if q == info.ret_slot else (vars_[q].type() if vars_[q].votes else "V"), 2)
                         for q in own if self.value(base, q) < 0)
             num = sum(1 for q in own for z in (q, q + 2) if 0 < self.value(base, z) < 200 and self.value(base, z) % 2)
-            if word(self.table, info.proc.record) - 22 > frame or word(self.table, info.proc.record + 10) > num:
+            if word(self.table, info.proc.record + PROC_FRAME) - 22 > frame \
+                    or word(self.table, info.proc.record + PROC_NUMBERED) > num:
                 if not any(self.value(base, q) == 0 for q in own):  # (its own gaps don't explain it)
                     owner = k
         m["tail_owner"] = owner
@@ -426,8 +431,8 @@ class LocalsMixin:
         known_frame = sum(size.get(info.ret if q == info.ret_slot else (vars_[q].type() if vars_[q].votes else "V"), 2)
                           for q in own)
         known_num = sum(1 for q in known if 0 < self.value(base, q) < 200 and self.value(base, q) % 2)
-        f_tot = word(self.table, info.proc.record) - 22 - known_frame
-        n_tot = word(self.table, info.proc.record + 10) - known_num
+        f_tot = word(self.table, info.proc.record + PROC_FRAME) - 22 - known_frame
+        n_tot = word(self.table, info.proc.record + PROC_NUMBERED) - known_num
 
         def can(n: int, f: int) -> bool:
             return f == 0 if n == 0 else any(q <= f and can(n - 1, f - q) for q in (8, 4, 2))
@@ -497,9 +502,9 @@ class LocalsMixin:
         +0 is 22 + the frame size, +10 the count of numbered locals (Strings
         and Variants)."""
         rec = info.proc.record
-        extra = max(0, prev_bp + word(self.table, rec))
+        extra = max(0, prev_bp + word(self.table, rec + PROC_FRAME))
         have = sum(1 for z in known if 0 < self.value(base, z) < 200 and self.value(base, z) % 2)
-        return self.split_unused(slots, extra, max(0, word(self.table, rec + 10) - have))
+        return self.split_unused(slots, extra, max(0, word(self.table, rec + PROC_NUMBERED) - have))
 
     def split_unused(self, slots: int, frame: int, numbered: int) -> list[str] | None:
         """Types for a run of unused locals: Variants take 2 slots, 16 frame
