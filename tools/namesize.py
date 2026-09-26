@@ -1,16 +1,10 @@
 #!/usr/bin/env python3
 """
-Module name-table size model (declarations record +30).
-
-  +30 = 349 + sum(len(name) + 4) over the module's unique identifiers
-        (case-insensitive)
-
-See OPCODES.md "Name-table size" for what counts. `name_size(code)` computes
-it from module source; the CLI checks the model against round-trip builds:
-
-  python3 tools/namesize.py [work/rt/<project> ...]    # default: all
-
-prints one line per module whose predicted size differs from the exe.
+Model of a module's compile-time name table (the IDE's identifier list):
+each unique identifier (case-insensitive) in first-appearance order, len + 4
+bytes each, the first at FIRST (mod 32). The p-code depends on it in one
+place: a procedure frees its object/Type locals in the order of the table's
+8 hash buckets ((offset >> 1) & 7), see Decompiler.fit_frees.
 """
 from __future__ import annotations
 
@@ -98,59 +92,3 @@ def name_offsets(code: str) -> dict[str, int]:
         out[low] = o
         o += len(sp) + 4
     return out
-
-
-def name_size(code: str) -> int:
-    return BASE + sum(len(x) + 4 for x in identifiers(code).values())
-
-
-def module_code(src: str) -> str:
-    """Code part of a .bas/.frm source (form layout stripped)."""
-    i = src.find("\r\nEnd\r\n") if src.lstrip().startswith(("VERSION", "Begin")) else -1
-    return src[i + 7:] if i >= 0 else src
-
-
-def check(project_dir: Path) -> list[tuple[str, int, int]]:
-    """(file, exe +30, model) for every module of the deco build in project_dir."""
-    import pcode_disasm as P
-    from decompile import image_layout, word
-    deco = project_dir / "deco"
-    exes = list(deco.glob("*.exe"))
-    if not exes:
-        return []
-    exe = exes[0]
-    r = P.rcdata(exe)
-    img, tab = r[2], P.parse_ne(exe)[2].data
-    lay = image_layout(img, len(P.form_names(r)))
-    mak = next(deco.glob("*.mak"))
-    files = [ln.strip() for ln in mak.read_text("latin-1").splitlines()
-             if ln.strip().lower().endswith((".bas", ".frm"))]
-    bas = [f for f in files if f.lower().endswith(".bas")]
-    byname = {}
-    for f in files:
-        if f.lower().endswith(".frm"):
-            m = re.search(r"Begin \w+ (\w+)", (deco / f).read_bytes().decode("latin-1"))
-            byname[m.group(1).lower()] = f
-    frm = [byname[n[0].lower()] for n in P.form_names(r)]
-    out = []
-    for f, c in list(zip(bas, lay["modules"])) + list(zip(frm, [c for c, _ in lay["forms"]])):
-        got = word(tab, word(img, c - 2) + 4 + 30)
-        out.append((f, got, name_size(module_code((deco / f).read_bytes().decode("latin-1")))))
-    return out
-
-
-def main():
-    root = Path(__file__).resolve().parent.parent / "work" / "rt"
-    dirs = [Path(a) for a in sys.argv[1:]] or sorted(d for d in root.iterdir() if d.is_dir())
-    n = bad = 0
-    for d in dirs:
-        for f, got, want in check(d):
-            n += 1
-            if got != want:
-                bad += 1
-                print(f"{d.name:10s} {f:14s} exe {got}  model {want}  ({got - want:+d})")
-    print(f"{n - bad}/{n} modules match")
-
-
-if __name__ == "__main__":
-    main()

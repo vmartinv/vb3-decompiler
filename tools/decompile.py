@@ -198,60 +198,9 @@ def image_layout(image: bytes, nforms: int) -> dict:
     return out
 
 
-NAME_CHARS = "0123456789abcdefghijklmnopqrstuvwxyz"  # ASCII order, case-folded
-RESERVED = None
-
-
 def mod_name(slot: int) -> str:
     """Synthetic module variable name; `mE` would be the keyword Me."""
     return f"m{slot:X}" if slot != 0xE else "m0E"
-
-
-def name_between(lo: str, hi: str | None, n: int, taken: set[str], shape: str = r"[a-z][0-9a-f]+") -> str | None:
-    """The smallest name of exactly n characters with lo < name < hi
-    (case-insensitive), not taken, not a keyword/builtin and not shaped
-    like the decompiler's synthetic variable names (letter + hex)."""
-    global RESERVED
-    if RESERVED is None:
-        import namesize
-        RESERVED = namesize.KEYWORDS | namesize.BUILTINS
-    lo = lo.lower()
-    base = "".join(c for c in lo if c in NAME_CHARS or c == "_")  # `_` only kept from lo: its order vs letters is unknown
-    if len(base) < n:
-        cur = list(base + "0" * (n - len(base)))  # the smallest longer name with lo as prefix
-    else:
-        cur = _next_name(list(base[:n]))
-    if cur and not cur[0].isalpha():
-        cur = ["a"] + ["0"] * (n - 1)
-    for _ in range(200000):
-        if cur is None:
-            return None
-        c = "".join(cur)
-        if hi is not None and c >= hi.lower():
-            return None
-        if (c[0].isalpha() and c > lo and c not in taken and c not in RESERVED
-                and not re.fullmatch(shape, c)):
-            return c[0].upper() + c[1:]
-        cur = _next_name(cur)
-    return None
-
-
-def _next_name(cur: list[str]) -> list[str] | None:
-    cur = cur[:]
-    k = len(cur) - 1
-    while k >= 0:
-        if cur[k] == "_":  # (from lo) next in ASCII order: `a`
-            cur[k] = "a"
-            return cur
-        i = NAME_CHARS.index(cur[k])
-        if i + 1 < len(NAME_CHARS):
-            cur[k] = NAME_CHARS[i + 1]
-            if k == 0 and not cur[0].isalpha():
-                cur[0] = "a"
-            return cur
-        cur[k] = NAME_CHARS[0]
-        k -= 1
-    return None
 
 
 def pool_name(image: bytes, pool: int, off: int) -> str:
@@ -937,80 +886,14 @@ class Decompiler:
             m.setdefault("decl_offs", []).append(word(t, r + 24))
         return out
 
-    def fit_tail_alias(self, mods: list[dict]) -> None:
-        """The pool's last entry has no next one to measure it by: when it is a
-        Declare's name, its end is the global name table's start (the project
-        record's +30 - 259 - the table). A length other than its DLL entry's
-        means an Alias: rename it in the text and add the Alias."""
-        if not self.pool_tail:
-            return
-        o, recs = self.pool_tail
-        n = word(self.table, 12 + 30) - 259 - sum(len(sp) + 4 for _, sp in self.global_table()) - o - 4
-        self.fit_tail_proc([r for r in recs if r in self.by_record and r not in self.events], n, mods)
-        recs = [r for r in recs if r not in self.by_record and r not in self.events]
-        if not recs:
-            return
-        for r in recs:
-            old = self.declare_name(r, assumed=True)
-            if not 1 <= n <= 40 or n == len(old) or r in self.alias_len:
-                continue
-            self.alias_len[r] = n
-            new = self.declare_name(r)
-            self.proc_name[r] = new
-            entry = self.declare_entry(r)
-            pat = re.compile(rf'(?<![\w."]){re.escape(old)}\b', re.I)
-            for mm in mods:
-                lines = []
-                for ln in mm["lines"]:
-                    mt = re.match(rf'(\s*(?:Global\s+)?Declare\s+(?:Sub|Function)\s+){re.escape(old)}(\s+Lib\s+"[^"]*")(\s+Alias\s+"[^"]*")?', ln, re.I)
-                    if mt:
-                        ln = f'{mt.group(1)}{new}{mt.group(2)} Alias "{entry}"' + ln[mt.end():]
-                    else:
-                        ln = pat.sub(new, ln)
-                    lines.append(ln)
-                mm["lines"] = lines
-
-    def fit_tail_proc(self, recs: list[int], n: int, mods: list[dict]) -> None:
-        """A general procedure as the pool's last entry: its name n characters
-        long (renamed in every module), still sorting between its neighbors."""
-        for r in recs:
-            m = next((mm for mm in mods if any(i.proc.record == r for i in mm["infos"])), None)
-            if m is None or not 1 <= n <= 40:
-                continue
-            k = next(j for j, i in enumerate(m["infos"]) if i.proc.record == r)
-            info = m["infos"][k]
-            if not info.name or len(info.name) == n or r in getattr(self, "name_len", {}):
-                continue
-            taken = {x.lower() for x in self.proc_name.values()} | self.project_names()
-            new = name_between(*self.name_bounds(m, k), n, taken, r"[vmgfsl][0-9a-f]+")
-            if new is None:
-                continue
-            old = info.name
-            info.name = self.proc_name[r] = new
-            self.renamed.add(new.lower())
-            pat = re.compile(rf"(?<![\w.]){re.escape(old)}\b", re.I)
-            for mm in mods:
-                mm["lines"] = [pat.sub(new, ln) for ln in mm["lines"]]
-
     def declare_entry(self, r: int) -> str:
         """A Declare's DLL entry name (`#n`: an ordinal)."""
         return pool_name(self.image, self.pool, word(self.table, r + 46))
 
-    def declare_name(self, r: int, assumed: bool = False) -> str:
-        """A Declare's name: its DLL entry name (an ordinal's: Ord<n>), resized
-        to the name's length in the compile-time pool when that differs (the
-        original used an Alias). assumed: without that correction."""
+    def declare_name(self, r: int) -> str:
+        """A Declare's name: its DLL entry name (an ordinal `#n`: Ord<n>, with an Alias)."""
         fn = self.declare_entry(r)
-        fn = f"Ord{fn[1:]}" if fn.startswith("#") else fn
-        n = None if assumed else getattr(self, "alias_len", {}).get(r)
-        if n is None or n == len(fn):
-            return fn
-        from namesize import KEYWORDS, BUILTINS
-        base = fn[:n] if n < len(fn) else fn + "x" * (n - len(fn))
-        others = {self.declare_name(x, assumed=True).lower() for x in self.alias_len if x != r}
-        import itertools
-        cands = itertools.chain([base], (base[:-1] + c for c in "xzqjkvw0123456789"), grown(fn, n - len(fn)))
-        return next(c for c in cands if c.lower() not in KEYWORDS | BUILTINS | others and c[0].isalpha())
+        return f"Ord{fn[1:]}" if fn.startswith("#") else fn
 
     def declare_home(self, r: int) -> dict:
         """The module a slotless Declare is written in: a module's records
@@ -1025,7 +908,7 @@ class Decompiler:
         seen = self.call_types.get(r, [])
         words = self.table[r + 15]
         out = []
-        taken = {self.declare_name(x, assumed=True).lower() for x in range(0, len(self.table) - 55, 8)
+        taken = {self.declare_name(x).lower() for x in range(0, len(self.table) - 55, 8)
                  if x not in self.by_record and self.is_declare(x)}
         pn = "P" if not any(re.fullmatch(r"p\d+", x) for x in taken) else "Arg"
         if seen:
@@ -1175,7 +1058,6 @@ class Decompiler:
         self.declarations(mods)
         self.all_mods = mods
         self.decl_home = next((m for m in mods if m["kind"] == "bas"), mods[0])
-        self.pool_lengths(mods)
         for m in mods:
             self.name_module(m)
         self.collect_calls(mods)
@@ -1187,149 +1069,11 @@ class Decompiler:
             if d := self.item_count(m) - want:  # unused Variants (2 slots, 1 item) vs other locals
                 m["nv_pick"], m["nv_delta"] = max(0, -d), d
                 m["fill_merge"] = max(0, d)  # too many: unused Statics pair up (Long)
-                m.pop("spans", None)
                 m["lines"] = self.emit_module(m)
-        self.renamed: set[str] = set()
-        self.fit_tail_alias(mods)
-        self.fit_types(mods)
-        for m in mods:
-            if m["kind"] == "bas":
-                self.fit_globals(m)
-        self.fit_global_inits()
-        for m in mods:
+        for m in mods:  # (object locals' free order depends on name lengths)
             self.fit_frees(m)
-            self.fit_inits(m)
-            self.fit_size(m)
         self._mods = mods
         return mods
-
-    def pool_lengths(self, mods: list[dict]) -> None:
-        """Procedure record +4 is an offset in the IDE's compile-time name
-        pool: a 90-byte header, then per module (code modules, then forms,
-        in project order) its file's full path, then each procedure/Declare
-        name the module enters first (at its definition or a call
-        statement), len + 4 each, shared project-wide. The gaps between the
-        offsets give the unstored names' lengths (self.name_len) and the
-        code modules' path lengths (self.bas_path_len), with D the length of
-        the original build directory (form paths: D + 1 + file name)."""
-        t = self.table
-        recs = sorted(set(self.by_record) | {r for r in range(0, len(t) - 55, 8) if self.is_declare(r)})
-        block_of = {}
-        for b, m in enumerate(mods):
-            for info in m["infos"]:
-                block_of[info.proc.record] = b
-        for r in recs:
-            if r not in block_of:
-                block_of[r] = mods.index(self.declare_home(r))
-        at: dict[int, list[int]] = {}
-        for r in recs:
-            at.setdefault(word(t, r + 4), []).append(r)
-        offs = sorted(at)
-        blk = [min(block_of[r] for r in at[o]) for o in offs]
-        length: list = []
-        for o in offs:
-            known = None
-            for r in at[o]:
-                if r in self.events:
-                    known = len(self.events[r])
-                elif r not in self.by_record:  # Declare: its DLL function name (no Alias assumed)
-                    known = len(self.declare_name(r, assumed=True))
-            length.append(known)
-        files = {b: self.form_files[k] if k < len(self.form_files) else None
-                 for k, b in enumerate(b for b, m in enumerate(mods) if m["kind"] == "frm")}
-        bas_len: dict[int, int | None] = {b: None for b, m in enumerate(mods) if m["kind"] == "bas"}
-        D: list = [None]
-
-        def path(b):  # (known length or None, which unknown)
-            if b in bas_len:
-                return (bas_len[b], ("bas", b))
-            f = files.get(b)
-            return (None if D[0] is None or f is None else D[0] + 1 + len(f), ("D", b))
-
-        eqs = []  # (lhs, name-length index or None, blocks whose paths are summed)
-        if offs:
-            eqs.append((offs[0] - 90, None, list(range(0, blk[0] + 1))))
-        for i in range(len(offs) - 1):
-            eqs.append((offs[i + 1] - offs[i] - 4, i, list(range(blk[i] + 1, blk[i + 1] + 1))))
-        for final in (False, True):
-            if final and D[0] is None:
-                D[0] = getattr(self, "build_dir_len", None)
-            changed = True
-            while changed:
-                changed = False
-                for lhs, i, blocks in eqs:
-                    rest, unknown = lhs, []
-                    if i is not None:
-                        if length[i] is None:
-                            unknown.append(("len", i))
-                        else:
-                            rest -= length[i]
-                    for b in blocks:
-                        v, u = path(b)
-                        if v is None:
-                            unknown.append(u)
-                        else:
-                            rest -= v + 4
-                    if len(unknown) != 1:
-                        if final and D[0] is not None and unknown and all(k in ("bas", "len") for k, _ in unknown):
-                            # only the sum is observable: module paths get 7-character
-                            # stems, a name the remainder (else the paths share it)
-                            paths = [x for k, x in unknown if k == "bas"]
-                            names = [x for k, x in unknown if k == "len"]
-                            each = D[0] + 1 + 7 + 4
-                            if names and 1 <= rest - len(paths) * (each + 4) <= 40:
-                                length[names[0]] = rest - len(paths) * (each + 4)
-                                for x in paths:
-                                    bas_len[x] = each
-                            elif not names:
-                                q, r_ = divmod(rest - 4 * len(paths), len(paths))
-                                for j_, x in enumerate(paths):
-                                    bas_len[x] = q + (j_ < r_)
-                            else:
-                                continue
-                            changed = True
-                        continue
-                    kind, x = unknown[0]
-                    if kind == "len":
-                        length[x] = rest
-                    elif kind == "bas":
-                        bas_len[x] = rest - 4
-                    elif files.get(x):
-                        D[0] = rest - 4 - 1 - len(files[x])
-                    else:
-                        continue
-                    changed = True
-        # declarations record +0: the module path's pool offset; with those, every
-        # entry but the last is the gap to the next one (4 + length)
-        # Type and field names follow the pool's last entry: the first Type's name marks its end
-        gl = GlobalImage(self.image, image_layout(self.image, len(self.forms))["global_"])
-        tptr = [gl.w(g) for g in gl.types]
-        # (only if no Global precedes the first Type: global names follow the pool in text order)
-        first = next((m for m in mods if m["kind"] == "bas" and (m.get("types") or any(
-            it[0] == "global" for it in m["items"]))), None)
-        if not tptr or first is None or not first.get("types") or any(
-                it[0] == "global" and it[3] < min(td.g for td in first["types"]) for it in first["items"]):
-            tptr = []
-        entries = sorted([(word(t, word(self.image, m["image"] - 2) + 4), ("path", b)) for b, m in enumerate(mods)] +
-                         [(o, ("name", k)) for k, o in enumerate(offs)] +
-                         ([(min(tptr), ("end", None))] if tptr else []))
-        for (o1, (kind, x)), (o2, _) in zip(entries, entries[1:]):
-            n = o2 - o1 - 4
-            if kind == "name" and 0 < n <= 40:
-                length[x] = n
-            elif kind == "path" and x in bas_len:
-                bas_len[x] = n
-            elif kind == "path" and files.get(x) and D[0] is None:
-                D[0] = n - 1 - len(files[x])
-        self.name_len = {r: length[k] for k, o in enumerate(offs) for r in at[o]
-                         if length[k] is not None and 0 < length[k] <= 40}
-        paths = [word(t, word(self.image, m["image"] - 2) + 4) for m in mods]
-        self.pool_tail = (offs[-1], at[offs[-1]]) if offs and not tptr and max(paths, default=0) < offs[-1] else None
-        # a Declare whose name isn't as long as its DLL entry's: the original used an Alias
-        self.alias_len = {r: n for r, n in self.name_len.items() if r not in self.by_record
-                          and r not in self.events and n != len(self.declare_name(r, assumed=True))}
-        self.bas_path_len = {b: v for b, v in bas_len.items() if v is not None}
-        self.orig_dir_len = D[0]
 
     def name_module(self, m: dict) -> None:
         vars_, refs, infos = m["vars"], m["refs"], m["infos"]
@@ -1526,458 +1270,21 @@ class Decompiler:
                     taken.add(new.lower())
                     self.rename(m, next(s for s in local if names[s].lower() == old.lower()), new)
 
-    def frees_ok(self, m: dict) -> bool:
-        """Every procedure's predicted epilogue free order is the original's."""
-        from namesize import name_offsets
-        offs = name_offsets("\r\n".join(m["lines"]))
-        order = {low: j for j, low in enumerate(offs)}
-        for info in m["infos"]:
-            frees = [struct.unpack_from("<h", i.operand)[0] for i in info.insns if NAMES.get(i.op) == "OBJ_FREE"]
-            if len(frees) < 2:
-                continue
-            k = m["infos"].index(info)
-            bp = {self.value(m["image"], s): n.lower() for s, n in m["names"].items()
-                  if (v := m["vars"].get(s)) and v.procs and v.procs[0] == k and v.scope == "LOC"}
-            target = [bp.get(f) for f in frees]
-            if None in target or not all(t in offs for t in target):
-                continue
-            if sorted(target, key=lambda t: ((offs[t] >> 1) & 7, order[t])) != target:
-                return False
-        return True
-
-    def init_target(self, m: dict) -> list[tuple[str, int, int]] | None:
-        """The module's init list (fixed-size arrays, String constants | 1):
-        (name, group, bucket mask) per entry. Group 0: the module's own
-        entries (16 buckets); then each procedure's Static arrays (8 buckets),
-        groups numbered in list order."""
-        c = self.lists.get(m["image"])
-        if c is None:
-            return None
-        sarr = {a[0]: a[2] for a in m.get("static_arrays", [])}
-        out, groups = [], {}
-        for k in range(word(self.image, c + 2)):
-            s = word(self.image, c + 6 + 2 * k) & ~1
-            if s not in m["names"]:
-                return None
-            a = self.array_at(m["image"], s)
-            if a and a[1] and s not in sarr:  # a Static array (0xC2): its procedure's
-                v = m["vars"].get(s)
-                sarr[s] = v.procs[0] if v is not None and v.procs else None
-            g = groups.setdefault(sarr[s], len(groups) + 1) if s in sarr else 0
-            out.append((m["names"][s].lower(), g, 7 if g else 15))
-        return out
-
-    def inits_ok(self, m: dict) -> bool:
-        """The module's predicted init list order is the original's: per group
-        (see init_target), buckets ((name-table offset >> 1) & mask) in
-        order, each in first-appearance order."""
-        from namesize import name_offsets
-        target = self.init_target(m)
-        if not target or len(target) < 2:
-            return True
-        offs = name_offsets("\r\n".join(m["lines"]))
-        order = {low: j for j, low in enumerate(offs)}
-        if not all(t in offs for t, _, _ in target):
-            return True
-        return sorted(target, key=lambda x: (x[1], (offs[x[0]] >> 1) & x[2], order[x[0]])) == target
-
-    def fit_inits(self, m: dict) -> None:
-        """Pad generated names so that the module's init list comes out in the
-        original order (see inits_ok); names before the last listed one move
-        its entries' buckets."""
-        from namesize import FIRST, KEYWORDS, BUILTINS, identifiers
-        full = self.init_target(m)
-        if not full or len(full) < 2 or self.inits_ok(m):
-            return
-        target = [t for t, _, _ in full]
-        group = {t: g for t, g, _ in full}
-        mask = {t: k for t, _, k in full}
-        ids = list(identifiers("\r\n".join(m["lines"])).items())
-        pos = {low: j for j, (low, _) in enumerate(ids)}
-        if not all(t in pos for t in target):
-            return
-        fixed = {i.name.lower() for i in m["infos"] if i.name}
-        glob = self.project_names()
-        slot_of = {n.lower(): s for s, n in m["names"].items()}
-        free = [j for j, (low, sp) in enumerate(ids) if low in slot_of and low not in fixed
-                and low not in glob and self.generated(sp)]
-        pads = order_pads(ids, FIRST, target, group, mask, free)
-        if not pads:
-            return
-        taken = KEYWORDS | BUILTINS | glob | {low for low, _ in ids}
-        lines0, names0 = m["lines"], dict(m["names"])
-        for j, p in pads.items():
-            if p:
-                old = ids[j][1]
-                new = next(c for c in grown(old, p) if c.lower() not in taken)
-                taken.add(new.lower())
-                self.rename(m, slot_of[old.lower()], new)
-        if not self.frees_ok(m) or not self.inits_ok(m):
-            m["lines"], m["names"] = lines0, names0
-
     def project_names(self) -> set[str]:
         """Names visible in every module: globals, procedures, forms."""
         return {x.lower() for x in self.global_name.values()} | \
             {x.lower() for x in self.proc_name.values() if x} | {f[0].lower() for f in self.forms}
 
-    def generated(self, name: str) -> bool:
-        """A name the decompiler made up (free to resize), not a built-in
-        object/collection or a recovered name."""
-        return bool(re.fullmatch(r"[vmgfsKGL][0-9A-Fa-f]+", name)) or name.lower() in self.renamed
+    @staticmethod
+    def generated(name: str) -> bool:
+        """A name the decompiler made up (free to resize)."""
+        return bool(re.fullmatch(r"[vmgfsKGL][0-9A-Fa-f]+", name))
 
     def rename(self, m: dict, slot: int, new: str) -> None:
-        self.renamed.add(new.lower())
         old = m["names"][slot]
         m["names"][slot] = new
         pat = re.compile(rf"(?<![\w.]){re.escape(old)}\b", re.I)
         m["lines"] = [pat.sub(new, ln) for ln in m["lines"]]
-
-    def fit_types(self, mods: list[dict]) -> None:
-        """Type and field names of their original lengths: a Type's name and
-        each field's point into the project's name table (4 + length per
-        entry, allocated in text order), so each but the last has the gap to
-        the next pointer as its size."""
-        from namesize import KEYWORDS, BUILTINS
-        gl = self.gimg
-        ptrs = []  # (pointer, kind, Type g, field g)
-        for t, td in gl.types.items():
-            ptrs.append((gl.w(t), "T", t, None))
-            for f in td.fields:
-                ptrs.append((gl.w(f.g), "F", t, f.g))
-        ptrs.sort()
-        taken = {w.lower() for mm in mods for ln in mm["lines"] for w in re.findall(r"[A-Za-z]\w*", ln)}
-        tnew, fnew = {}, {}
-        entries: dict[int, list] = {}  # one entry per name: equal names (fields of several Types) share it
-        for p, kind, t, f in ptrs:
-            entries.setdefault(p, []).append(f"T{t:X}" if kind == "T" else f"F{f:X}")
-        ps = sorted(entries)
-        if ps:  # the last entry ends where the table's later names (global_table) start
-            ids = [low for low, _ in self.global_table()]
-            last = entries[ps[-1]][0].lower()
-            if last in ids:
-                shared = {o.lower() for olds in entries.values() for o in olds}  # (the same name as an earlier one)
-                rest = sum(len(sp) + 4 for low, sp in self.global_table()[ids.index(last) + 1:] if low not in shared)
-                ps.append(word(self.table, 12 + 30) - 259 - rest)
-        for p, q in zip(ps, ps[1:]):
-            n, olds = q - p - 4, entries[p]
-            if not 1 <= n <= 40 or (len(olds) == 1 and n == len(olds[0])):
-                continue
-            used = taken | {x.lower() for x in fnew.values()} if any(o[0] == "T" for o in olds) else \
-                {x.lower() for x in list(fnew.values()) + list(tnew.values())} | KEYWORDS | BUILTINS
-            c = next((c for c in grown(olds[0], n - len(olds[0])) if c.lower() not in used), None)
-            if c:
-                for old in olds:
-                    (tnew if old[0] == "T" else fnew)[old] = c
-                taken.add(c.lower())
-        if not tnew and not fnew:
-            return
-        tpat = {o: re.compile(rf"\b{o}\b", re.I) for o in tnew}
-        fpat = {o: re.compile(rf"(?:(?<=\.)|(?<=^    )){o}\b", re.I) for o in fnew}
-        for mm in mods:
-            lines, in_type = [], False
-            for ln in mm["lines"]:
-                in_type = in_type or ln.startswith("Type ")
-                for o, pt in tpat.items():
-                    ln = pt.sub(tnew[o], ln)
-                for o, pt in fpat.items():
-                    if in_type or "." in ln:
-                        ln = pt.sub(fnew[o], ln) if in_type else re.sub(rf"(?<=\.){o}\b", fnew[o], ln, flags=re.I)
-                lines.append(ln)
-                in_type = in_type and not ln.startswith("End Type")
-            mm["lines"] = lines
-        self.renamed |= {x.lower() for x in list(tnew.values()) + list(fnew.values())}
-
-    def fit_globals(self, m: dict) -> None:
-        """Spread a .bas module's name-table size deficit (+30) over the
-        Global names it declares (renamed in every module)."""
-        from namesize import name_size
-        want = word(self.table, word(self.image, m["image"] - 2) + 4 + 30)
-        d = want - name_size("\r\n".join(m["lines"]))
-        glob = [it[5] for it in m["items"] if it[0] == "global" and len(it) > 5 and it[5] and self.generated(it[5])]
-        if not d or not glob:
-            return
-        taken = {w.lower() for mm in self.all_mods for ln in mm["lines"] for w in re.findall(r"[A-Za-z]\w*", ln)}
-        new_len = {n: len(n) for n in glob}
-        others = [" ".join(mm["lines"]).lower() for mm in self.all_mods if mm is not m]
-        used = {n: sum(bool(re.search(rf"(?<![\w.]){re.escape(n.lower())}\b", t)) for t in others) for n in glob}
-        for grp in sorted({used[n] for n in glob}):  # names no other module mentions first
-            names = [n for n in glob if used[n] == grp]
-            for k, n in enumerate(names):
-                share = d // (len(names) - k) if d > 0 else -((-d) // (len(names) - k))
-                size = max(1, min(40, len(n) + share))
-                d -= size - len(n)
-                new_len[n] = size
-            if not d:
-                break
-        for n in glob:
-            if new_len[n] == len(n):
-                continue
-            new = next((c for c in grown(n, new_len[n] - len(n)) if c.lower() not in taken), None)
-            if new is None:
-                continue
-            taken.add(new.lower())
-            self.rename_global(n, new)
-
-    def rename_global(self, n: str, new: str) -> None:
-        """Rename a Global (or Global Const) in every module."""
-        self.renamed.add(new.lower())
-        pat = re.compile(rf"(?<![\w.]){re.escape(n)}\b", re.I)
-        for mm in self.all_mods:
-            mm["lines"] = [pat.sub(new, ln) for ln in mm["lines"]]
-            for sl, x in list(mm["names"].items()):
-                if x.lower() == n.lower():
-                    mm["names"][sl] = new
-        for g, x in list(self.global_name.items()):
-            if x.lower() == n.lower():
-                self.global_name[g] = new
-
-    def global_table(self) -> list[tuple[str, str]]:
-        """The global name table (lowercase, spelling), each name once, in
-        load order (.bas modules, then forms): the Globals, Global Consts,
-        Types and fields a .bas declares, and the forms and Screen / App /
-        Printer / Clipboard where first referenced in any module's code.
-        (Declare and procedure names go to the name pool before it.)"""
-        objs = {f[0].lower(): f[0] for f in self.forms} | \
-            {x.lower(): x for x in ("Screen", "App", "Printer", "Clipboard")}
-        ref = re.compile(r"(?<![\w.])(" + "|".join(map(re.escape, objs)) + r")\b", re.I)
-        out: dict[str, str] = {}
-        for mm in self.all_mods:
-            in_type = False
-            for ln in mm["lines"]:
-                t = re.sub(r"'.*", "", re.sub(r'"[^"]*"', '""', ln))  # strings, then the comment
-                if mm["kind"] == "bas" and in_type:
-                    if re.match(r"\s*End Type", t, re.I):
-                        in_type = False
-                    elif mt := re.match(r"\s*([A-Za-z]\w*)", t):
-                        out.setdefault(mt.group(1).lower(), mt.group(1))
-                    continue
-                if mm["kind"] == "bas" and (mt := re.match(r"Type\s+([A-Za-z]\w*)", t, re.I)):
-                    in_type = True
-                    out.setdefault(mt.group(1).lower(), mt.group(1))
-                    continue
-                if mm["kind"] == "bas" and (mt := re.match(r"Global\s+(Const\s+)?(.*)", t, re.I)):
-                    body = re.sub(r"\([^)]*\)", "", mt.group(2))
-                    for part in body.split(","):
-                        if nm := re.match(r"\s*([A-Za-z]\w*)", part):
-                            out.setdefault(nm.group(1).lower().rstrip("%&!#@$"), nm.group(1).rstrip("%&!#@$"))
-                    continue
-                if objs and not re.match(r"\s*(Declare|Global Declare)\b", t, re.I):
-                    for x in ref.findall(t):
-                        out.setdefault(x.lower(), objs[x.lower()])
-        return list(out.items())
-
-    def fit_global_inits(self) -> None:
-        """Pad generated Global names so that the global init list (Global
-        fixed-size arrays and String constants) comes out in the original
-        order: 16 buckets over the global name table, whose end is the
-        project record's +30 - 259; the total length is kept."""
-        from namesize import KEYWORDS, BUILTINS, name_size
-        c = self.lists.get(self.gimg_chunk)
-        if c is None or word(self.image, c + 2) < 2:
-            return
-        target = []
-        for k in range(word(self.image, c + 2)):
-            n = self.global_name.get(word(self.image, c + 6 + 2 * k) & ~1)
-            if n is None:
-                return
-            target.append(n.lower())
-        ids = self.global_table()
-        if not all(t in dict(ids) for t in target):
-            return
-        end = word(self.table, 12 + 30) - 259
-        first = end - sum(len(sp) + 4 for _, sp in ids)
-        gnames = {x.lower() for x in self.global_name.values()}
-        free = [j for j, (low, sp) in enumerate(ids) if low in gnames and self.generated(sp)]
-        pads = order_pads(ids, first, target, {t: 0 for t in target}, {t: 15 for t in target}, free, balance=True)
-        if not pads:
-            return
-        taken = KEYWORDS | BUILTINS | self.project_names() | \
-            {w.lower() for mm in self.all_mods for ln in mm["lines"] for w in re.findall(r"[A-Za-z]\w*", ln)}
-        fits = lambda: [name_size("\r\n".join(mm["lines"])) == word(
-            self.table, word(self.image, mm["image"] - 2) + 4 + 30) for mm in self.all_mods]
-        before = fits()
-        saved = ([list(mm["lines"]) for mm in self.all_mods], [dict(mm["names"]) for mm in self.all_mods],
-                 dict(self.global_name), set(self.renamed))
-        for j, p in pads.items():
-            old = ids[j][1]
-            new = next(c for c in grown(old, p) if c.lower() not in taken)
-            taken.add(new.lower())
-            self.rename_global(old, new)
-        if any(b and not a for a, b in zip(fits(), before)):  # the lengths also count in the modules
-            for mm, ln, nm in zip(self.all_mods, saved[0], saved[1]):  # (+30): only the total was kept
-                mm["lines"], mm["names"] = ln, nm
-            self.global_name, self.renamed = saved[2], saved[3]
-
-    def fit_deftype(self, m: dict, local: list, order: dict, taken: set, ok0: bool) -> None:
-        """No implicitly typed variable, so any DefType letters do: each is a
-        name (`A-Z` adds `a` and `z`; one shared with a variable of that name
-        adds nothing). Pick `A-Z`, one new letter or a local renamed to the
-        letter, whichever leaves a size difference fit_size can still close
-        (shrinking locals to 1 character, or growing one), else the smallest."""
-        from namesize import name_size
-        want = word(self.table, word(self.image, m["image"] - 2) + 4 + 30)
-        k = m["lines"].index("DefInt A-Z")
-        size = lambda: want - name_size("\r\n".join(m["lines"]))
-        rest = [s for _, s in local if not isinstance(s, str)]
-        shrink = lambda skip=None: sum(len(m["names"][s]) - 1 for s in rest if s != skip)
-
-        def score(d, skip=None):
-            grow = any(s != skip for s in rest)
-            return 0 if (d == 0 or (d > 0 and grow) or (d < 0 and -d <= shrink(skip))) else abs(d)
-
-        opts = [(score(size()), 0, None, None)]
-        free = next(c for c in "cdefghijklnopqrstuvwxy" if c not in taken)
-        m["lines"][k] = f"DefInt {free.upper()}"
-        if not ok0 or (self.frees_ok(m) and self.inits_ok(m)):
-            opts.append((score(size()), 1, free, None))
-        for _, s in [x for x in local if not isinstance(x[1], str)][-1:]:  # the last one
-            old = m["names"][s]
-            new = next((c for c in old[0].lower() + "cdefghijklnopqrstuvwxy" if c not in taken - {"a", "z"}), None)
-            if new is None:
-                break
-            self.rename(m, s, new)
-            m["lines"][k] = f"DefInt {new.upper()}"
-            if not ok0 or (self.frees_ok(m) and self.inits_ok(m)):
-                opts.append((score(size(), s), 2, new, s))
-            self.rename(m, s, old)
-        m["lines"][k] = "DefInt A-Z"
-        _, _, letter, s = min(opts)
-        if letter is None:
-            return
-        if s is not None:
-            self.rename(m, s, letter)
-            local[:] = [x for x in local if x[1] != s]
-        m["lines"][k] = f"DefInt {letter.upper()}"
-        taken.add(letter)
-
-    def merge_locals(self, m: dict, local: list, want: int, ok0: bool) -> int:
-        """Locals (and parameters) of different procedures may share a name: one
-        name-table entry. Too big a table: give the last ones the name of an
-        earlier procedure's local that their own procedure doesn't use."""
-        from namesize import name_size
-        words: dict[str, set] = {}  # procedure name -> the words of its text
-        cur = None
-        for ln in m["lines"]:
-            if mt := re.match(r"(?:Static\s+)?(?:Sub|Function)\s+(\w+)", ln):
-                cur = words.setdefault(mt.group(1).lower(), set())
-            if cur is not None:
-                cur |= {w.lower() for w in re.findall(r"[A-Za-z]\w*", ln)}
-            if re.match(r"End (Sub|Function)\b", ln):
-                cur = None
-        locs = [s for _, s in local if not isinstance(s, str) and m["vars"][s].scope in ("LOC", "REF")
-                and m["vars"][s].procs]
-        proc = lambda s: (m["infos"][m["vars"][s].procs[0]].name or "").lower()
-        d = want - name_size("\r\n".join(m["lines"]))
-        for s in reversed(locs):
-            if d >= 0:
-                break
-            old = m["names"][s]
-            if any(old.lower() in w for pn, w in words.items() if pn != proc(s)):
-                continue  # already shared (the rename is by name)
-            for s2 in locs:
-                n2 = m["names"][s2]
-                if s2 == s or proc(s2) == proc(s) or proc(s) not in words or n2.lower() in words[proc(s)]:
-                    continue
-                lines0 = m["lines"]
-                self.rename(m, s, n2)
-                if ok0 and not (self.frees_ok(m) and self.inits_ok(m)):
-                    m["lines"], m["names"][s] = lines0, old
-                    continue
-                words[proc(s)].add(n2.lower())
-                local[:] = [x for x in local if x[1] != s]
-                d = want - name_size("\r\n".join(m["lines"]))
-                break
-        # a Declare's parameters are its own too: they can take a local's name
-        targets = [m["names"][s] for s in locs]
-        for i in reversed(range(len(m["lines"]))):
-            ln = m["lines"][i]
-            if d >= 0 or not re.match(r"(Global\s+)?Declare\s", ln):
-                continue
-            head, _, params = ln.partition("(")
-            for pn in reversed(re.findall(r"(?:^|,)\s*(?:ByVal\s+)?((?:P|Arg)\d+)\b", params)):
-                if d >= 0:
-                    break
-                ln = m["lines"][i]
-                if any(re.search(rf"(?<![\w.]){pn}\b", x, re.I) for j, x in enumerate(m["lines"]) if j != i):
-                    continue
-                inline = {w.lower() for w in re.findall(r"[A-Za-z]\w*", ln)}
-                new = next((t for t in targets if t.lower() not in inline), None)
-                if new is None:
-                    break
-                lines0 = m["lines"]
-                m["lines"] = lines0[:i] + [re.sub(rf"(?<![\w.]){pn}\b", new, ln)] + lines0[i + 1:]
-                if ok0 and not (self.frees_ok(m) and self.inits_ok(m)):
-                    m["lines"] = lines0
-                    continue
-                local[:] = [x for x in local if x[1] != pn.lower()]
-                d = want - name_size("\r\n".join(m["lines"]))
-        return d
-
-    def fit_size(self, m: dict) -> None:
-        """Resize the generated local names that appear last so that the
-        module's name-table size (declarations record +30) is the original's:
-        an identifier's length moves only the names after it."""
-        from namesize import KEYWORDS, BUILTINS, identifiers, name_size
-        want = word(self.table, word(self.image, m["image"] - 2) + 4 + 30)
-        code = "\r\n".join(m["lines"])
-        d = want - name_size(code)
-        if not d:
-            return
-        ids = identifiers(code)
-        order = {low: j for j, low in enumerate(ids)}
-        taken = set(ids) | KEYWORDS | BUILTINS | self.project_names()
-        fixed = {i.ret_slot for i in m["infos"]} | {i.name.lower() for i in m["infos"] if i.name}
-        glob = {x.lower() for x in self.global_name.values()}
-        local = sorted((order[n.lower()], s) for s, n in m["names"].items()  # module-private names
-                       if n.lower() in order and m["vars"].get(s) and m["vars"][s].scope in ("LOC", "MOD")
-                       and s not in fixed and n.lower() not in fixed and n.lower() not in glob and self.generated(n))
-        labels = {mt.group(1).lower() for ln in m["lines"] if (mt := re.match(r"\s*(L[0-9A-Fa-f]+):", ln))}
-        labels |= {x.lower() for ln in m["lines"] if ln.startswith(("Declare ", "Global Declare "))
-                   for x in re.findall(r"[(,]\s*(?:ByVal\s+)?((?:P|Arg)\d+)\b", ln)}  # Declare parameters
-        labels |= {x.lower() for ln in m["lines"] if re.match(r"(Static\s+)?(Sub|Function)\s", ln)
-                   for x in re.findall(r"[(,]\s*(?:ByVal\s+)?(u\d+)\b", ln)}  # unused parameters
-        labels |= {x.lower() for ln in m["lines"] if ln.lstrip().startswith(("Dim ", "Static "))
-                   for x in re.findall(r"\b(f[0-9A-F]+)(?:\(.*?\))? As\b", ln)}  # unused locals (fillers)
-        local += [(order[n.lower()], s) for s, n in m["names"].items() if n.lower() in order and m["vars"].get(s)
-                  and m["vars"][s].scope == "REF" and re.fullmatch(r"p[0-9A-F]+", n)]  # ByRef parameters
-        local = sorted(local + [(order[x], x) for x in labels if x in order], key=lambda x: x[0])
-        ok0 = self.frees_ok(m) and self.inits_ok(m)
-        if d < 0 and "DefInt A-Z" in m["lines"] and not m.get("implicit_int"):
-            self.fit_deftype(m, local, order, taken, ok0)
-            d = want - name_size("\r\n".join(m["lines"]))
-        if d < 0:
-            d = self.merge_locals(m, local, want, ok0)
-        for _, s in reversed(local):
-            if not d:
-                break
-            if isinstance(s, str):  # a label: rename in the text only
-                old = ids[s]
-                size = max(1, min(40, len(old) + d))
-                new = next((c for c in grown(old, size - len(old)) if c.lower() not in taken), None)
-                if size == len(old) or new is None:
-                    continue
-                pat = re.compile(rf"(?<![\w.]){re.escape(old)}\b", re.I)
-                lines0 = m["lines"]
-                m["lines"] = [pat.sub(new, ln) for ln in lines0]
-                if ok0 and not (self.frees_ok(m) and self.inits_ok(m)):
-                    m["lines"] = lines0
-                    continue
-                taken.add(new.lower())
-                d -= len(new) - len(old)
-                continue
-            old = m["names"][s]
-            size = max(1, min(40, len(old) + d))
-            if size == len(old):
-                continue
-            new = next((c for c in grown(old, size - len(old)) if c.lower() not in taken), None)
-            if new is None:
-                continue
-            self.rename(m, s, new)
-            if ok0 and not (self.frees_ok(m) and self.inits_ok(m)):
-                self.rename(m, s, old)
-                continue
-            taken.add(new.lower())
-            d -= len(new) - len(old)
 
     def fit_columns(self, m: dict) -> None:
         """Rename arrays whose `ReDim ... As` lands in the wrong column to a
@@ -2035,7 +1342,6 @@ class Decompiler:
         def fits(c: str, lo: str, hi: str | None) -> bool:
             return c.lower() > lo.lower() and (hi is None or c.lower() < hi.lower()) and c.lower() not in taken
 
-        lens = getattr(self, "name_len", {})
         self.pool_names = getattr(self, "pool_names", {})  # pool offset -> name (one entry per name)
         for k, info in enumerate(infos):  # a name another module already entered in the pool
             shared = self.pool_names.get(word(self.table, info.proc.record + 4))
@@ -2044,13 +1350,6 @@ class Decompiler:
                 if shared.lower() > lo.lower() and (hi is None or shared.lower() < hi.lower()):
                     info.name = shared
                     self.proc_name[info.proc.record] = shared
-        for k, info in enumerate(infos):  # exact original lengths (compile-time name pool)
-            if not info.name and info.proc.record in lens:
-                c = name_between(*bounds(k), lens[info.proc.record], taken)
-                if c:
-                    info.name = c
-                    self.proc_name[info.proc.record] = c
-                    taken.add(c.lower())
         k = 0
         while k < len(infos):
             if infos[k].name:
@@ -2704,50 +2003,6 @@ class Decompiler:
             f -= z
         return out
 
-    def proc_spans(self, m: dict) -> dict:
-        """Slot intervals each procedure allocates (text order: each one's
-        after the previous one's): variables 2 bytes (Variants 4), control
-        records 6, form/property/object records 4, constants' copies their
-        size, external function slots 2. k -> (start, end) of its span, and
-        "intervals": k -> [(a, b)]."""
-        if "spans" in m:
-            return m["spans"]
-        base, vars_ = m["image"], m["vars"]
-        iv: dict[int, list] = {}
-        for x, v in vars_.items():
-            if not v.procs or x < m["first_owned"]:
-                continue
-            k = v.procs[0]
-            if v.scope in ("LOC", "REF"):
-                info = m["infos"][k]
-                t = info.ret if x == info.ret_slot else (v.type() if v.votes else None)
-                nxtv = self.value(base, x + 2, False)
-                wide = t == "V" or (t is None and nxtv in (0, 1) and x in info.params) or \
-                    (x + 2 not in vars_ and nxtv % 2 == 1 and nxtv < 200 and self.value(base, x) < 0)
-                if v.obj:
-                    iv.setdefault(k, []).append((x - 2, x + 2))
-                    continue
-                iv.setdefault(k, []).append((x, x + (4 if wide else 2)))
-            elif v.scope == "MOD":
-                n = MOD_SIZE.get(v.copy_type or v.type(), 2)
-                iv.setdefault(k, []).append((x, x + n))
-            else:
-                iv.setdefault(k, []).append((x, x + 2))
-        for r, (k, _) in m["refs"].items():
-            w0, w1 = word(self.image, base + r), word(self.image, base + r + 2)
-            n = 4 if w0 >> 8 == 0x80 else 6  # form/object record 4; control and form property 6
-            iv.setdefault(k, []).append((r - 2, r - 2 + n))
-        for x, k in m.get("call_slots", {}).items():
-            iv.setdefault(k, []).append((x, x + 2))
-        spans, prev = {"intervals": iv}, m["first_owned"]
-        for k in range(len(m["infos"])):
-            ivs = iv.get(k, [])
-            end = max([b for _, b in ivs] + [prev])
-            spans[k] = (prev, end)
-            prev = end
-        m["spans"] = spans
-        return spans
-
     def param_slot_bytes(self, m: dict, info: ProcInfo) -> int:
         """Slot bytes of a procedure's parameters and return value: 2 each,
         4 for object (Control/Form) and Variant ones."""
@@ -2896,115 +2151,6 @@ class Decompiler:
         return note or None
 
 
-def wine_path(p: Path) -> str:
-    """How the IDE (under Wine, drive Z: = /) sees a directory."""
-    return "Z:" + str(p.resolve()).replace("/", "\\")
-
-
-def bas_stems(d: Decompiler, mods: list[dict], n: int, dir_len: int, used: set[str]) -> list[str]:
-    """Code module file names: their full paths are compile-time name pool
-    entries, so each stem keeps its original length (the original build
-    directory's length when known, else dir_len, the output's)."""
-    paths = getattr(d, "bas_path_len", {})
-    bas = [b for b, m in enumerate(mods) if not m["form"]]
-    out = []
-    for k in range(n):
-        want = paths.get(bas[k]) if k < len(bas) else None
-        size = want - (getattr(d, "orig_dir_len", None) or dir_len) - 1 - 4 if want is not None else None
-        stem = f"MODULE{k + 1}"
-        if size is not None and 1 <= size <= 8:
-            base = f"M{k + 1}" if size >= len(f"M{k + 1}") else ""
-            stem = next((c for c in ([base.ljust(size, "X")] if base else []) +
-                         [chr(65 + j) * size for j in range(26)] if c not in used), stem)
-        used.add(stem)
-        out.append(stem)
-    return out
-
-
-def order_pads(ids: list, first: int, target: list, group: dict, mask: dict, free: list,
-               balance: bool = False) -> dict | None:
-    """Name-length changes that put the listed names of a hashed name table
-    in the list's order. ids: the table's names in order (lowercase,
-    spelling); name k's offset is first + sum(len + 4) before it; a listed
-    name t goes to bucket (offset >> 1) & mask[t]; the list runs through its
-    groups in order, each in bucket order, a bucket in table order. free: the
-    positions that may change length (1..40). balance: the total length must
-    stay the same (compensated after the last listed name).
-    Returns {position: change} (empty: nothing to change), None if impossible."""
-    from math import comb
-    pos = {low: j for j, (low, _) in enumerate(ids)}
-    starts = [first]
-    for _, sp in ids:
-        starts.append(starts[-1] + len(sp) + 4)
-    # only the total shift before each listed name matters: one shift per gap
-    # between listed names (by position), spread over the free names in it
-    tpos = sorted(pos[t] for t in target)
-    bounds = [-1] + tpos + ([len(ids)] if balance else [])
-    gaps = [[j for j in free if bounds[k] <= j < bounds[k + 1]] for k in range(len(bounds) - 1)]
-    room = [(sum(1 - len(ids[j][1]) for j in g), sum(40 - len(ids[j][1]) for j in g)) for g in gaps]
-    by_pos = {pos[t]: t for t in target}
-
-    def cost(bucket: dict) -> tuple[int, list] | None:
-        """Cheapest shifts putting each listed name in its bucket: DP over
-        the total shift before each listed name (position order)."""
-        best = {0: (0, [])}  # total shift -> (sum |x|, shifts)
-        for k, p in enumerate(tpos):
-            t, nxt = by_pos[p], {}
-            period = 2 * (mask[t] + 1)  # 32 (16 buckets) or 16 (8): residues mod 32
-            want = {(2 * bucket[t] + e + f - starts[p]) % 32 for f in range(0, 32, period) for e in (0, 1)}
-            lo, hi = room[k]
-            for prev, (w, xs) in best.items():
-                for x in range(max(lo, -64), min(hi, 64) + 1):
-                    c = prev + x
-                    if c % 32 in want and (c not in nxt or w + abs(x) < nxt[c][0]):
-                        nxt[c] = (w + abs(x), xs + [x])
-            if not balance:  # only the residue matters: keep the cheapest per residue
-                keep = {}
-                for c, v in nxt.items():
-                    if c % 32 not in keep or v[0] < nxt[keep[c % 32]][0]:
-                        keep[c % 32] = c
-                nxt = {c: nxt[c] for c in keep.values()}
-            best = nxt
-        if balance:
-            lo, hi = room[-1]
-            best = {0: (w + abs(c), xs + [-c]) for c, (w, xs) in best.items() if lo <= -c <= hi}
-        return min(best.values(), key=lambda v: v[0]) if best else None
-
-    found = [None]
-
-    def buckets(k: int, bucket: dict) -> None:
-        """Every bucket assignment the list order allows: non-decreasing
-        along a group, equal only in table order."""
-        if k == len(target):
-            c = cost(bucket)
-            if c and (found[0] is None or c[0] < found[0][0]):
-                found[0] = c
-            return
-        t = target[k]
-        lo = 0
-        if k and group[target[k - 1]] == group[t]:
-            pt = target[k - 1]
-            lo = bucket[pt] + (0 if pos[pt] < pos[t] else 1)
-        for b in range(lo, mask[t] + 1):
-            bucket[t] = b
-            buckets(k + 1, bucket)
-        bucket.pop(t, None)
-
-    if not all(t in pos for t in target) or comb(len(target) + 15, 16) > 300000:
-        return None
-    buckets(0, {})
-    if found[0] is None:
-        return None
-    pads = {}
-    for g, x in zip(gaps, found[0][1]):
-        for j in g:  # grow the first names, shrink down to 1 character
-            p = max(1 - len(ids[j][1]), min(40 - len(ids[j][1]), x))
-            if p:
-                pads[j] = p
-            x -= p
-    return pads
-
-
 def grown(old: str, d: int):
     """Candidate names d characters longer (or shorter) than old."""
     import itertools
@@ -3025,7 +2171,6 @@ def grown(old: str, d: int):
 def write_project(d: Decompiler, out: Path, layout_from: Path | None, name: str) -> Path:
     """Writes the module files and a .mak named after the executable; returns the .mak."""
     out.mkdir(parents=True, exist_ok=True)
-    d.build_dir_len = len(wine_path(out))
     mods = d.run()
     code = {m["form"]: m["lines"] for m in mods if m["form"]}
     modules = [m["lines"] for m in mods if not m["form"]]
@@ -3061,7 +2206,8 @@ def write_project(d: Decompiler, out: Path, layout_from: Path | None, name: str)
         body = code.get(form[0], [])
         (out / fname).write_bytes(("\r\n".join(layout + body) + "\r\n").encode("latin-1"))
         files.append(fname)
-    stems = bas_stems(d, mods, len(modules), len(wine_path(out)), {Path(f).stem.upper() for f in files})
+    used = {Path(f).stem.upper() for f in files}
+    stems = [s for s in (f"MODULE{j}" for j in range(1, len(modules) + len(used) + 2)) if s not in used]
     for k, lines in enumerate(modules):
         fname = f"{stems[k]}.BAS"
         (out / fname).write_bytes(("\r\n".join(lines) + "\r\n").encode("latin-1"))
