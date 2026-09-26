@@ -14,15 +14,14 @@ identical p-code and form resources. The decompiler lives in `src/`,
 split by pass (README.md).
 
 ## Remaining items
-1. **Form layouts with VBX controls, decoded (no `--layout-from`)**: the
-   `vbx` battery's projects raise `IndexError` in `forms.py` when their
-   layouts are decoded instead of copied (the battery copies them, so it
-   passes). A foreign exe using VBX controls would hit this.
-2. **Readable names**: generated names are slot-based (`v1C`, `m1A`,
-   `G6`); procedure names are constrained by sort order (`A01`). Better
-   names (from usage: loop counters, control events, types) are free
-   to choose as long as the sort order and the object-local free order
-   (`naming.py`, `fit_frees`) are kept.
+- **Procedure names**: general procedures still get placeholder names
+  (`A01`, `Proc01`) because code layout and Function slots are sorted by
+  name, so each name must fall between its neighbours'. Names from usage
+  (e.g. what a Function returns, which events call a Sub) would read
+  better, within the same sort constraint.
+- **Variable names** are kind + type + counter (`int1`, `mStr2`,
+  `gVar1`, `Type1`); names from usage (loop counters, what a variable is
+  assigned from) are possible refinements.
 
 ## Verification
 Before committing any change: full `tests/battery.py --chunk 48` (all

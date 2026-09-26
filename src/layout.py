@@ -83,6 +83,8 @@ class LayoutMixin:
 
     def module_list(self) -> list[dict]:
         """Every module (from the data images) with its code segment, if any."""
+        if not self.image:
+            raise ValueError(f"{self.exe}: no data images (RT_RCDATA 2): not a complete VB3 executable")
         lay = image_layout(self.image, len(self.forms))
         self.pool = lay["pool"]
         self.lists = lay["lists"]

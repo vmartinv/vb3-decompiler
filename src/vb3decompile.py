@@ -36,7 +36,10 @@ def main():
     ap.add_argument("--layout-from", type=Path, help="copy form description blocks from these .frm files")
     args = ap.parse_args()
     d = Decompiler(args.exe, args.runtime, args.vbx_dir or [REPO / "work/ide"])
-    print(f"wrote {write_project(d, args.outdir, args.layout_from, args.exe.stem)}")
+    try:
+        print(f"wrote {write_project(d, args.outdir, args.layout_from, args.exe.stem)}")
+    except ValueError as e:
+        sys.exit(f"error: {e}")
 
 
 if __name__ == "__main__":

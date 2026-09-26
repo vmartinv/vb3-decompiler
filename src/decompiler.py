@@ -57,8 +57,9 @@ class Decompiler(LayoutMixin, AnalyzeMixin, DeclarationsMixin, NamingMixin, Loca
         analyze each module's p-code; recover the module-level declarations;
         name variables and procedures; record calls (argument types for
         parameters); emit the text, re-emitted once when the unused locals'
-        split doesn't give the module's item count (declarations +12); last,
-        pick local name lengths that keep the object-local free order."""
+        split doesn't give the module's item count (declarations +12); give
+        the slot-numbered names readable ones; last, pick local name lengths
+        that keep the object-local free order."""
         if hasattr(self, "_mods"):
             return self._mods
         mods = self.module_list()
@@ -77,6 +78,7 @@ class Decompiler(LayoutMixin, AnalyzeMixin, DeclarationsMixin, NamingMixin, Loca
             if d := self.item_count(m) - want:  # unused Variants (2 slots, 1 item) vs other locals
                 m["nv_pick"], m["nv_delta"] = max(0, -d), d
                 m["lines"] = self.emit_module(m)
+        self.prettify(mods)
         for m in mods:  # (object locals' free order depends on name lengths)
             self.fit_frees(m)
         self._mods = mods
