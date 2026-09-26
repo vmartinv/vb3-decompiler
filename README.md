@@ -6,8 +6,7 @@ Tools and findings for reverse-engineering Visual Basic 3.0 (1993)
 executables — both the NE resource format (forms, controls, pictures) and
 the p-code bytecode format (`VBRUN300.DLL`-interpreted, not native x86).
 
-No other decompiler targets VB3 (existing tools cover VB5/6, a different
-p-code). Findings: [`OPCODES.md`](OPCODES.md) (p-code) and
+Only VB5/6 decompilers were available (a different p-code). Findings: [`OPCODES.md`](OPCODES.md) (p-code) and
 [`RESOURCE_FORMAT.md`](RESOURCE_FORMAT.md) (forms/resources).
 
 ## What's here
