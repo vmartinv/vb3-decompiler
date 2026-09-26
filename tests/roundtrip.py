@@ -29,9 +29,10 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "tools"))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
-import pcode_disasm as P  # noqa: E402
-from vb3decompiler.decompiler import Decompiler, write_project  # noqa: E402
 import exediff  # noqa: E402
+import pcode_disasm as P  # noqa: E402
+
+from vb3decompiler.decompiler import Decompiler, write_project  # noqa: E402
 
 REPO = Path(__file__).resolve().parent.parent
 WORK = REPO / "work" / "rt"
@@ -114,7 +115,8 @@ def run(mak: Path, runtime: Path, vbx_dirs: list[Path], do_compile: bool, verbos
     res["exe"] = sum(len(v) for v in dd.values())
     res["identical"] = res["identical"] or not dd
     print(f"{mak.stem:10s} procs {res['same']}/{res['procs']}" + ("" if res["count_ok"] else " (count differs)")
-          + f"  forms {res['forms_same']}/{res['forms']}  image {'=' if res['image'] else '≠'}  table {'=' if res['table'] else '≠'}"
+          + f"  forms {res['forms_same']}/{res['forms']}"
+          + f"  image {'=' if res['image'] else '≠'}  table {'=' if res['table'] else '≠'}"
           + ("  EXE IDENTICAL" if res["identical"] else f"  exe {res['exe']} bytes"), flush=True)
     return res
 

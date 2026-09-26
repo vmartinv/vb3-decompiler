@@ -85,8 +85,9 @@ class DeclarationsMixin:
                 if v is None and getattr(m["vars"].get(s + 2), "fixed", False):  # a String * n's length
                     s += 2
                     continue
-                if v is None and m["kind"] == "bas" and f"F{g}" in uses.get(self.value(m["image"], s + 2, False), {}).get(
-                        "votes", {}):  # the length of a Global String * n (the global's slot follows)
+                # the length of a Global String * n (the global's slot follows)
+                if v is None and m["kind"] == "bas" and f"F{g}" in uses.get(
+                        self.value(m["image"], s + 2, False), {}).get("votes", {}):
                     s += 2
                     continue
                 if v is None and g in gl.types:  # reference to a Type (first `As T` in the module)
@@ -199,7 +200,7 @@ class DeclarationsMixin:
                     self.global_name[g] = f"G{g:X}"
                     continue
                 nxt = next((x for x in gs if x > g), self.globals_end)
-                for a, b in gl.type_extent:
+                for a, _ in gl.type_extent:
                     if g < a < nxt:
                         nxt = a
                 u = uses.get(g, dict(votes={}, stored=False, array=False, mods=set()))
@@ -214,7 +215,7 @@ class DeclarationsMixin:
                     and (any(raw[:MOD_SIZE[t]]) or not (u["mods"] - {id(m)})) else None
                 if u.get("udt") in gl.types:
                     t, lit = gl.types[u["udt"]].name, None
-                w0, w1 = gl.w(g), gl.w(g + 2)
+                w1 = gl.w(g + 2)
                 glist = self.init_list(self.gimg_chunk)
                 if size == 4 and not u["stored"] and set(u["votes"]) <= {"T", "L"} and (
                         g | 1 in glist if glist is not None else w1 >= 0x100):

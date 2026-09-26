@@ -20,6 +20,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 import pcode_disasm as P  # noqa: E402
+
 from vb3decompiler.dataimage import word  # noqa: E402
 from vb3decompiler.layout import image_layout  # noqa: E402
 
@@ -30,7 +31,7 @@ def places(exe: Path) -> dict:
     """Structure of a build: table records, module images, code segments."""
     segs = P.parse_ne(exe)
     res = P.rcdata(exe)
-    img, tab = res.get(2, b""), segs[P.PROC_TABLE_SEGMENT - 1].data
+    img = res.get(2, b"")
     forms = P.form_names(res)
     lay = image_layout(img, len(forms))
     mods = [(f"bas{k}", c) for k, c in enumerate(lay["modules"])] + \

@@ -19,7 +19,6 @@ from capstone.x86 import X86_OP_IMM
 from .ne import Proc, parse_ne, vbx_entries
 from .opcodes import NAMES
 
-
 INTERPRETER_SEGMENT = 25  # 1-based, in the stock VBRUN300.DLL
 RUNTIME_DATA_SEGMENT = 100  # VBRUN300's data segment (control models)
 

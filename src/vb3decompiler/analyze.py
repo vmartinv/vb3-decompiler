@@ -7,8 +7,18 @@ from __future__ import annotations
 import struct
 
 from .dataimage import word
-from .model import (OBJ_KINDS, PRINT_TYPE, ProcInfo, RET_TYPE, SUFFIX, TYPE_OF_SUFFIX, Var, lt_hint,
-                   plain_handler, var_access)
+from .model import (
+    OBJ_KINDS,
+    PRINT_TYPE,
+    RET_TYPE,
+    SUFFIX,
+    TYPE_OF_SUFFIX,
+    ProcInfo,
+    Var,
+    lt_hint,
+    plain_handler,
+    var_access,
+)
 from .opcodes import NAMES
 from .runtime import decode
 from .symbols import CLASS_BY_KIND, is_objarr
@@ -70,7 +80,8 @@ class AnalyzeMixin:
                     if slot not in vars_ and (self.is_global_slot(base, slot) or slot in {x for x, _ in m["funcs"]}):
                         continue  # a global array (through this module's slot) or a function slot
                     bp = self.value(base, slot)  # a descriptor (module/Static) or a BP offset
-                    v = vars_.setdefault(slot, Var(slot, "LOC" if -0x1000 < bp < 0 else "REF" if 0 < bp < 0x100 else "MOD"))
+                    where = "LOC" if -0x1000 < bp < 0 else "REF" if 0 < bp < 0x100 else "MOD"
+                    v = vars_.setdefault(slot, Var(slot, where))
                     v.array = True
                     if k not in v.procs:
                         v.procs.append(k)
@@ -160,8 +171,9 @@ class AnalyzeMixin:
                     if x not in func_slots:
                         owned.add(x)
                         call_slots.setdefault(x, k)
-                elif m["kind"] == "frm" and i.operand and (n in ("OBJVAR", "FORM", "CONTROL", "CTLARRAY", "CTLARRAY_GET", "CTLARRAY_SET")
-                                                          or ((not n or n.endswith(".X")) and is_objarr(self.rt, i))):
+                elif m["kind"] == "frm" and i.operand and (
+                        n in ("OBJVAR", "FORM", "CONTROL", "CTLARRAY", "CTLARRAY_GET", "CTLARRAY_SET")
+                        or ((not n or n.endswith(".X")) and is_objarr(self.rt, i))):
                     # records start at the operand; a form declares no global objects
                     owned.add(struct.unpack_from("<H", i.operand, len(i.operand) - 2)[0] - 2)
         if m["kind"] == "frm":
@@ -215,7 +227,8 @@ class AnalyzeMixin:
                 for i in info.insns:
                     n, sfx = plain_handler(self.rt, i.op)
                     if sfx and n == "CALL_FN":
-                        self.suffixed.add(self.value(m["image"], struct.unpack_from("<H", i.operand, 2)[0], False) & 0xFFF8)
+                        at = struct.unpack_from("<H", i.operand, 2)[0]
+                        self.suffixed.add(self.value(m["image"], at, False) & 0xFFF8)
                     elif sfx and info.function and (n or "").startswith("STORE") and \
                             struct.unpack_from("<H", i.operand, len(i.operand) - 2)[0] == info.ret_slot:
                         self.suffixed.add(info.proc.record)

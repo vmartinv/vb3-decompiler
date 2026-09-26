@@ -17,7 +17,8 @@ from .runtime import decode
 def grown(old: str, d: int):
     """Candidate names d characters longer (or shorter) than old."""
     import itertools
-    from .nametable import KEYWORDS, BUILTINS
+
+    from .nametable import BUILTINS, KEYWORDS
     if d > 0:
         for x in "xyzqwjk":
             yield old + x * d
@@ -261,7 +262,7 @@ class NamingMixin:
         and first-appearance order of all earlier names (nametable.py)."""
         from .nametable import FIRST, identifiers
         base, vars_, names = m["image"], m["vars"], m["names"]
-        from .nametable import KEYWORDS, BUILTINS
+        from .nametable import BUILTINS, KEYWORDS
         taken = KEYWORDS | BUILTINS | self.project_names()
         for info in self.text_order(m):
             frees = [struct.unpack_from("<h", i.operand)[0] for i in info.insns if NAMES.get(i.op) == "OBJ_FREE"]
@@ -384,7 +385,8 @@ class NamingMixin:
                     for n in re.findall(r"(?:^|,)\s*([Gg][0-9A-F]+)\b", mt.group(2)):
                         if n not in gmap and n.lower() not in keep:
                             t, arr = kind_of(n, mm["lines"])
-                            gmap[n] = fresh("GCONST" if mt.group(1) else "g" + ("Arr" if arr else "") + t, counters, seen)
+                            base = "GCONST" if mt.group(1) else "g" + ("Arr" if arr else "") + t
+                            gmap[n] = fresh(base, counters, seen)
         rename_all(gmap, [(mm, 0, len(mm["lines"])) for mm in mods])
         for g, n in list(self.global_name.items()):
             self.global_name[g] = gmap.get(n, n)
@@ -396,7 +398,8 @@ class NamingMixin:
             mmap, counters, seen = {}, {}, set()
             procs = proc_ranges(mm["lines"])
             head = mm["lines"][:procs[0][0]] if procs else mm["lines"]
-            for n in dict.fromkeys(re.findall(r"\b(m[0-9A-F]+|m0E|K[0-9A-F]+)\b", "\n".join(map(code_part, mm["lines"])))):
+            code = "\n".join(map(code_part, mm["lines"]))
+            for n in dict.fromkeys(re.findall(r"\b(m[0-9A-F]+|m0E|K[0-9A-F]+)\b", code)):
                 if n.lower() in keep:
                     continue
                 if n.startswith("K"):

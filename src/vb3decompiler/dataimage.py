@@ -23,7 +23,6 @@ from __future__ import annotations
 import struct
 from dataclasses import dataclass, field
 
-
 TYPE_CODE = {1: "I", 2: "L", 3: "S", 4: "D", 5: "C", 6: "V", 7: "T"}  # Type fields, records
 TYPE_NAME = {"I": "Integer", "L": "Long", "S": "Single", "D": "Double", "C": "Currency", "T": "String",
              "V": "Variant"}

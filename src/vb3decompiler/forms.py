@@ -11,7 +11,6 @@ from pathlib import Path
 from .ne import form_names, rcdata
 from .runtime import PROP_STD, PROP_TYPES, Runtime
 
-
 # Record class byte -> standard class.
 CLASS_IDS = {
     0x00: "PictureBox", 0x01: "Label", 0x02: "TextBox", 0x03: "Frame", 0x04: "CommandButton",
@@ -81,7 +80,8 @@ class FormDecoder:
                 out.append(("_GFlags", struct.unpack_from("<H", b, pos)[0]))
                 pos += 2
                 continue
-            if (cls, name) == ("PictureClip", "Location"):  # saved by the VBX: 4 x i32, text "x,y,a,b" from (a, b, x, y)
+            # saved by the VBX: 4 x i32, text "x,y,a,b" from (a, b, x, y)
+            if (cls, name) == ("PictureClip", "Location"):
                 a, b_, x, y = struct.unpack_from("<4i", b, pos)
                 out.append((name, f"{x},{y},{a},{b_}"))
                 pos += 16
@@ -128,9 +128,7 @@ class FormDecoder:
         start = pos - 1
         ln, flags, idx = struct.unpack_from("<HHB", b, pos)
         pos += 5
-        index = None
-        if flags & 0x8000:  # control array element
-            index = struct.unpack_from("<H", b, pos)[0]
+        if flags & 0x8000:  # control array element: its index (u16) follows
             pos += 2
         cid = b[pos + 1]
         pos += 2
@@ -192,7 +190,8 @@ def fmt_float(v: float) -> str:
     return repr(v)
 
 
-SHORTCUTS = ([f"^{chr(65 + i)}" for i in range(26)] + [f"{m}{{F{i}}}" for m in ("", "^", "+", "^+") for i in range(1, 13)]
+SHORTCUTS = ([f"^{chr(65 + i)}" for i in range(26)]
+             + [f"{m}{{F{i}}}" for m in ("", "^", "+", "^+") for i in range(1, 13)]
              + ["^{INSERT}", "+{INSERT}", "{DEL}", "+{DEL}", "%{BKSP}"])  # Menu.Shortcut 1, 2, ...
 
 

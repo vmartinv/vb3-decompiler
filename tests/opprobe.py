@@ -59,8 +59,9 @@ def main():
         ins, _ = P.decode(rt, segs[p.segment - 1].data, p)
         ops = [(n, i.op, i.operand) for i in ins if (n := op_name(rt, i)) not in ("STMT", "RET", "TRAP")]
         if a.a:
-            print(f"{label:24s} " + " ".join(n + (f"({o.hex()})" if o and n.startswith("op_") else "") for n, _, o in ops))
-        for n, op, _ in ops:
+            print(f"{label:24s} "
+                  + " ".join(n + (f"({o.hex()})" if o and n.startswith("op_") else "") for n, _, o in ops))
+        for n, _, _ in ops:
             if n.startswith("op_"):
                 seen.setdefault(n, []).append(label)
     for n, labels in sorted(seen.items()):

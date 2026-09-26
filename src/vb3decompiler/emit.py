@@ -9,8 +9,21 @@ import struct
 
 from .dataimage import word
 from .lift import lift
-from .model import (EVENT_PARAMS, EVENT_TYPE, LABEL, LABEL_WIDE, OBJ_KINDS, ProcInfo, STMT_SAME_LINE, SUFFIX,
-                   TYPE_NAME, label_number, mod_name, plain_handler, stmt_column)
+from .model import (
+    EVENT_PARAMS,
+    EVENT_TYPE,
+    LABEL,
+    LABEL_WIDE,
+    OBJ_KINDS,
+    STMT_SAME_LINE,
+    SUFFIX,
+    TYPE_NAME,
+    ProcInfo,
+    label_number,
+    mod_name,
+    plain_handler,
+    stmt_column,
+)
 from .ne import vbx_entries
 from .opcodes import NAMES
 from .runtime import EVENT_TYPES, MASTER_EVENT_TYPES

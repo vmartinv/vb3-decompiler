@@ -34,10 +34,11 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
-from vb3decompiler.ne import *  # noqa: E402,F401,F403
+# the tools import these through this module (`import pcode_disasm as P`)
+from vb3decompiler.ne import PROC_TABLE_SEGMENT, Proc, find_procs, form_names, parse_ne, rcdata  # noqa: E402,F401
 from vb3decompiler.opcodes import NAMES  # noqa: E402,F401
-from vb3decompiler.runtime import *  # noqa: E402,F401,F403
-from vb3decompiler.symbols import *  # noqa: E402,F401,F403
+from vb3decompiler.runtime import EVENT_TYPES, MASTER_EVENT_TYPES, Runtime, decode, fmt  # noqa: E402,F401
+from vb3decompiler.symbols import Symbols, proc_names  # noqa: E402,F401
 
 
 def main():
@@ -85,7 +86,7 @@ def main():
     if args.check:
         print(summary)
         for p, err in failures:
-            print(f"  {'seg%d[%d:%d)' % (p.segment, p.start, p.end) if p else ''} {err}")
+            print(f"  {f'seg{p.segment}[{p.start}:{p.end})' if p else ''} {err}")
         sys.exit(0 if not failures else 1)
     text = "\n".join(lines) + f"\n; {summary}\n"
     if args.out:

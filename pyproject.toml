@@ -8,11 +8,11 @@ version = "0.1.0"
 description = "Decompiler for Visual Basic 3.0 executables: p-code and forms back to .frm/.bas source that recompiles to identical p-code"
 readme = "README.md"
 license = { file = "LICENSE" }
-requires-python = ">=3.10"
+requires-python = ">=3.12"
 dependencies = ["capstone"]
 
 [project.optional-dependencies]
-test = ["pytest"]
+test = ["pytest", "ruff"]
 
 [project.scripts]
 vb3decompile = "vb3decompiler.cli:main"
@@ -22,3 +22,19 @@ Homepage = "https://github.com/vmartinv/vb3-decompiler"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.ruff]
+line-length = 120
+extend-exclude = ["work"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP"]
+# house style: one-line `if x: a; b`, short lambdas, `l`/`O` names; zip() over equal-length
+# sequences; closures defined and called within one loop iteration
+ignore = ["E701", "E702", "E731", "E741", "B905", "B023"]
+
+[tool.ruff.lint.per-file-ignores]
+# VB source and opcode tables: one entry per line
+"tests/batteries/*" = ["E501"]
+"tests/probes/*" = ["E501"]
+"src/vb3decompiler/opcodes.py" = ["E501"]

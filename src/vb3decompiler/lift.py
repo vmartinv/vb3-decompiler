@@ -13,7 +13,6 @@ import struct
 
 from .opcodes import METHODS, NAMES, SEM
 
-
 BINOPS = {  # family -> (text, precedence; higher binds tighter)
     "IS": ("Is", 3), "LIKE": ("Like", 3),
     "POW": ("^", 10), "MUL": ("*", 8), "DIV": ("/", 8), "IDIV": ("\\", 7), "MOD": ("Mod", 6),
@@ -29,7 +28,8 @@ FUNCS = {  # builtin -> arity
     "Left$": 2, "Shell": 2, "Format$": 2, "InStr": 2, "Mid$": 3, "InputBox$": 3,
     "RGB": 3, "Trim$": 1, "Format$.1": 1,
 }
-RT_FUNCS = {0x44: "SavePicture", 0x8043: "LoadPicture", 0x8050: "Choose", 0x8051: "Switch", 0x805C: "Partition", 0x805D: "IIf"}  # op 0DFA ids
+RT_FUNCS = {0x44: "SavePicture", 0x8043: "LoadPicture", 0x8050: "Choose", 0x8051: "Switch", 0x805C: "Partition",
+            0x805D: "IIf"}  # op 0DFA ids
 STATEMENT_FUNCS = {"MsgBox": 3, "DoEvents": 0, "Cls": 0, "Beep": 0, "ChDir": 1, "ChDrive": 1}
 FUNCTION_FORMS = {"MsgBox.fn": ("MsgBox", 3)}
 MISSING_TEXT = "\0missing"
@@ -208,7 +208,8 @@ def lift(code: list[tuple[int, bytes]], ids: dict[int, int] | None = None,
             st[-1].t = {"ARG_S": "S", "ARG_D": "D", "ARG_T_BYREF": "T"}[name]  # (ARG_T_BYREF: ByVal String)
         if fam.startswith("CVT") or name in ("ARGS", "ARGS_FREE", "END_CALL", "TRAP", "LABEL", "LABEL_WIDE", "NARGS",
                                              "ARG_STR", "ARG_V", "ARG_S", "ARG_D", "ARGS_DLL",
-                                             "ARG_T_BYREF", "ARG_PAREN", "ARG_TEMP", "ARG_FIX", "ARG_FIX_BACK") or fam in STATEMENT_PREFIX:
+                                             "ARG_T_BYREF", "ARG_PAREN", "ARG_TEMP", "ARG_FIX", "ARG_FIX_BACK") \
+                or fam in STATEMENT_PREFIX:
             continue
         if name in ("OBJ", "OBJ_SELF"):
             if name == "OBJ_SELF" or not obj_at or obj_at[-1] != len(st):
@@ -415,7 +416,8 @@ def lift(code: list[tuple[int, bytes]], ids: dict[int, int] | None = None,
             n = struct.unpack_from("<H", operand)[0]
             idx = [pop() for _ in range(n)][::-1]
             v = pop()
-            out.append(f"{member(o.text, f'p{slot_of(operand) & 0xFF:x}')}({', '.join(i.text for i in idx)}) = {v.text}")
+            prop = member(o.text, f"p{slot_of(operand) & 0xFF:x}")
+            out.append(f"{prop}({', '.join(i.text for i in idx)}) = {v.text}")
         elif name == "Len.T":
             st.append(E(f"Len({pop().text})"))
         elif name == "FIELD_GET.T" or name.startswith("FIELD_GET"):
@@ -620,7 +622,8 @@ def lift(code: list[tuple[int, bytes]], ids: dict[int, int] | None = None,
         elif name in ("ON_GOTO", "ON_GOSUB"):
             n = struct.unpack_from("<H", operand)[0] // 2
             targets = struct.unpack_from(f"<{n}H", operand, 2)
-            out.append(f"On {pop().text} {'GoTo' if name == 'ON_GOTO' else 'GoSub'} " + ", ".join(f"L{t:x}" for t in targets))
+            out.append(f"On {pop().text} {'GoTo' if name == 'ON_GOTO' else 'GoSub'} "
+                       + ", ".join(f"L{t:x}" for t in targets))
         elif name == "LET":
             let_at = len(out)
         elif name == "MID_STMT":

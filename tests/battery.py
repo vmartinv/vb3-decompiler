@@ -50,8 +50,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "tools"))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 import pcode_disasm as P  # noqa: E402
-from vb3decompiler.decompiler import Decompiler, write_project  # noqa: E402
 from roundtrip import compile_mak, procs_code  # noqa: E402
+
+from vb3decompiler.decompiler import Decompiler, write_project  # noqa: E402
 
 REPO = Path(__file__).resolve().parent.parent
 BATTERIES = REPO / "tests" / "batteries"
@@ -202,7 +203,7 @@ class Runner:
             dmak = write_project(d, root / "deco", None, stem.lower())
         except Exception:
             return self.split(idx, "CRASH", orig, traceback.format_exc(limit=3))
-        for attempt in range(2):  # a second try: the OLE 2 control can fail to load right after a build
+        for _ in range(2):  # a second try: the OLE 2 control can fail to load right after a build
             for f in dmak.parent.iterdir():
                 if f.suffix.lower() == ".log":
                     f.unlink()

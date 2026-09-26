@@ -12,11 +12,9 @@ Usage:
 """
 from __future__ import annotations
 
-import sys
 import argparse
 import json
-import struct
-from dataclasses import dataclass, field
+import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))

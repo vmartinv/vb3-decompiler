@@ -154,12 +154,16 @@ def main():
             print(f"{mak.stem}: ERROR {e}")
             continue
         total += c
-        print(f"{mak.stem:10s} procs {c['procs_ok']}/{c['procs_total']} (wrong {c['procs_wrong']}, false {c['procs_false']})"
-              f"  refs {c['refs_ok']}/{c['refs_total'] - c['refs_objvar']} (missing {c['refs_missing']}, wrong {c['refs_wrong']}; +{c['refs_objvar']} object vars)")
-    print(f"TOTAL      procs {total['procs_ok']}/{total['procs_total']} (wrong {total['procs_wrong']}, false {total['procs_false']})"
-          f"  refs {total['refs_ok']}/{total['refs_total'] - total['refs_objvar']} (missing {total['refs_missing']}, wrong {total['refs_wrong']}; +{total['refs_objvar']} object vars)"
-          f"  props {total['props_ok']}/{total['props_total']} (missing {total['props_missing']}, wrong {total['props_wrong']})"
-          f"  ! vs . {total['sep_ok']}/{total['sep_total']}  Me props {total['meprops_ok']}/{total['meprops_total']}")
+        print(f"{mak.stem:10s} procs {c['procs_ok']}/{c['procs_total']}"
+              f" (wrong {c['procs_wrong']}, false {c['procs_false']})"
+              f"  refs {c['refs_ok']}/{c['refs_total'] - c['refs_objvar']} (missing {c['refs_missing']},"
+              f" wrong {c['refs_wrong']}; +{c['refs_objvar']} object vars)")
+    t = total
+    print(f"TOTAL      procs {t['procs_ok']}/{t['procs_total']} (wrong {t['procs_wrong']}, false {t['procs_false']})"
+          f"  refs {t['refs_ok']}/{t['refs_total'] - t['refs_objvar']} (missing {t['refs_missing']},"
+          f" wrong {t['refs_wrong']}; +{t['refs_objvar']} object vars)"
+          f"  props {t['props_ok']}/{t['props_total']} (missing {t['props_missing']}, wrong {t['props_wrong']})"
+          f"  ! vs . {t['sep_ok']}/{t['sep_total']}  Me props {t['meprops_ok']}/{t['meprops_total']}")
 
 
 if __name__ == "__main__":

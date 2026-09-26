@@ -294,11 +294,11 @@ SEM: dict[int, tuple[str, str, int]] = {
     0x3302: ("fn", "CreateObject", 1), 0x53D7: ("kw", "FileCopy", 2),
     0x3607: ("fn", "EOF", 1), 0x7604: ("fn", "Space$", 1), 0x762E: ("fn", "Str$", 1),
     0x5387: ("fn", "CurDir$", 0), 0x0EED: ("pass", "", 0), 0x3BB9: ("fn", "Sqr", 1),
-    0x7428: ("kw", "Error", 1), 0x52B5: ("fn", "Shell", 1), 0x4FA6: ("pass", "", 0),
+    0x52B5: ("fn", "Shell", 1), 0x4FA6: ("pass", "", 0),
     0x0E9A: ("fn", "CCur", 1), 0x6895: ("pass", "", 0), 0x6942: ("pass", "", 0),
     0x1156: ("pass", "", 0), 0x0ED9: ("pass", "", 0),
     0x1094: ("pass", "", 0), 0x1060: ("pass", "", 0), 0x0EC5: ("pass", "", 0),
-    0x34A8: ("kw", "While", 1), 0x35F5: ("kw", "Wend", 0), 0x53FB: ("kw", "Kill", 1),
+    0x34A8: ("kw", "While", 1), 0x35F5: ("kw", "Wend", 0),
     0x199D: ("pass", "", 0), 0x10D7: ("pass", "", 0),
 }
 

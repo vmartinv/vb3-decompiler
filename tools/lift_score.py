@@ -21,13 +21,14 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from vb3decompiler.lift import FUNCS, lift  # noqa: E402
+
 KEYWORDS = {"and", "or", "not", "mod", "xor", "eqv", "imp", "if", "then", "else", "elseif", "true", "false",
             "do", "loop", "while", "until", "wend", "redim", "preserve", "set", "is", "nothing", "typeof",
             "local", "ubound", "to", "open", "input", "output", "append", "random", "binary", "as", "close",
             "gosub", "return", "randomize", "loadpicture", "access", "read", "write",
             "line", "circle", "pset", "scale", "print", "step", "debug", "textwidth", "textheight", "point",
             "get", "put", "like", "len", "seek", "err", "byval", "eof",
-            "for", "to", "step", "next", "end", "exit", "sub", "function", "on", "error", "goto", "resume",
+            "for", "next", "end", "exit", "sub", "function", "on", "error", "goto", "resume",
             "unload", "load", "select", "case"}
 
 
@@ -108,11 +109,11 @@ def infer(corpus: Path, runtime: Path | None) -> None:
             if code:
                 lines.append((e["src"], code))
     unknown = Counter()
-    for src, code in lines:
+    for _, code in lines:
         got = lift(code, ids)
         for m in re.finditer(r"<op_([0-9A-F]{4})>", got):
             unknown[int(m.group(1), 16)] += 1
-    for op, cnt in unknown.most_common():
+    for op, _ in unknown.most_common():
         mine = [(src, code) for src, code in lines if any(o == op for o, _ in code)]
         cands = {("pass", "", 0)}
         for src, _ in mine:

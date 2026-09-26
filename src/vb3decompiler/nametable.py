@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import re
 
-
 BASE = 349
 
 # Methods: never a name-table entry, even after a dot.

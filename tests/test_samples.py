@@ -4,7 +4,6 @@ the original build, rebuild, same p-code and form resources.
 from __future__ import annotations
 
 import pytest
-
 import roundtrip
 
 IDE = roundtrip.REPO / "work" / "ide"

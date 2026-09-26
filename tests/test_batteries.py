@@ -5,9 +5,8 @@ from __future__ import annotations
 
 import re
 
-import pytest
-
 import battery
+import pytest
 
 
 def _params():

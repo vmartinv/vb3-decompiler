@@ -10,9 +10,20 @@ import struct
 
 from .ne import Segment, find_procs, form_names, vbx_entries
 from .opcodes import NAMES
-from .runtime import (CLASSES, FORM_CLASS, KINDS, MEPROPS, OBJVAR_TYPES, RECORD_FORM, SEG_FORM, SEG_IMAGE,
-                     decode, reset_state)
-
+from .runtime import (
+    CLASSES,
+    FORM_CLASS,
+    KINDS,
+    MEPROPS,
+    OBJVAR_TYPES,
+    RECORD_FORM,
+    SEG_FORM,
+    SEG_IMAGE,
+    Insn,
+    Runtime,
+    decode,
+    reset_state,
+)
 
 # Class byte in a form blob's control record (confirmed values only).
 CLASS_BY_BLOB = {0x00: "PictureBox", 0x01: "Label", 0x02: "TextBox", 0x04: "CommandButton",
@@ -61,7 +72,7 @@ def blob_classes(res: dict[int, bytes]) -> dict[tuple[str, str], str]:
     return out
 
 
-def _slot_refs(segs: list[Segment], rt: "Runtime") -> dict[int, dict[int, str]]:
+def _slot_refs(segs: list[Segment], rt: Runtime) -> dict[int, dict[int, str]]:
     """code segment -> {slot: 'control' | 'form'} for the references its code makes."""
     out: dict[int, dict[int, str]] = {}
     for p in find_procs(segs):
@@ -78,7 +89,7 @@ def _slot_refs(segs: list[Segment], rt: "Runtime") -> dict[int, dict[int, str]]:
     return out
 
 
-def is_objarr(rt: "Runtime", i: "Insn") -> bool:
+def is_objarr(rt: Runtime, i: Insn) -> bool:
     """Unnamed array-element load/store (`argc, slot`) — e.g. `Forms(i)`,
     `Document(i)` of `Global Document() As New frmNotePad`."""
     return i.op not in NAMES and len(i.operand) == 4 and (rt.opcode_id(i.op) or 0) & 0xFF in (0x0E, 0x0F)
@@ -104,7 +115,7 @@ def objvar_kind(kind: str, w0: int, w1: int, w2: int) -> int | None:
     return None
 
 
-def resolve_symbols(segs: list[Segment], rt: "Runtime", res: dict[int, bytes]) -> dict[int, dict[int, str]]:
+def resolve_symbols(segs: list[Segment], rt: Runtime, res: dict[int, bytes]) -> dict[int, dict[int, str]]:
     """code segment -> {slot: name} for control and form references.
 
     RT_RCDATA 2 holds each module's initial data image as a chunk
@@ -167,7 +178,8 @@ def resolve_symbols(segs: list[Segment], rt: "Runtime", res: dict[int, bytes]) -
                 continue
             if kind == "objvar":
                 continue  # untyped (As Control/Form generic) or not in this image
-            if kind == "control" and w0 >> 8 in (0x40, 0x60) and w1 >> 8 == 0xC0:  # the form's object property (ActiveForm, Controls)
+            # the form's object property (ActiveForm, Controls)
+            if kind == "control" and w0 >> 8 in (0x40, 0x60) and w1 >> 8 == 0xC0:
                 mep[slot] = w1 & 0xFF
                 continue
             if kind == "control":
@@ -182,7 +194,8 @@ def resolve_symbols(segs: list[Segment], rt: "Runtime", res: dict[int, bytes]) -
                 if w0 >> 8 != 0x80:
                     continue  # object variable (Dim x As Control/Form), not a form
                 k = (w0 & 0xFF) - form_base if form_base is not None else -1
-                out[slot] = forms[k][0] if 0 <= k < len(forms) else BUILTIN_OBJECTS.get(w0 & 0xFF, f"obj#{w0 & 0xFF:#x}")
+                out[slot] = forms[k][0] if 0 <= k < len(forms) \
+                    else BUILTIN_OBJECTS.get(w0 & 0xFF, f"obj#{w0 & 0xFF:#x}")
         OBJVAR_TYPES[seg] = types  # last evaluated candidate; the chosen one is re-evaluated
         MEPROPS[seg] = mep
         return {**out, **{-k - 1: t for k, t in types.items()}} if out or types or mep else None
@@ -224,7 +237,7 @@ def resolve_symbols(segs: list[Segment], rt: "Runtime", res: dict[int, bytes]) -
 _CTL_HEADER = re.compile(rb"[\x01\x03](..)\x00\x00(.)(.)(.)\xff", re.S)
 
 
-def proc_names(segs: list[Segment], rt: "Runtime", res: dict[int, bytes]) -> dict[int, str]:
+def proc_names(segs: list[Segment], rt: Runtime, res: dict[int, bytes]) -> dict[int, str]:
     """Procedure record -> event procedure name (`control_Event`,
     `Form_Event`). Each form blob's control records end with an event table:
     `FF, u8 count (= the class's event count), count x u16` where a
@@ -257,7 +270,8 @@ def proc_names(segs: list[Segment], rt: "Runtime", res: dict[int, bytes]) -> dic
                 at = q + (9 if struct.unpack_from("<H", d, q + 3)[0] & 0x8000 else 7)
                 return d[q + 5] < len(names) and bool(names[d[q + 5]]) and at < len(d) \
                     and (d[at] in CLASS_BY_BLOB or d[at] == 0xFF)
-            hdr = next((q for q in range(p - 3, max(0, p - 0x10000), -1) if is_hdr(q)), None)  # (VBX records hold bitmaps)
+            # (VBX records hold bitmaps)
+            hdr = next((q for q in range(p - 3, max(0, p - 0x10000), -1) if is_hdr(q)), None)
             if hdr is not None:
                 flags = struct.unpack_from("<H", d, hdr + 3)[0]
                 idx = d[hdr + 5]
@@ -297,7 +311,7 @@ OBJECT_PROPERTY_CLASS = {"Recordset": "Dynaset", "ActiveForm": "Form", "ActiveCo
 BUILTIN_OBJECTS: dict[int, str] = {0x08: "Forms", 0x32: "Printer", 0x33: "Screen", 0x34: "Clipboard", 0x3D: "App"}
 
 
-def late_bound_names(res1: bytes, rt: "Runtime") -> dict[int, str]:
+def late_bound_names(res1: bytes, rt: Runtime) -> dict[int, str]:
     """Late-bound property number -> name. Properties used through object
     variables (`Dim c As Control`) are numbered in first-use order, and the
     project directory (RT_RCDATA 1) stores, per class, that class's
@@ -364,7 +378,7 @@ def ole_names(res3: bytes) -> dict[int, str]:
 class Symbols:
     """Names for one executable's control/form references and properties."""
 
-    def __init__(self, rt: "Runtime", segs: list[Segment], res: dict[int, bytes]):
+    def __init__(self, rt: Runtime, segs: list[Segment], res: dict[int, bytes]):
         reset_state()
         self.rt = rt
         self.controls = resolve_symbols(segs, rt, res)
@@ -381,7 +395,7 @@ class Symbols:
             if key[0] in self.tables:
                 self.classes.setdefault(key, cls)
 
-    def annotate(self, seg: int, insns: list["Insn"]) -> list[str]:
+    def annotate(self, seg: int, insns: list[Insn]) -> list[str]:
         """Per instruction: symbolic text ('' if none) — control/form names,
         `form!control`, `Class.Property` for PGET/PSET."""
         out, other, cls = [], None, None
@@ -441,7 +455,8 @@ class Symbols:
                 typed = self.objvar_types.get(seg, {}).get(
                     struct.unpack_from("<H", i.operand, len(i.operand) - 2)[0]) if i.operand else None
                 cls = typed or (self.form_class.get(target, "Form") if target in self.tables else target)
-            elif (n in ("CONTROL", "CTLARRAY", "CTLARRAY_GET", "CTLARRAY_SET", "OBJVAR") or n is None and is_objarr(self.rt, i)) and i.operand:
+            elif (n in ("CONTROL", "CTLARRAY", "CTLARRAY_GET", "CTLARRAY_SET", "OBJVAR")
+                  or n is None and is_objarr(self.rt, i)) and i.operand:
                 slot = struct.unpack_from("<H", i.operand, len(i.operand) - 2)[0]
                 typed = self.objvar_types.get(seg, {}).get(slot)
                 if typed in self.tables:  # As New frmX (variable or array element)

@@ -12,7 +12,6 @@ from .ne import Proc
 from .opcodes import NAMES
 from .runtime import Runtime
 
-
 SUFFIX = {"I": "%", "L": "&", "S": "!", "D": "#", "C": "@", "T": "$", "V": ""}
 
 

@@ -14,6 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 from vb3decompiler.forms import dump, forms  # noqa: E402
 from vb3decompiler.runtime import Runtime  # noqa: E402
 
+
 def main():
     import argparse
     ap = argparse.ArgumentParser()

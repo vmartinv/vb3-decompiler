@@ -8,7 +8,7 @@ from __future__ import annotations
 import re
 
 from .dataimage import MOD_SIZE, word
-from .model import LABEL, LABEL_WIDE, ProcInfo, TYPE_NAME, Var
+from .model import LABEL, LABEL_WIDE, TYPE_NAME, ProcInfo, Var
 from .runtime import EVENT_TYPES, MASTER_EVENT_TYPES
 
 
@@ -226,7 +226,8 @@ class LocalsMixin:
                         ts = self.trailing_locals(info, base, known, (y - x) // 2, prev_bp)
                     if ts is not None:
                         nv, ns = ts.count("Variant"), ts.count("String")
-                        sizes = [{"Double": 8, "Long": 4, "Integer": 2}[t] for t in ts if t not in ("Variant", "String")]
+                        sizes = [{"Double": 8, "Long": 4, "Integer": 2}[t] for t in ts
+                                 if t not in ("Variant", "String")]
                         extra = sum(sizes)
                     while x < y:
                         if nv > 0:
@@ -313,7 +314,7 @@ class LocalsMixin:
         keys = {it[0]: appear(it[2]) for it in items}
         dims: dict[int, list[str]] = {}
         last = (-1, 0)
-        for j, (s, kind, name, decl, v) in enumerate(items):
+        for s, kind, name, decl, v in items:
             key = keys[s]
             if kind == "fixed":
                 if key is not None and key[:2] > last:
