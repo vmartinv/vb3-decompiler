@@ -51,7 +51,22 @@ class LocalsMixin:
         m = self.cur_mod
         k = m.infos.index(info)
         skip = set(info.params) | ({info.ret_slot} if info.ret_slot is not None else set())
-        items = []  # (slot, kind, name, decl)
+        # items: (slot, kind, name, decl, Var)
+        items = self.used_local_items(info, k, vars_, names, base, skip) + \
+            self.procedure_slot_items(info, k, vars_, names, base)
+        items.sort(key=lambda it: (it[0], it[1]))
+        # unused locals leave gaps in the slot numbering: declare fillers
+        known = self.known_slots(info, k, vars_, base, items, skip)
+        items += self.gap_items(info, k, vars_, base, known, skip)
+        items += self.orphan_zero_items(info, k, vars_, base)
+        items += self.tail_items(info, k, vars_, base, items)
+        items.sort(key=lambda it: (it[0], it[1]))
+        return self.place_dims(info, items, body)
+
+    def used_local_items(self, info: ProcInfo, k: int, vars_: dict, names: dict, base: int, skip: set) -> list:
+        """The procedure's used locals, typed from their uses, else the frame."""
+        m = self.cur_mod
+        items = []
         frame = sorted((s for s, v in vars_.items() if v.procs and v.procs[0] == k and v.scope in ("LOC", "REF")
                         and s not in skip), key=lambda s: s)
         # frame sizes: BP offsets decrease in slot order from -22 (ret value first)
@@ -78,6 +93,14 @@ class LocalsMixin:
             implicit = decl == " As Variant" and not m.defint and info.insns \
                 and info.insns[0].op in (LABEL, LABEL_WIDE)
             items.append((s, "fixed" if implicit else "dim", names[s], decl, v))
+        return items
+
+    def procedure_slot_items(self, info: ProcInfo, k: int, vars_: dict, names: dict, base: int) -> list:
+        """Statics and Consts of the procedure (module storage), and the slots
+        its references allocate at first use (Global copies, Static arrays,
+        controls, external functions)."""
+        m = self.cur_mod
+        items = []
         sarr = {a[0] for a in m.static_arrays}
         for s, v in vars_.items():
             if v.scope == "MOD" and v.procs and v.procs[0] == k and s >= m.first_owned and s not in sarr \
@@ -103,9 +126,11 @@ class LocalsMixin:
         for s, kk in m.call_slots.items():  # external functions: slot at the call
             if kk == k and (n := self.proc_name.get(self.value(base, s) & 0xFFF8)):
                 items.append((s, "fixed", n, None, None))
-        items.sort(key=lambda it: (it[0], it[1]))
-        # unused locals leave gaps in the slot numbering: declare fillers
-        # (odd value: String local; negative: BP offset, size from the frame)
+        return items
+
+    def known_slots(self, info: ProcInfo, k: int, vars_: dict, base: int, items: list, skip: set) -> set:
+        """Slots the declared items (and parameters) take."""
+        m = self.cur_mod
         known = {it[0] for it in items} | skip
         for it in items:
             if it[1] == "dim" and it[3].endswith("As Variant"):
@@ -122,145 +147,172 @@ class LocalsMixin:
             t = info.ret if x == info.ret_slot else (v.type() if v and v.votes else "V")
             if t == "V":
                 known.add(x + 2)
+        return known
+
+    def gap_items(self, info: ProcInfo, k: int, vars_: dict, base: int, known: set, skip: set) -> list:
+        """Fillers for the unused locals among and before the procedure's
+        slots (odd value: String local; negative: BP offset, size from the
+        frame; zeros: runs of unused ones)."""
+        m = self.cur_mod
+        items: list = []
         mine = sorted(known)
-        if mine:
-            later = [x for kk2, other in enumerate(m.infos) if kk2 > k
-                     for x in [min((ss for ss, vv in vars_.items() if vv.procs and vv.procs[0] == kk2), default=None)]
-                     if x is not None]
-            hi = min([x for x in later if x > mine[-1]] + [mine[-1] + 2])
-            negs = sorted((x, self.value(base, x)) for x in range(mine[0], hi, 2) if self.value(base, x) < 0)
-            fsize, prev = {}, -22
-            for x, o in negs:
-                fsize[x], prev = prev - o, o
-            # locals only: from the first local (negative BP offset or String number) on
-            frame_known = sorted(x for x in known if x in vars_ and vars_[x].scope in ("LOC", "REF")
-                                 and (self.value(base, x) < 0 or self.value(base, x) % 2 == 1)) or [1 << 30]
-            owned_k = [x for x, v in vars_.items() if v.procs and v.procs[0] == k] + \
-                      [r - 2 for r, (kk2, _) in m.refs.items() if kk2 == k] + \
-                      [x for x, kk2 in m.call_slots.items() if kk2 == k]
-            hi = min(hi, max(owned_k + [0]))  # up to the procedure's last slot
-            records = [r for r, (kk2, _) in m.refs.items()] + \
-                      [x2 for x2, v2 in vars_.items() if v2.obj or v2.glob is not None]
-            calls_here = set(m.call_slots)  # external function slots: `0, record`
-            if frame_known == [1 << 30] and owned_k:
-                # no used locals: unused ones are the zeros between the previous
-                # procedure's slots and this one's first (String fillers: no frame)
-                rest = [x for x in owned_k if x not in skip]
-                fo, pe = (min(rest) if rest else 1 << 30), self.prev_end(m, k)
-                # the procedure's own (unused) parameters come first: 2 slot bytes per
-                # ByRef parameter (4 argument bytes)
-                pe += self.param_slot_bytes(m, info)
-                pe = max([pe] + [x + 2 for x in skip])
-                if pe < fo and all(self.value(base, z) == 0 for z in range(pe, fo, 2)):
-                    # typed from the record (frame, numbered count) if they account for them
-                    ts = self.trailing_locals(info, base, [], len(range(pe, fo, 2)), -22)
-                    if ts and (word(self.table, info.proc.record + PROC_FRAME) > 22
-                               or word(self.table, info.proc.record + PROC_NUMBERED)):
-                        z = pe
-                        for t in ts:
-                            items.append((z, "dim", f"f{z:X}", f" As {t}", Var(z, "LOC")))
-                            z += 4 if t == "Variant" else 2
-                    else:
-                        for z in range(pe, fo, 2):
-                            items.append((z, "static", f"f{z:X}", " As Integer", Var(z, "MOD")))
-            x = frame_known[0]
-            # leading unused locals: zero slots from the end of the previous
-            # procedure's allocations up to the first used local
-            # only with evidence: the module's first procedure (zeros after the
-            # declarations), or frame space the first local doesn't account for
-            prev_end = self.prev_end(m, k)
-            first_bp = self.value(base, x)
-            v1 = vars_.get(x)
-            fs1 = {"I": 2, "L": 4, "S": 4, "D": 8, "C": 8, "V": 16}.get(v1.type() if v1 and v1.votes else "V", 2)
-            # Strings and Variants share one numbering (1, 3, ...): a first local numbered
-            # above 1 means numbered locals were declared before it
-            evidence = prev_end == m.first_owned or (first_bp < 0 and -22 - first_bp - fs1 >= 16) or \
-                (first_bp > 1 and first_bp % 2 == 1)
-            if evidence and prev_end < x and all(self.value(base, z) == 0 and z not in known
-                                                 for z in range(prev_end, x, 2)):
-                x = prev_end
-            run_types = self.solve_runs(m, k, info, base, known, x, hi, records, calls_here)
-            while x < hi:
-                if any(r - 2 <= x < r + 6 for r in records) or x in calls_here:
-                    x += 2  # inside a control/object record or an external function slot
-                    continue
-                if x in known:
-                    x += 2
-                    continue
-                o = self.value(base, x)
-                if o == 0:
-                    # a run of unused locals (value 0): unused Variants still take 16 bytes of
-                    # frame (2 slots), unused Strings none (1 slot); split by the frame gap
-                    y = x
-                    while y < hi and y not in known and self.value(base, y) == 0 \
-                            and not any(r - 2 <= y < r + 6 for r in records) and y not in calls_here:
-                        y += 2
-                    prev_bp = min([self.value(base, z) for z in known if z < x and self.value(base, z) < 0] + [-22])
-                    nxt_k = min((z for z in known if z >= y and self.value(base, z) < 0), default=None)
-                    # frame gap (unused Variants take 16 bytes, numerics their size) and
-                    # numbering (Variants and Strings share 1, 3, ...) of the next locals
-                    nv, ns, extra, framed = 0, 0, 0, nxt_k is not None
-                    if framed:
-                        v2 = vars_.get(nxt_k)
-                        t2 = v2.type() if v2 is not None and v2.votes else "V"
-                        fs2 = {"I": 2, "L": 4, "S": 4, "D": 8, "C": 8, "V": 16}.get(t2, 2)
-                        extra = max(0, prev_bp - self.value(base, nxt_k) - fs2)
-                        nv = min(extra // 16, (y - x) // 4)
-                        extra -= 16 * nv
-                    nxt_s = min((z for z in known if z >= y and self.value(base, z) > 0  # (a Variant's
-                                 and self.value(base, z) % 2 == 1 and (z in vars_ or z - 2 in vars_)),  # number
-                                default=None)  # follows its BP offset)
-                    if nxt_s is not None:
-                        prior = sum(1 for z in known if z < x and self.value(base, z) > 0
-                                    and self.value(base, z) % 2 == 1 and self.value(base, z) < 200)
-                        numbered = max(0, (self.value(base, nxt_s) - 1) // 2 - prior)
-                        if framed:
-                            ns = max(0, numbered - nv)  # the other numbered ones: Strings
-                        else:
-                            nv = min(numbered, (y - x) // 4)
-                    sizes, ts = None, run_types.get(x)
-                    if ts is not None:
-                        pass
-                    elif framed and nxt_s is not None:  # frame gap and numbering both known
-                        ts = self.split_unused((y - x) // 2, extra + 16 * nv, numbered)
-                    elif not framed and nxt_s is None and y >= hi:
-                        ts = self.trailing_locals(info, base, known, (y - x) // 2, prev_bp)
-                    if ts is not None:
-                        nv, ns = ts.count("Variant"), ts.count("String")
-                        sizes = [{"Double": 8, "Long": 4, "Integer": 2}[t] for t in ts
-                                 if t not in ("Variant", "String")]
-                        extra = sum(sizes)
-                    while x < y:
-                        if nv > 0:
-                            vt, step, nv = "Variant", 4, nv - 1
-                        elif ns > 0:
-                            vt, step, ns = "String", 2, ns - 1
-                        elif extra >= 2:  # the rest of the frame gap: numeric locals
-                            size = sizes.pop(0) if sizes else 8 if extra >= 8 else 4 if extra >= 4 else 2
-                            vt = {8: "Double", 4: "Long", 2: "Integer"}[size]
-                            extra -= size
-                            step = 2
-                        else:  # no frame, no number: a Static (module storage) keeps both
-                            vt, step = "Static", 2
-                        if vt == "Static":
-                            items.append((x, "static", f"f{x:X}", " As Integer", Var(x, "MOD")))
-                        else:
-                            items.append((x, "dim", f"f{x:X}", f" As {vt}", Var(x, "LOC")))
-                        x += step
-                    continue
-                interior = x < frame_known[-1]  # nonzero values are locals only between known ones
-                if o % 2 == 1 and 0 < o < 64 and interior:  # a String local
-                    items.append((x, "dim", f"f{x:X}", " As String", Var(x, "LOC")))
-                    x += 2
-                elif o < 0 and interior:
-                    t = {2: "I", 4: "L", 8: "D", 16: "V"}.get(fsize.get(x), "I")
-                    items.append((x, "dim", f"f{x:X}", f" As {TYPE_NAME[t]}", Var(x, "LOC")))
-                    x += 4 if t == "V" else 2
-                else:
-                    x += 2
-        # zeros just before the next procedure's slots, after all earlier ones: unused
-        # locals of a procedure that owns no slots (String fillers: no frame); they go
-        # in the procedure right before it
+        if not mine:
+            return items
+        later = [x for kk2, other in enumerate(m.infos) if kk2 > k
+                 for x in [min((ss for ss, vv in vars_.items() if vv.procs and vv.procs[0] == kk2), default=None)]
+                 if x is not None]
+        hi = min([x for x in later if x > mine[-1]] + [mine[-1] + 2])
+        negs = sorted((x, self.value(base, x)) for x in range(mine[0], hi, 2) if self.value(base, x) < 0)
+        fsize, prev = {}, -22
+        for x, o in negs:
+            fsize[x], prev = prev - o, o
+        # locals only: from the first local (negative BP offset or String number) on
+        frame_known = sorted(x for x in known if x in vars_ and vars_[x].scope in ("LOC", "REF")
+                             and (self.value(base, x) < 0 or self.value(base, x) % 2 == 1)) or [1 << 30]
+        owned_k = [x for x, v in vars_.items() if v.procs and v.procs[0] == k] + \
+                  [r - 2 for r, (kk2, _) in m.refs.items() if kk2 == k] + \
+                  [x for x, kk2 in m.call_slots.items() if kk2 == k]
+        hi = min(hi, max(owned_k + [0]))  # up to the procedure's last slot
+        records = [r for r, (kk2, _) in m.refs.items()] + \
+                  [x2 for x2, v2 in vars_.items() if v2.obj or v2.glob is not None]
+        calls_here = set(m.call_slots)  # external function slots: `0, record`
+        if frame_known == [1 << 30] and owned_k:
+            items += self.unused_only_items(info, k, base, owned_k, skip)
+        x = frame_known[0]
+        # leading unused locals: zero slots from the end of the previous
+        # procedure's allocations up to the first used local
+        # only with evidence: the module's first procedure (zeros after the
+        # declarations), or frame space the first local doesn't account for
+        prev_end = self.prev_end(m, k)
+        first_bp = self.value(base, x)
+        v1 = vars_.get(x)
+        fs1 = {"I": 2, "L": 4, "S": 4, "D": 8, "C": 8, "V": 16}.get(v1.type() if v1 and v1.votes else "V", 2)
+        # Strings and Variants share one numbering (1, 3, ...): a first local numbered
+        # above 1 means numbered locals were declared before it
+        evidence = prev_end == m.first_owned or (first_bp < 0 and -22 - first_bp - fs1 >= 16) or \
+            (first_bp > 1 and first_bp % 2 == 1)
+        if evidence and prev_end < x and all(self.value(base, z) == 0 and z not in known
+                                             for z in range(prev_end, x, 2)):
+            x = prev_end
+        run_types = self.solve_runs(m, k, info, base, known, x, hi, records, calls_here)
+        while x < hi:
+            if any(r - 2 <= x < r + 6 for r in records) or x in calls_here:
+                x += 2  # inside a control/object record or an external function slot
+                continue
+            if x in known:
+                x += 2
+                continue
+            o = self.value(base, x)
+            if o == 0:
+                x = self.zero_run_items(info, vars_, base, known, x, hi, records, calls_here, run_types, items)
+                continue
+            interior = x < frame_known[-1]  # nonzero values are locals only between known ones
+            if o % 2 == 1 and 0 < o < 64 and interior:  # a String local
+                items.append((x, "dim", f"f{x:X}", " As String", Var(x, "LOC")))
+                x += 2
+            elif o < 0 and interior:
+                t = {2: "I", 4: "L", 8: "D", 16: "V"}.get(fsize.get(x), "I")
+                items.append((x, "dim", f"f{x:X}", f" As {TYPE_NAME[t]}", Var(x, "LOC")))
+                x += 4 if t == "V" else 2
+            else:
+                x += 2
+        return items
+
+    def unused_only_items(self, info: ProcInfo, k: int, base: int, owned_k: list, skip: set) -> list:
+        """No used locals: unused ones are the zeros between the previous
+        procedure's slots and this one's first (String fillers: no frame)."""
+        m = self.cur_mod
+        items: list = []
+        rest = [x for x in owned_k if x not in skip]
+        fo, pe = (min(rest) if rest else 1 << 30), self.prev_end(m, k)
+        # the procedure's own (unused) parameters come first: 2 slot bytes per
+        # ByRef parameter (4 argument bytes)
+        pe += self.param_slot_bytes(m, info)
+        pe = max([pe] + [x + 2 for x in skip])
+        if pe < fo and all(self.value(base, z) == 0 for z in range(pe, fo, 2)):
+            # typed from the record (frame, numbered count) if they account for them
+            ts = self.trailing_locals(info, base, [], len(range(pe, fo, 2)), -22)
+            if ts and (word(self.table, info.proc.record + PROC_FRAME) > 22
+                       or word(self.table, info.proc.record + PROC_NUMBERED)):
+                z = pe
+                for t in ts:
+                    items.append((z, "dim", f"f{z:X}", f" As {t}", Var(z, "LOC")))
+                    z += 4 if t == "Variant" else 2
+            else:
+                for z in range(pe, fo, 2):
+                    items.append((z, "static", f"f{z:X}", " As Integer", Var(z, "MOD")))
+        return items
+
+    def zero_run_items(self, info: ProcInfo, vars_: dict, base: int, known: set, x: int, hi: int, records: list,
+                       calls_here: set, run_types: dict, items: list) -> int:
+        """A run of unused locals (value 0) from x: unused Variants still take
+        16 bytes of frame (2 slots), unused Strings none (1 slot); split by
+        the frame gap. Appends them to items; returns the run's end."""
+        y = x
+        while y < hi and y not in known and self.value(base, y) == 0 \
+                and not any(r - 2 <= y < r + 6 for r in records) and y not in calls_here:
+            y += 2
+        prev_bp = min([self.value(base, z) for z in known if z < x and self.value(base, z) < 0] + [-22])
+        nxt_k = min((z for z in known if z >= y and self.value(base, z) < 0), default=None)
+        # frame gap (unused Variants take 16 bytes, numerics their size) and
+        # numbering (Variants and Strings share 1, 3, ...) of the next locals
+        nv, ns, extra, framed = 0, 0, 0, nxt_k is not None
+        if framed:
+            v2 = vars_.get(nxt_k)
+            t2 = v2.type() if v2 is not None and v2.votes else "V"
+            fs2 = {"I": 2, "L": 4, "S": 4, "D": 8, "C": 8, "V": 16}.get(t2, 2)
+            extra = max(0, prev_bp - self.value(base, nxt_k) - fs2)
+            nv = min(extra // 16, (y - x) // 4)
+            extra -= 16 * nv
+        nxt_s = min((z for z in known if z >= y and self.value(base, z) > 0  # (a Variant's
+                     and self.value(base, z) % 2 == 1 and (z in vars_ or z - 2 in vars_)),  # number
+                    default=None)  # follows its BP offset)
+        if nxt_s is not None:
+            prior = sum(1 for z in known if z < x and self.value(base, z) > 0
+                        and self.value(base, z) % 2 == 1 and self.value(base, z) < 200)
+            numbered = max(0, (self.value(base, nxt_s) - 1) // 2 - prior)
+            if framed:
+                ns = max(0, numbered - nv)  # the other numbered ones: Strings
+            else:
+                nv = min(numbered, (y - x) // 4)
+        sizes, ts = None, run_types.get(x)
+        if ts is not None:
+            pass
+        elif framed and nxt_s is not None:  # frame gap and numbering both known
+            ts = self.split_unused((y - x) // 2, extra + 16 * nv, numbered)
+        elif not framed and nxt_s is None and y >= hi:
+            ts = self.trailing_locals(info, base, known, (y - x) // 2, prev_bp)
+        if ts is not None:
+            nv, ns = ts.count("Variant"), ts.count("String")
+            sizes = [{"Double": 8, "Long": 4, "Integer": 2}[t] for t in ts
+                     if t not in ("Variant", "String")]
+            extra = sum(sizes)
+        while x < y:
+            if nv > 0:
+                vt, step, nv = "Variant", 4, nv - 1
+            elif ns > 0:
+                vt, step, ns = "String", 2, ns - 1
+            elif extra >= 2:  # the rest of the frame gap: numeric locals
+                size = sizes.pop(0) if sizes else 8 if extra >= 8 else 4 if extra >= 4 else 2
+                vt = {8: "Double", 4: "Long", 2: "Integer"}[size]
+                extra -= size
+                step = 2
+            else:  # no frame, no number: a Static (module storage) keeps both
+                vt, step = "Static", 2
+            if vt == "Static":
+                items.append((x, "static", f"f{x:X}", " As Integer", Var(x, "MOD")))
+            else:
+                items.append((x, "dim", f"f{x:X}", f" As {vt}", Var(x, "LOC")))
+            x += step
+        return x
+
+    def orphan_zero_items(self, info: ProcInfo, k: int, vars_: dict, base: int) -> list:
+        """Zeros just before the next procedure's slots, after all earlier
+        ones: unused locals of a procedure that owns no slots (String
+        fillers: no frame); they go in the procedure right before it."""
+        m = self.cur_mod
+        items: list = []
+
         def own(kk: int) -> list:
             return [x for x, v in vars_.items() if v.procs and v.procs[0] == kk and x >= m.first_owned] + \
                    [r - 2 for r, (k2, _) in m.refs.items() if k2 == kk] + \
@@ -275,25 +327,38 @@ class LocalsMixin:
             if end < start and all(self.value(base, z) == 0 for z in range(end, start, 2)):
                 for z in range(end, start, 2):
                     items.append((z, "static", f"f{z:X}", " As Integer", Var(z, "MOD")))
-        if k == self.tail_owner(m):  # zeros after every procedure's slots: unused locals too
-            end, n = self.prev_end(m, len(m.infos)), word(self.image, base)
-            end = max([end] + [it[0] + 2 for it in items])  # (not the ones declared already)
-            if end < n - 1 and all(self.value(base, z) == 0 for z in range(end, n - 1, 2)):
-                known_k = [x for x, v in vars_.items() if v.procs and v.procs[0] == k and v.scope in ("LOC", "REF")]
-                prev_bp = min([self.value(base, z) for z in known_k if self.value(base, z) < 0] + [-22])
-                ts = getattr(self, "run_solution", {}).get((base, k, end)) or \
-                    self.trailing_locals(info, base, known_k, len(range(end, n - 1, 2)), prev_bp)
-                if ts and any(t != "Integer" for t in ts) \
-                        or ts and word(self.table, info.proc.record + PROC_FRAME) > -prev_bp:
-                    z = end
-                    for t in ts:
-                        items.append((z, "dim", f"f{z:X}", f" As {t}", Var(z, "LOC")))
-                        z += 4 if t == "Variant" else 2
-                else:
-                    for z in range(end, n - 1, 2):
-                        items.append((z, "static", f"f{z:X}", " As Integer", Var(z, "MOD")))
-        items.sort(key=lambda it: (it[0], it[1]))
+        return items
 
+    def tail_items(self, info: ProcInfo, k: int, vars_: dict, base: int, items: list) -> list:
+        """Zeros after every procedure's slots: unused locals too, of the
+        tail owner (tail_owner()), after the items declared already."""
+        m = self.cur_mod
+        out: list = []
+        if k != self.tail_owner(m):
+            return out
+        end, n = self.prev_end(m, len(m.infos)), word(self.image, base)
+        end = max([end] + [it[0] + 2 for it in items])  # (not the ones declared already)
+        if end < n - 1 and all(self.value(base, z) == 0 for z in range(end, n - 1, 2)):
+            known_k = [x for x, v in vars_.items() if v.procs and v.procs[0] == k and v.scope in ("LOC", "REF")]
+            prev_bp = min([self.value(base, z) for z in known_k if self.value(base, z) < 0] + [-22])
+            ts = getattr(self, "run_solution", {}).get((base, k, end)) or \
+                self.trailing_locals(info, base, known_k, len(range(end, n - 1, 2)), prev_bp)
+            if ts and any(t != "Integer" for t in ts) \
+                    or ts and word(self.table, info.proc.record + PROC_FRAME) > -prev_bp:
+                z = end
+                for t in ts:
+                    out.append((z, "dim", f"f{z:X}", f" As {t}", Var(z, "LOC")))
+                    z += 4 if t == "Variant" else 2
+            else:
+                for z in range(end, n - 1, 2):
+                    out.append((z, "static", f"f{z:X}", " As Integer", Var(z, "MOD")))
+        return out
+
+    def place_dims(self, info: ProcInfo, items: list, body: list) -> dict[int, list[str]]:
+        """Statement index -> the Dim/Static/Const lines before it, in slot
+        order, each as early as possible after the previous item's first
+        appearance (or left implicit when it appears first)."""
+        m = self.cur_mod
         texts = [re.sub(r'"[^"]*"', lambda x: " " * len(x.group(0)), t or "") for _, t in body]
 
         def compile_order(t: str) -> str:

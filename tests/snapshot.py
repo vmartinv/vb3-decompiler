@@ -37,7 +37,7 @@ def snapshot(work: Path, out: Path, runtime: Path) -> int:
             write_project(d, out / key, None, exe.stem)
         except Exception as e:
             (out / key).mkdir(parents=True, exist_ok=True)
-            (out / key / "ERROR.txt").write_text(repr(e))
+            (out / key / "ERROR.txt").write_text(repr(e).replace(str(exe.parent), key))
     return len(found)
 
 
