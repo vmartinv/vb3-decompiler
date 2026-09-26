@@ -26,8 +26,6 @@ DT_HLSTR, DT_INDEX = 0x0D, 0x3D
 
 
 @dataclass
-
-
 class Control:
     cls: str
     name: str

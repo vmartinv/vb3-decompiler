@@ -37,8 +37,6 @@ PREDEFINED_TYPES = {
 
 
 @dataclass
-
-
 class NamedResource:
     type_id: int
     type_name: str  # resolved PREDEFINED_TYPES name, or "TYPE_<n>"/string name
@@ -167,8 +165,6 @@ PROC_TABLE_SEGMENT = 3    # 1-based, in every VB3 exe tested
 
 
 @dataclass
-
-
 class Reloc:
     src_type: int
     flags: int
@@ -186,8 +182,6 @@ class Reloc:
 
 
 @dataclass
-
-
 class Segment:
     index: int
     length: int
@@ -234,8 +228,6 @@ def parse_ne(path: Path) -> list[Segment]:
 
 
 @dataclass
-
-
 class Proc:
     record: int  # offset of the procedure record in segment 3
     tag: int

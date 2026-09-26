@@ -56,8 +56,6 @@ def label_number(operand: bytes) -> int:
 
 
 @dataclass
-
-
 class Var:
     slot: int
     scope: str  # MOD / LOC / REF / GLB
@@ -79,8 +77,6 @@ class Var:
 
 
 @dataclass
-
-
 class ProcInfo:
     proc: Proc
     insns: list
