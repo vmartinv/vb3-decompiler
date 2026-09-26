@@ -98,7 +98,7 @@ def run(mak: Path, runtime: Path, vbx_dirs: list[Path], do_compile: bool, verbos
     dmak = write_project(d, deco, mak.parent if source_layout else None, mak.stem.lower())
     if do_compile:
         for m in [dmak]:
-            ok = compile_mak(m) or compile_mak(m)  # a second try: the first build after another can fail
+            ok = compile_mak(m)
             logs = [f for f in m.parent.iterdir() if f.suffix.lower() == ".log"]  # load errors
             if not ok or logs:
                 why = "; ".join(line for f in logs for line in f.read_text("latin-1").splitlines()[:3])

@@ -15,7 +15,9 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import fcntl
 import os
+import struct
 import subprocess
 import time
 from pathlib import Path
@@ -46,11 +48,57 @@ def dialog_open() -> bool:
     return bool(r.stdout.strip())
 
 
-def compile_mak(mak: Path, timeout: float = 120) -> bool:
+def complete(exe: Path) -> bool:
+    """The NE header lists resources (VB fills its resource table last) and
+    every segment (with its relocations) and resource lies within the file
+    (the last resource's length is rounded up to its alignment unit)."""
+    b = exe.read_bytes()
+    try:
+        ne = struct.unpack_from("<H", b, 0x3C)[0]
+        nseg, seg_tab, res_tab, shift = struct.unpack_from("<H", b, ne + 0x1C)[0], *struct.unpack_from(
+            "<HH", b, ne + 0x22), struct.unpack_from("<H", b, ne + 0x32)[0]
+        end = 0
+        for k in range(nseg):
+            sector, length, flags, _ = struct.unpack_from("<4H", b, ne + seg_tab + 8 * k)
+            if sector:
+                e = (sector << shift) + (length or 0x10000)
+                if flags & 0x100:  # relocations follow
+                    e += 2 + 8 * struct.unpack_from("<H", b, e)[0]
+                end = max(end, e)
+        p = ne + res_tab
+        rshift, res_end = struct.unpack_from("<H", b, p)[0], 0
+        p += 2
+        while struct.unpack_from("<H", b, p)[0] != 0:
+            count = struct.unpack_from("<H", b, p + 2)[0]
+            for k in range(count):
+                off, length = struct.unpack_from("<HH", b, p + 8 + 12 * k)
+                res_end = max(res_end, (off + length) << rshift)
+            p += 8 + 12 * count
+        return res_end > 0 and end <= len(b) and res_end - (1 << rshift) < len(b)
+    except struct.error:
+        return False
+
+
+def compile_mak(mak: Path, timeout: float = 120, tries: int = 4) -> bool:
     """`VB.EXE /MAKE`: builds and exits (about 2 s); on a compile error it
     stays open on the error dialog, which is screenshotted to <mak>.fail.png.
     (Builds via the Make EXE dialog differ in one word of resource 1, so
-    compare /MAKE builds with /MAKE builds.)"""
+    compare /MAKE builds with /MAKE builds.)
+    Each build starts with `wineserver -k`, which kills any other build in
+    the prefix (leaving its exe cut short), so builds from separate
+    processes take turns on a lock. A build that still exits early (no
+    exe, or one without its resources) is retried; a compile error is not."""
+    with open(Path(WINEPREFIX) / "build.lock", "w") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        for _ in range(tries):
+            ok = _make(mak, timeout)
+            if ok is not None:
+                return ok
+    return False
+
+
+def _make(mak: Path, timeout: float) -> bool | None:
+    """One /MAKE run: True built, False compile error, None flaky exit."""
     exe = mak.with_suffix(".exe")
     exe.unlink(missing_ok=True)
     mak.with_suffix(".fail.png").unlink(missing_ok=True)
@@ -72,8 +120,10 @@ def compile_mak(mak: Path, timeout: float = 120) -> bool:
         proc.wait()
         return False
     new = [p for p in mak.parent.glob("*.[eE][xX][eE]") if before.get(p) != p.stat().st_mtime]
-    if not new:
-        return False
+    if proc.returncode != 0 or not new or not complete(new[0]):
+        for p in new:
+            p.unlink()
+        return None
     new[0].rename(exe)  # several projects can share a directory
     return True
 
