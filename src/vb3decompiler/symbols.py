@@ -29,9 +29,9 @@ _CTL_RECORD_ANY = re.compile(rb"(?=[\x01-\x03]..(?:\x00\x00.\x00.|\x00\x80..\x00
 
 def blob_classes(res: dict[int, bytes]) -> dict[tuple[str, str], str]:
     """(form, control) -> class from each form blob's control records:
-    `u8 flag 1-3, u16 length, u16 flags, u8 name index, u8 element, ...,
+    `u8 flag 1-3, u24 length, u8 flags, u8 name index, u8 element, ...,
     class` with the class byte at +7 (+9 for control-array elements,
-    flags & 0x8000); VBX controls (0xFF) name their class next."""
+    flags & 0x80); VBX controls (0xFF) name their class next."""
     out, ids = {}, sorted(res)
     for a, b in zip(ids, ids[1:]):
         if not (res[a][:2] == b"\xff\xcc" and res[b][:2] != b"\xff\xcc"):
@@ -43,12 +43,12 @@ def blob_classes(res: dict[int, bytes]) -> dict[tuple[str, str], str]:
             if q in starts or q + 8 > len(d) or d[q] not in (1, 2, 3):
                 continue
             starts.add(q)
-            nxt = q + 1 + struct.unpack_from("<H", d, q + 1)[0]  # length counts from after the flag
+            nxt = q + 1 + (struct.unpack_from("<I", d, q)[0] >> 8)  # length counts from after the flag
             while nxt < len(d) and d[nxt] == 0:
                 nxt += 1
             todo.append(nxt)
         for q in sorted(starts):
-            flags, idx = struct.unpack_from("<H", d, q + 3)[0], d[q + 5]
+            flags, idx = d[q + 4] << 8, d[q + 5]
             if flags & ~0x8000 or not 0 < idx < len(names) or not names[idx]:
                 continue
             at = q + (9 if flags & 0x8000 else 7)
@@ -254,9 +254,9 @@ def proc_names(segs: list[Segment], rt: Runtime, res: dict[int, bytes], record_f
     `Form_Event`). Each form blob's control records end with an event table:
     `FF, u8 count (= the class's event count), count x u16` where a
     non-zero entry is the handler's procedure record offset | 1. The owning
-    control is the record ending with the table (`u8 flag 1/2/3, u16
-    length, u16 flags, u8 name index, ...`, class at +7, or +9 for a
-    control-array element, flags & 0x8000); tables outside any control
+    control is the record ending with the table (`u8 flag 1/2/3, u24
+    length, u8 flags, u8 name index, ...`, class at +7, or +9 for a
+    control-array element, flags & 0x80); tables outside any control
     record are the form's own. Procedures not found here are general
     Sub/Function procedures (their names aren't stored). Fills record_form
     (procedure record -> form) and form_class (form -> Form | MDIForm)."""
@@ -280,13 +280,13 @@ def proc_names(segs: list[Segment], rt: Runtime, res: dict[int, bytes], record_f
                 continue
             end = p + 1 + 2 * n
             def is_hdr(q: int) -> bool:  # a control record's header (not bytes inside another's properties)
-                if d[q] not in (1, 2, 3, 5) or q + 2 + struct.unpack_from("<H", d, q + 1)[0] not in (end, end + 1):
+                if d[q] not in (1, 2, 3, 5) or q + 2 + (struct.unpack_from("<I", d, q)[0] >> 8) not in (end, end + 1):
                     return False
                 at = q + (9 if struct.unpack_from("<H", d, q + 3)[0] & 0x8000 else 7)
                 return d[q + 5] < len(names) and bool(names[d[q + 5]]) and at < len(d) \
                     and (d[at] in CLASS_BY_BLOB or d[at] == 0xFF)
             # (VBX records hold bitmaps)
-            hdr = next((q for q in range(p - 3, max(0, p - 0x10000), -1) if is_hdr(q)), None)
+            hdr = next((q for q in range(p - 3, max(0, p - 0x1000000), -1) if is_hdr(q)), None)
             if hdr is not None:
                 flags = struct.unpack_from("<H", d, hdr + 3)[0]
                 idx = d[hdr + 5]

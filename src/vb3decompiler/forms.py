@@ -119,12 +119,13 @@ class FormDecoder:
 
     def record(self, b: bytes, pos: int, names: list[str]) -> tuple[Control, int]:
         """One control record at pos (u8 flag already consumed by caller):
-        u16 length (from the flag byte), u16 flags (8000: array element),
+        u24 length (from the flag byte; pictures can exceed 64 KB), u8 flags
+        (80: array element),
         u8 name index, [u16 array index], u8 0, u8 class (FF: pstring class
         name follows), early properties, FF, properties, FF, then with code
         behind the form an event table: u8 count, u16 per event."""
         start = pos - 1
-        ln, flags, idx = struct.unpack_from("<HHB", b, pos)
+        ln, flags, idx = struct.unpack_from("<I", b, pos)[0] & 0xFFFFFF, b[pos + 3] << 8, b[pos + 4]
         pos += 5
         if flags & 0x8000:  # control array element: its index (u16) follows
             pos += 2

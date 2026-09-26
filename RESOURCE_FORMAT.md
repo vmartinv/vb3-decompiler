@@ -51,7 +51,8 @@ A menu whose unnamed property 7 is set (−1) has submenus: the records
 after it are its children until a 3. Unnamed property 6 is set on
 separators.
 
-Record: `u8 flag, u16 length, u16 flags (8000 = control-array element),
+Record: `u8 flag, u24 length (records with big pictures exceed 64 KB),
+u8 flags (80 = control-array element),
 u8 name index, [u16 array index], u8 0, u8 class`, then (class FF) a
 Pascal class name for custom controls, early properties, `FF`,
 properties, `FF`. If the form has code, an event table follows: `u8 count,

@@ -73,5 +73,7 @@ cases += [
     dict(name="Static Function", code="Static Function Cnt ()\n    n = n + 1\n    Cnt = n\nEnd Function\n" + S("    x = Cnt()")),
     dict(name="Option Compare Text", code="Option Compare Text\n" + S('    If "a" = "A" Then b = 1')),
     dict(name="Option Base 1", code="Option Base 1\nDim a(5)\n" + S("    a(1) = 1")),
+    dict(name="Line Input Variant", code=S('    Open "c:\\t.txt" For Input As #2\n    Line Input #2, v\n'
+                                            '    Line Input #2, w(a)\n    Close', "Dim v, w(3)")),
     dict(name="Option Explicit all declared", code="Option Explicit\nDim a As Integer\n" + S("    Dim b\n    a = 1: b = 2")),
 ]

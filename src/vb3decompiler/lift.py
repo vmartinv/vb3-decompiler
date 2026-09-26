@@ -626,7 +626,7 @@ class Lifter:
             num, mark = gfx.pop() if gfx else ("#?", len(st))
             out.append(f"Input {num}, " + ", ".join(self.print_items))
             self.print_items.clear()
-        elif name == "LINE_INPUT#":
+        elif name in ("LINE_INPUT#", "LINE_INPUT#.V"):  # .V: into a Variant
             var = pop()
             num, mark = gfx.pop() if gfx else ("#?", len(st))
             out.append(f"Line Input {num}, {var.text}")
@@ -810,7 +810,7 @@ RULES: list[tuple] = [
     (lambda n, f, op: n in ("LET", "MID_STMT", "LSET", "RSET"), Lifter.statement),
     (lambda n, f, op: n == "STOP", Lifter.fixed),
     (lambda n, f, op: n == "RANDOMIZE_N", Lifter.keyword_value),
-    (lambda n, f, op: n in ("WRITE#", "LINE_INPUT#", "NAME", "WIDTH#"), Lifter.file),
+    (lambda n, f, op: n in ("WRITE#", "LINE_INPUT#", "LINE_INPUT#.V", "NAME", "WIDTH#"), Lifter.file),
     (lambda n, f, op: n in ("DATE$=", "TIME$=", "DATE=", "TIME="), Lifter.statement),
     (lambda n, f, op: n == "LOCK", Lifter.file),
     (lambda n, f, op: n == "ERASE", Lifter.keyword_value),

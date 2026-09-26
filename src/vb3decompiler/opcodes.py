@@ -168,7 +168,7 @@ NAMES: dict[int, str] = {
     0x376D: "FILENUM", 0x373B: "OPEN",        # operand: 1 Input, 2 Output
     0x3631: "CLOSE", 0x375B: "PRINT#", 0x3740: "OPEN_LEN",   # Open ... Len = n
     0x3692: "INPUT#", 0x3698: "INPUT_ITEM.I", 0x36C2: "INPUT_ITEM.V", 0x36B6: "INPUT_ITEM.T",
-    0x368C: "INPUT_END", 0x36DF: "INPUT_ITEM_FIELD?",
+    0x368C: "INPUT_END", 0x36DF: "LINE_INPUT#.V",
     0x3662: "GET#", 0x367E: "PUT#",                 # operand: record length
     0x3654: "GET#_NOREC", 0x3670: "PUT#_NOREC", 0x374F: "SEEK", 0x19D7: "ERR_SET",
     # --- user-defined types -------------------------------------------
