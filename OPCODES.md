@@ -311,7 +311,6 @@ form resources (layouts decoded, not copied).
 
 ## Next steps
 
-- Whole-exe identity: see PLAN.md Phase 3 for the remaining places.
 - DefType tables beyond `DefInt A-Z` (only form seen in the samples).
 - 4D51/4CFD: a control array element's default property, `c(i)` /
   `c(i) = v` (u16 dims, u16 slot). METHOD 0x2A PopupMenu. A method's

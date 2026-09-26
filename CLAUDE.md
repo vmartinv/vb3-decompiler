@@ -2,8 +2,7 @@
 
 Reusable VB3 reverse-engineering tools + findings: a decompiler for
 Visual Basic 3.0 executables. Public at
-https://github.com/vmartinv/vb3-decompiler. Companion to `~/qrace`
-(Quibble Race port).
+https://github.com/vmartinv/vb3-decompiler.
 
 ## Rules
 
@@ -36,7 +35,7 @@ https://github.com/vmartinv/vb3-decompiler. Companion to `~/qrace`
   (under `work/`): from a long one (~90 characters) the IDE compiles some
   form properties differently.
 - Target: the decompiled source recompiles to the **same p-code and form
-  resources** (PLAN.md). Don't add fitting for exe-only fields (name-table
+  resources** (see Status). Don't add fitting for exe-only fields (name-table
   sizes, init-list/hash orders, pool offsets, line counts): exe byte
   identity is not a goal. The one name-length effect that reaches p-code
   (object locals' free order) is handled in `src/vb3decompiler/naming.py`.
@@ -94,6 +93,14 @@ https://github.com/vmartinv/vb3-decompiler. Companion to `~/qrace`
   (it's outside the raw segment blob), so don't assume Ghidra resolved
   it either; check `Segment.relocs` from `ne.parse_ne(...)`
   for the real fixup if one of those matters.
+
+## Status
+
+The decompiler is complete for the target above: every VB3 language
+feature has a battery, and all 969 battery cases (20 batteries) and all 22
+samples (483 procedures, every form) round-trip to identical p-code and
+form resources. Work from here is fixing gaps as they turn up (a new exe
+that doesn't round-trip: reduce it to a battery case first).
 
 ## Key files
 

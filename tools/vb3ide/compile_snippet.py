@@ -21,7 +21,7 @@ Prerequisites (see ../../README.md "Setup" section):
 
 Usage:
     DISPLAY=:99 python3 compile_snippet.py --sweep 0 1 2 3 10 100 32767
-    DISPLAY=:99 python3 compile_snippet.py --name add_yz --code-file snippets/add_yz.bas
+    DISPLAY=:99 python3 compile_snippet.py --name add_yz --code-file add_yz.bas
 
 Output: work/sweep/x_eq_<value>.exe (sweep mode) or work/sweep/<name>.exe
 (snippet mode).

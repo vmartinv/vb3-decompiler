@@ -6,8 +6,7 @@ the p-code bytecode format (`VBRUN300.DLL`-interpreted, not native x86).
 
 No other decompiler targets VB3 (existing tools cover VB5/6, a different
 p-code). Findings: [`OPCODES.md`](OPCODES.md) (p-code) and
-[`RESOURCE_FORMAT.md`](RESOURCE_FORMAT.md) (forms/resources). Grew out of
-[Quibble Race](https://github.com/vmartinv/qrace).
+[`RESOURCE_FORMAT.md`](RESOURCE_FORMAT.md) (forms/resources).
 
 ## What's here
 
@@ -144,7 +143,7 @@ Then:
 export DISPLAY=:99
 export WINEPREFIX=$PWD/work/.wineprefix
 python3 tools/vb3ide/compile_snippet.py --sweep 0 1 2 3 10 100 32767
-python3 tools/vb3ide/compile_snippet.py --name my_test --code-file snippets/my_test.bas
+python3 tools/vb3ide/compile_snippet.py --name my_test --code-file my_test.bas   # a Form_Load body
 ```
 
 Output lands in `work/sweep/`. Disassemble results with
@@ -166,8 +165,6 @@ all 22 sample projects (483 procedures) and on all 969 generated feature
 cases (`battery.py`, 20 batteries). Byte-identical executables are not a
 goal: they depend on the original identifier lengths, which aren't stored
 (`exediff.py` still shows where two builds differ).
-
-Plan: see [PLAN.md](PLAN.md).
 
 ## License
 

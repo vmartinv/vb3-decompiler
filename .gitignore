@@ -16,3 +16,7 @@ __pycache__/
 # Data extracted from analyzed executables -- regenerate locally.
 extraction/
 .pytest_cache/
+*.egg-info/
+build/
+dist/
+.venv/

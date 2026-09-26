@@ -1,2 +1,0 @@
-Call ModThing
-Call ModOther
