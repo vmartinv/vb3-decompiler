@@ -386,10 +386,9 @@ def reset_state() -> None:
         d.clear()
 
 
-# Handler names live in opcodes.py; unnamed ones print as op_XXXX [id].
-
-
 @dataclass
+
+
 class Insn:
     pc: int
     op: int

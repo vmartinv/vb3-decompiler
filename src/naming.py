@@ -211,7 +211,7 @@ class NamingMixin:
         in the original order. The epilogue walks the IDE's local symbol
         table: 8 buckets in order, each in declaration order; the bucket is
         (name-table offset >> 1) & 7, and offsets follow from the lengths
-        and first-appearance order of all earlier names (namesize)."""
+        and first-appearance order of all earlier names (nametable.py)."""
         from nametable import FIRST, identifiers
         base, vars_, names = m["image"], m["vars"], m["names"]
         from nametable import KEYWORDS, BUILTINS

@@ -23,6 +23,10 @@ from symbols import Symbols, proc_names
 
 
 class Decompiler(LayoutMixin, AnalyzeMixin, DeclarationsMixin, NamingMixin, LocalsMixin, EmitMixin):
+    """One executable's decompilation. Modules are dicts (`module_list`)
+    that the passes fill in: vars/infos (analyze), items (declarations),
+    names (naming), lines (emit)."""
+
     def __init__(self, exe: Path, runtime: Path, vbx_dirs: list[Path]):
         self.exe = exe
         self.rt = rt = Runtime(runtime)
@@ -49,7 +53,12 @@ class Decompiler(LayoutMixin, AnalyzeMixin, DeclarationsMixin, NamingMixin, Loca
         self.call_types: dict[int, list] = {}
 
     def run(self) -> list[dict]:
-        """Modules with their source lines (m['lines'])."""
+        """Modules with their source lines (m['lines']). Passes, in order:
+        analyze each module's p-code; recover the module-level declarations;
+        name variables and procedures; record calls (argument types for
+        parameters); emit the text, re-emitted once when the unused locals'
+        split doesn't give the module's item count (declarations +12); last,
+        pick local name lengths that keep the object-local free order."""
         if hasattr(self, "_mods"):
             return self._mods
         mods = self.module_list()
@@ -62,7 +71,6 @@ class Decompiler(LayoutMixin, AnalyzeMixin, DeclarationsMixin, NamingMixin, Loca
             self.name_module(m)
         self.collect_calls(mods)
         self.slotted = {r for m in mods for _, r in m["funcs"]}
-        self.decl_home = next((m for m in mods if m["kind"] == "bas"), mods[0])
         for m in mods:
             m["lines"] = self.emit_module(m)
             want = (word(self.table, word(self.image, m["image"] - 2) + 4 + 12) - word(self.image, m["image"])) // 2

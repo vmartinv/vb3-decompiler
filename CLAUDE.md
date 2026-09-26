@@ -26,7 +26,9 @@ Reusable VB3 reverse-engineering tools + findings. Companion to
   statement; `--sem` proposes builtin entries.
 - Builds use `VB.EXE /MAKE` (~2 s, no GUI clicks). Its output differs
   from a GUI "Make EXE" build in one word of RT_RCDATA 1, so compare
-  /MAKE builds only with /MAKE builds.
+  /MAKE builds only with /MAKE builds. Build from short directory paths
+  (under `work/`): from a long one (~90 characters) the IDE compiles some
+  form properties differently.
 - Target: the decompiled source recompiles to the **same p-code and form
   resources** (PLAN.md). Don't add fitting for exe-only fields (name-table
   sizes, init-list/hash orders, pool offsets, line counts): exe byte

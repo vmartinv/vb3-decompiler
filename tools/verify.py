@@ -5,6 +5,10 @@ Decompiles one executable, rebuilds the result with the real IDE
 and form resources.
 
   python3 tools/verify.py some.exe outdir/ [--runtime VBRUN300.DLL] [--vbx-dir DIR]
+
+Keep outdir's path short (e.g. under work/): built from a long directory
+path, the IDE compiles some form properties differently (seen with a
+~90-character path), so the forms would compare different.
 """
 from __future__ import annotations
 

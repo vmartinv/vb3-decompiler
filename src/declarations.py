@@ -243,14 +243,12 @@ class DeclarationsMixin:
             text = ctexts[hs[(mi, k)]] if ctexts is not None else texts[j] if j < len(texts) else ""
             it = mods[mi]["items"][k]
             mods[mi]["items"][k] = it[:2] + ('"' + text + '"',) + it[3:]
-        # Types: in the module whose globals surround them, else (no Global in
-        # any module to go by) distributed across the modules with no other
-        # items, greedily by each candidate's own declarations-record line
-        # count (rec+50): as many Types (in chain order) as fit each one
-        # before moving to the next, so two Types textually declared in the
-        # same module (no blank module between them) stay together instead of
-        # each grabbing its own module 1:1.
+        # Types: declarations record +46 is 0xFFFF in a module without Types.
+        # Within those that have some: the module whose globals surround a Type,
+        # else distributed greedily by each candidate's declarations line count
+        # (rec+50), as many Types (in chain order) as fit before the next one.
         bas = [m for m in mods if m["kind"] == "bas"] or mods
+        typed = [m for m in bas if word(self.table, word(self.image, m["image"] - 2) + 4 + 46) != 0xFFFF]
         unowned: list = []
         for td in gl.types.values():
             owner = None
@@ -262,11 +260,13 @@ class DeclarationsMixin:
                 after = [(min(gg), k) for k, m in enumerate(bas)
                          if (gg := [it[3] for it in m["items"] if it[0] == "global"]) and min(gg) > td.g]
                 owner = bas[min(after)[1]] if after else None
+            if typed and owner not in typed:
+                owner = typed[0] if len(typed) == 1 else None
             if owner is None:
                 unowned.append(td)
             else:
                 owner.setdefault("types", []).append(td)
-        candidates = [m for m in bas if not m["items"]] or [bas[0]]
+        candidates = typed or [m for m in bas if not m["items"]] or [bas[0]]
         ci, budget = 0, word(self.table, word(self.image, candidates[0]["image"] - 2) + 4 + 50)
         for td in unowned:
             need = len(td.lines(gl.types))

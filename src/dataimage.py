@@ -35,6 +35,8 @@ def word(d: bytes, o: int, signed: bool = False) -> int:
 
 
 @dataclass
+
+
 class Field:
     g: int  # record offset (FIELD_* operand)
     type: int
@@ -52,6 +54,8 @@ class Field:
 
 
 @dataclass
+
+
 class TypeDef:
     g: int
     size: int

@@ -15,6 +15,7 @@ from runtime import Runtime
 
 SUFFIX = {"I": "%", "L": "&", "S": "!", "D": "#", "C": "@", "T": "$", "V": ""}
 
+
 class _TypeNames(dict):
     def __missing__(self, t: str) -> str:  # "F<n>": fixed-length String
         if t.startswith("F") and t[1:].isdigit():
@@ -47,6 +48,7 @@ VAR_FAMILIES = ("LOAD", "STORE", "ADDR_LOC", "ALOAD", "ASTORE", "ADDR", "AADDR")
 
 SIZE_TYPES = {2: "I", 4: "L", 8: "D", 16: "V"}  # filler declarations for unused slots
 
+
 def label_number(operand: bytes) -> int:
     """A LABEL's line number (second word; 0xFFFF for a named label, returned as 0xFFFFFFFF).
     The first word is 0xFFFF unless a Resume / Erl refers to the label."""
@@ -55,6 +57,8 @@ def label_number(operand: bytes) -> int:
 
 
 @dataclass
+
+
 class Var:
     slot: int
     scope: str  # MOD / LOC / REF / GLB
@@ -76,6 +80,8 @@ class Var:
 
 
 @dataclass
+
+
 class ProcInfo:
     proc: Proc
     insns: list
@@ -109,6 +115,7 @@ SUFFIX_OF_ID = {1: "%", 2: "&", 3: "!", 4: "#", 5: "@", 7: "$"}  # interpreter I
 
 TYPE_OF_SUFFIX = {"%": "I", "&": "L", "!": "S", "#": "D", "@": "C", "$": "T"}
 
+
 def plain_handler(rt: Runtime, op: int) -> tuple[str | None, str]:
     """A variable access or function call written with a type suffix (`b% = 3`, `F%(1)`) uses another
     entry point of the plain handler (usually 3 bytes before it) whose
@@ -131,6 +138,7 @@ def plain_handler(rt: Runtime, op: int) -> tuple[str | None, str]:
 ID_CLASS = {0x0B: "LOAD", 0x0C: "STORE", 0x0E: "ALOAD", 0x0F: "ASTORE",  # interpreter ID low byte
             0x13: "FIELD_ALOAD", 0x14: "FIELD_ASTORE"}
 
+
 def mod_name(slot: int) -> str:
     """Synthetic module variable name; `mE` would be the keyword Me."""
     return f"m{slot:X}" if slot != 0xE else "m0E"
@@ -152,6 +160,7 @@ STMT_COLUMN = {op: c for c, op in enumerate([
 
 STMT_WIDE, STMT_SAME_LINE = 0x48AF, 0x4958
 
+
 def stmt_column(rt: Runtime, op: int, operand: bytes = b"") -> int | None:
     if op == STMT_WIDE and len(operand) >= 2:
         return struct.unpack_from("<H", operand)[0]
@@ -161,6 +170,7 @@ def stmt_column(rt: Runtime, op: int, operand: bytes = b"") -> int | None:
 # Print items (`;` / end of line) per value type: the type of what is printed
 PRINT_TYPE = {0x6085: "V", 0x6045: "I", 0x604B: "L", 0x6059: "S", 0x6069: "D", 0x607F: "C", 0x6104: "T",
               0x60A4: "V", 0x60DE: "I", 0x608F: "L", 0x609D: "S", 0x60AE: "D", 0x60B5: "C", 0x6132: "T"}
+
 
 def lt_hint(nxt: str) -> str:
     """Long or String for a shared 4-byte load, from the handler consuming it."""
