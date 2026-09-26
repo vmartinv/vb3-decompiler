@@ -112,7 +112,36 @@ def sort_name(lo: str, hi: str | None, kind: str, taken: set[str]) -> str:
 
 class NamingMixin:
     def name_module(self, m: Module) -> None:
-        vars_, refs, infos = m.vars, m.refs, m.infos
+        """Names for the module's slots (m.names) and procedures, and its
+        procedures' parameters and Function return slots."""
+        names = self.slot_names(m)
+        start = word(self.res.get(1, b""), 4)  # startup: 0xFFFF a form, else Sub Main's record | 1
+        for info in m.infos:
+            ev = self.events.get(info.proc.record)
+            if ev:
+                info.name, info.event = ev, True
+            elif start != 0xFFFF and info.proc.record == start & ~1:
+                info.name = "Main"
+                self.proc_name[info.proc.record] = "Main"
+        self.fit_names(m)
+        self.find_params(m, names)
+        for info in m.infos:
+            self.proc_name[info.proc.record] = info.name
+        for _, r in m.funcs:
+            if r not in self.by_record:
+                self.proc_name[r] = self.declare_name(r)
+        for p in self.procs:  # calls to Declare Subs (operand: the record)
+            for i in decode(self.rt, self.segs[p.segment - 1].data, p)[0] if p.segment == m.seg else []:
+                if NAMES.get(i.op) == "CALL" and len(i.operand) >= 4:
+                    r = struct.unpack_from("<H", i.operand, 2)[0] & 0xFFF8
+                    if r not in self.by_record and self.is_declare(r):
+                        self.proc_name[r] = self.declare_name(r)
+        m.names = names
+
+    def slot_names(self, m: Module) -> dict[int, str]:
+        """Slot -> name for the module's declarations, variables (a Global
+        Const's copy takes its name) and control references."""
+        vars_, refs = m.vars, m.refs
         names: dict[int, str] = {}
         for it in m.items:
             if it[0] in ("dim", "const"):
@@ -158,15 +187,12 @@ class NamingMixin:
                 names[s] = f"{pre}{s:X}"
         for s, (_, n) in refs.items():
             names[s] = n
-        start = word(self.res.get(1, b""), 4)  # startup: 0xFFFF a form, else Sub Main's record | 1
-        for info in infos:
-            ev = self.events.get(info.proc.record)
-            if ev:
-                info.name, info.event = ev, True
-            elif start != 0xFFFF and info.proc.record == start & ~1:
-                info.name = "Main"
-                self.proc_name[info.proc.record] = "Main"
-        self.fit_names(m)
+        return names
+
+    def find_params(self, m: Module, names: dict[int, str]) -> None:
+        """Each procedure's parameter slots (info.params, used or not) and a
+        Function's return slot (named after it)."""
+        vars_, refs, infos = m.vars, m.refs, m.infos
         base = m.image
         owned_all = {s for s, v in vars_.items() if v.scope in ("LOC", "REF")} | {r - 2 for r in refs} | set(refs)
         for k, info in enumerate(infos):
@@ -197,18 +223,6 @@ class NamingMixin:
                     info.ret_slot = r
                     names[r] = info.name
             info.params = ps
-        for info in infos:
-            self.proc_name[info.proc.record] = info.name
-        for _, r in m.funcs:
-            if r not in self.by_record:
-                self.proc_name[r] = self.declare_name(r)
-        for p in self.procs:  # calls to Declare Subs (operand: the record)
-            for i in decode(self.rt, self.segs[p.segment - 1].data, p)[0] if p.segment == m.seg else []:
-                if NAMES.get(i.op) == "CALL" and len(i.operand) >= 4:
-                    r = struct.unpack_from("<H", i.operand, 2)[0] & 0xFFF8
-                    if r not in self.by_record and self.is_declare(r):
-                        self.proc_name[r] = self.declare_name(r)
-        m.names = names
 
     def fit_names(self, m: Module) -> None:
         """Names for general procedures (not stored) that keep both orders
@@ -330,104 +344,19 @@ class NamingMixin:
         `m2A`, `G6`, `T10`, ...): kind + type + a counter, e.g. `int1`,
         `mStr2`, `gVar1`, `Type1`. Names on a `ReDim ... As` line keep their
         length (the `As` column is compiled), so those stay."""
-        words = {w.lower() for mm in mods for ln in mm.lines for w in re.findall(r"[A-Za-z_]\w*", code_part(ln))}
-        taken = set(words)
-        keep = {w.lower() for mm in mods for ln in mm.lines if re.search(r"\bReDim\b.*\bAs\b", ln)
-                for w in re.findall(r"[A-Za-z_]\w*", code_part(ln))}
-        self.pretty = set()
-        udts = {mt.group(1).lower() for mm in mods for ln in mm.lines if (mt := re.match(r"Type\s+(\w+)", ln))}
-
-        def fresh(base: str, counters: dict, scope_taken: set) -> str:
-            while True:
-                counters[base] = counters.get(base, 0) + 1
-                c = f"{base}{counters[base]}"
-                if c.lower() not in taken and c.lower() not in scope_taken:
-                    scope_taken.add(c.lower())
-                    self.pretty.add(c.lower())
-                    return c
-
-        def kind_of(name: str, lines: list[str]) -> tuple[str, bool]:
-            """(type tag, array) from the name's declaration or suffix."""
-            text = "\n".join(code_part(ln) for ln in lines)
-            d = re.search(rf"\b{name}\b(\()?[^,\n=]*?\bAs\s+(?:New\s+)?(\w+)", text)
-            if d:
-                t = d.group(2)
-                rec = re.fullmatch(r"Type\d+|T[0-9A-F]+", t) or t.lower() in udts
-                return TYPE_TAG.get(t.lower(), "Rec" if rec else "Obj"), bool(d.group(1))
-            sfx = re.search(rf"\b{name}([%&!#@$])", text)
-            return (SUFFIX_TAG[sfx.group(1)] if sfx else "Var"), bool(re.search(rf"\b{name}\(", text))
-
-        def rename_all(mapping: dict, targets: list[tuple[dict, int, int]]) -> None:
-            if not mapping:
-                return
-            pat = re.compile(r"(?<![\w.])(" + "|".join(map(re.escape, mapping)) + r")\b|(?<=\.)(F[0-9A-F]+)\b")
-            sub = lambda mt: mapping.get(mt.group(0), mt.group(0))
-            for mm, a, b in targets:
-                mm.lines[a:b] = [on_code(ln, lambda t: pat.sub(sub, t)) for ln in mm.lines[a:b]]
-
-        # project-wide: Globals, Global Consts, Types and fields (declared in .bas modules)
-        gmap, counters, seen = {}, {}, set()
-        for mm in mods:
-            in_type = False
-            for ln in mm.lines:
-                c = code_part(ln)
-                if mt := re.match(r"Type\s+(T[0-9A-F]+)\b", c):
-                    in_type, fcount = True, {}
-                    if mt.group(1).lower() not in keep:
-                        gmap[mt.group(1)] = fresh("Type", counters, seen)
-                    continue
-                if in_type:
-                    if c.strip().startswith("End Type"):
-                        in_type = False
-                    elif (mt := re.match(r"\s*(F[0-9A-F]+)\b", c)) and mt.group(1).lower() not in keep:
-                        gmap[mt.group(1)] = fresh("f", fcount, set())
-                    continue
-                if mt := re.match(r"Global\s+(Const\s+)?(.*)", c):
-                    for n in re.findall(r"(?:^|,)\s*([Gg][0-9A-F]+)\b", mt.group(2)):
-                        if n not in gmap and n.lower() not in keep:
-                            t, arr = kind_of(n, mm.lines)
-                            base = "GCONST" if mt.group(1) else "g" + ("Arr" if arr else "") + t
-                            gmap[n] = fresh(base, counters, seen)
-        rename_all(gmap, [(mm, 0, len(mm.lines)) for mm in mods])
+        pr = Prettifier(mods)
+        gmap = pr.global_map()
+        pr.rename_all(gmap, [(mm, 0, len(mm.lines)) for mm in mods])
         for g, n in list(self.global_name.items()):
             self.global_name[g] = gmap.get(n, n)
         for mm in mods:
             for sl, n in list(mm.names.items()):
                 mm.names[sl] = gmap.get(n, n)
-        # per module: module variables and Consts; per procedure: locals, parameters, Statics
         for mm in mods:
-            mmap, counters, seen = {}, {}, set()
-            procs = proc_ranges(mm.lines)
-            head = mm.lines[:procs[0][0]] if procs else mm.lines
-            code = "\n".join(map(code_part, mm.lines))
-            for n in dict.fromkeys(re.findall(r"\b(m[0-9A-F]+|m0E|K[0-9A-F]+)\b", code)):
-                if n.lower() in keep:
-                    continue
-                if n.startswith("K"):
-                    mmap[n] = fresh("CONST", counters, seen)
-                else:
-                    t, arr = kind_of(n, head)
-                    mmap[n] = fresh("m" + ("Arr" if arr else "") + t, counters, seen)
-            rename_all(mmap, [(mm, 0, len(mm.lines))])
-            lmap_all = dict(mmap)
-            for a, b in procs:
-                lmap, counters, seen = {}, {}, set()
-                body = mm.lines[a:b]
-                for n in dict.fromkeys(re.findall(r"\b([vpsf][0-9A-F]+)\b", "\n".join(map(code_part, body)))):
-                    if n.lower() in keep:
-                        continue
-                    t, arr = kind_of(n, body)
-                    base = {"v": "", "p": "arg", "s": "st", "f": "unused"}[n[0]]
-                    if n[0] == "f":
-                        lmap[n] = fresh("unused", counters, seen)
-                    elif n[0] == "v":
-                        lmap[n] = fresh(("arr" + t) if arr else t.lower(), counters, seen)
-                    else:
-                        lmap[n] = fresh(base + ("Arr" if arr else "") + t, counters, seen)
-                rename_all(lmap, [(mm, a, b)])
-                lmap_all.update(lmap)
+            lmap_all = pr.rename_module(mm)
             for sl, n in list(mm.names.items()):
                 mm.names[sl] = lmap_all.get(n, n)
+        self.pretty = pr.pretty
 
     def rename(self, m: Module, slot: int, new: str) -> None:
         old = m.names[slot]
@@ -462,3 +391,106 @@ class NamingMixin:
                 m.names[by_name[w.lower()]] = new
                 by_name[new] = by_name[w.lower()]
         self.col_fixes = []
+
+
+class Prettifier:
+    """prettify's renaming: fresh names per kind, type and scope."""
+
+    def __init__(self, mods: list[Module]):
+        self.mods = mods
+        self.taken = {w.lower() for mm in mods for ln in mm.lines for w in re.findall(r"[A-Za-z_]\w*", code_part(ln))}
+        self.keep = {w.lower() for mm in mods for ln in mm.lines if re.search(r"\bReDim\b.*\bAs\b", ln)
+                     for w in re.findall(r"[A-Za-z_]\w*", code_part(ln))}
+        self.pretty: set[str] = set()
+        self.udts = {mt.group(1).lower() for mm in mods for ln in mm.lines
+                     if (mt := re.match(r"Type\s+(\w+)", ln))}
+
+    def fresh(self, base: str, counters: dict, scope_taken: set) -> str:
+        while True:
+            counters[base] = counters.get(base, 0) + 1
+            c = f"{base}{counters[base]}"
+            if c.lower() not in self.taken and c.lower() not in scope_taken:
+                scope_taken.add(c.lower())
+                self.pretty.add(c.lower())
+                return c
+
+    def kind_of(self, name: str, lines: list[str]) -> tuple[str, bool]:
+        """(type tag, array) from the name's declaration or suffix."""
+        text = "\n".join(code_part(ln) for ln in lines)
+        d = re.search(rf"\b{name}\b(\()?[^,\n=]*?\bAs\s+(?:New\s+)?(\w+)", text)
+        if d:
+            t = d.group(2)
+            rec = re.fullmatch(r"Type\d+|T[0-9A-F]+", t) or t.lower() in self.udts
+            return TYPE_TAG.get(t.lower(), "Rec" if rec else "Obj"), bool(d.group(1))
+        sfx = re.search(rf"\b{name}([%&!#@$])", text)
+        return (SUFFIX_TAG[sfx.group(1)] if sfx else "Var"), bool(re.search(rf"\b{name}\(", text))
+
+    @staticmethod
+    def rename_all(mapping: dict, targets: list[tuple[Module, int, int]]) -> None:
+        if not mapping:
+            return
+        pat = re.compile(r"(?<![\w.])(" + "|".join(map(re.escape, mapping)) + r")\b|(?<=\.)(F[0-9A-F]+)\b")
+        sub = lambda mt: mapping.get(mt.group(0), mt.group(0))
+        for mm, a, b in targets:
+            mm.lines[a:b] = [on_code(ln, lambda t: pat.sub(sub, t)) for ln in mm.lines[a:b]]
+
+    def global_map(self) -> dict[str, str]:
+        """Project-wide: Globals, Global Consts, Types and fields (declared in .bas modules)."""
+        gmap, counters, seen = {}, {}, set()
+        for mm in self.mods:
+            in_type = False
+            for ln in mm.lines:
+                c = code_part(ln)
+                if mt := re.match(r"Type\s+(T[0-9A-F]+)\b", c):
+                    in_type, fcount = True, {}
+                    if mt.group(1).lower() not in self.keep:
+                        gmap[mt.group(1)] = self.fresh("Type", counters, seen)
+                    continue
+                if in_type:
+                    if c.strip().startswith("End Type"):
+                        in_type = False
+                    elif (mt := re.match(r"\s*(F[0-9A-F]+)\b", c)) and mt.group(1).lower() not in self.keep:
+                        gmap[mt.group(1)] = self.fresh("f", fcount, set())
+                    continue
+                if mt := re.match(r"Global\s+(Const\s+)?(.*)", c):
+                    for n in re.findall(r"(?:^|,)\s*([Gg][0-9A-F]+)\b", mt.group(2)):
+                        if n not in gmap and n.lower() not in self.keep:
+                            t, arr = self.kind_of(n, mm.lines)
+                            base = "GCONST" if mt.group(1) else "g" + ("Arr" if arr else "") + t
+                            gmap[n] = self.fresh(base, counters, seen)
+        return gmap
+
+    def rename_module(self, mm: Module) -> dict[str, str]:
+        """Per module: module variables and Consts; per procedure: locals,
+        parameters, Statics. Renames the text; returns old -> new."""
+        mmap, counters, seen = {}, {}, set()
+        procs = proc_ranges(mm.lines)
+        head = mm.lines[:procs[0][0]] if procs else mm.lines
+        code = "\n".join(map(code_part, mm.lines))
+        for n in dict.fromkeys(re.findall(r"\b(m[0-9A-F]+|m0E|K[0-9A-F]+)\b", code)):
+            if n.lower() in self.keep:
+                continue
+            if n.startswith("K"):
+                mmap[n] = self.fresh("CONST", counters, seen)
+            else:
+                t, arr = self.kind_of(n, head)
+                mmap[n] = self.fresh("m" + ("Arr" if arr else "") + t, counters, seen)
+        self.rename_all(mmap, [(mm, 0, len(mm.lines))])
+        lmap_all = dict(mmap)
+        for a, b in procs:
+            lmap, counters, seen = {}, {}, set()
+            body = mm.lines[a:b]
+            for n in dict.fromkeys(re.findall(r"\b([vpsf][0-9A-F]+)\b", "\n".join(map(code_part, body)))):
+                if n.lower() in self.keep:
+                    continue
+                t, arr = self.kind_of(n, body)
+                base = {"v": "", "p": "arg", "s": "st", "f": "unused"}[n[0]]
+                if n[0] == "f":
+                    lmap[n] = self.fresh("unused", counters, seen)
+                elif n[0] == "v":
+                    lmap[n] = self.fresh(("arr" + t) if arr else t.lower(), counters, seen)
+                else:
+                    lmap[n] = self.fresh(base + ("Arr" if arr else "") + t, counters, seen)
+            self.rename_all(lmap, [(mm, a, b)])
+            lmap_all.update(lmap)
+        return lmap_all
