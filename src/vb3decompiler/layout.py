@@ -8,7 +8,7 @@ import re
 import struct
 
 from .dataimage import MOD_SIZE, GlobalImage, const_literal, word
-from .model import OBJ_KINDS, pool_name
+from .model import OBJ_KINDS, Module, pool_name
 from .ne import vbx_entries
 from .records import (
     DECL_DEFTYPE,
@@ -92,7 +92,7 @@ class LayoutMixin:
             and t[r + PROC_KIND] in (1, 2) \
             and self.pool is not None and pool_name(self.image, self.pool, word(t, r + DECLARE_ENTRY)).isprintable()
 
-    def module_list(self) -> list[dict]:
+    def module_list(self) -> list[Module]:
         """Every module (from the data images) with its code segment, if any."""
         if not self.image:
             raise ValueError(f"{self.exe}: no data images (RT_RCDATA 2): not a complete VB3 executable")
@@ -101,52 +101,51 @@ class LayoutMixin:
         self.lists = lay["lists"]
         self.gimg_chunk = lay["global_"]
         self.gimg = GlobalImage(self.image, lay["global_"])
-        mods = [dict(kind="bas", image=c, form=None, seg=None, start=0x06) for c in lay["modules"]]
-        mods += [dict(kind="frm", image=c, form=self.forms[k][0], seg=None, start=0x1A, ctl=cl)
-                 for k, (c, cl) in enumerate(lay["forms"])]
+        mods = [Module("bas", c, start=0x06) for c in lay["modules"]]
+        mods += [Module("frm", c, form=self.forms[k][0], start=0x1A) for k, (c, _) in enumerate(lay["forms"])]
         for m in mods:
-            rec = decl_record(self.image, m["image"])
-            m["explicit"] = bool(word(self.table, rec + DECL_FLAGS) & OPTION_EXPLICIT)
-            m["defint"] = word(self.table, rec + DECL_DEFTYPE) != 0xFFFF  # the samples' only DefType: DefInt A-Z
-        decl_recs = sorted(decl_record(self.image, m["image"]) for m in mods)
+            rec = decl_record(self.image, m.image)
+            m.explicit = bool(word(self.table, rec + DECL_FLAGS) & OPTION_EXPLICIT)
+            m.defint = word(self.table, rec + DECL_DEFTYPE) != 0xFFFF  # the samples' only DefType: DefInt A-Z
+        decl_recs = sorted(decl_record(self.image, m.image) for m in mods)
 
         def owner(r: int) -> int:  # a module's records follow its declarations record
             return max((r0 for r0 in decl_recs if r0 < r), default=-1)
 
         for m in mods:  # Function/Declare slots: record offsets (sorted by name); a slot
-            m["funcs"], s = [], m["start"]  # holding another module's procedure is a call's
-            me = word(self.image, m["image"] - 2) + 4
-            while self.is_record(r := self.value(m["image"], s, False)) and \
+            m.funcs, s = [], m.start  # holding another module's procedure is a call's
+            me = word(self.image, m.image - 2) + 4
+            while self.is_record(r := self.value(m.image, s, False)) and \
                     (r not in self.by_record or owner(r) == me):
-                m["funcs"].append((s, self.value(m["image"], s, False)))
+                m.funcs.append((s, self.value(m.image, s, False)))
                 s += 2
-            m["decl_start"] = s
+            m.decl_start = s
         segs = sorted({p.segment for p in self.procs})
-        free = [m for m in mods if m["kind"] == "bas"]
+        free = [m for m in mods if m.kind == "bas"]
         # a module's procedure records follow its declarations record in the table
-        starts = sorted((decl_record(self.image, m["image"]), k) for k, m in enumerate(mods))
+        starts = sorted((decl_record(self.image, m.image), k) for k, m in enumerate(mods))
         for seg in segs:
             recs = {p.record for p in self.procs if p.segment == seg}
             own = {max((k for r0, k in starts if r0 < r), default=None) for r in recs}
-            if len(own) == 1 and None not in own and mods[k := own.pop()]["seg"] is None:
-                mods[k]["seg"] = seg
+            if len(own) == 1 and None not in own and mods[k := own.pop()].seg is None:
+                mods[k].seg = seg
                 if mods[k] in free:
                     free.remove(mods[k])
                 continue
             rf = self.sym.record_form
             form = self.sym.seg_form.get(seg) or next((rf[r] for r in recs if r in rf), None)
             if form:
-                m = next((m for m in mods if m["form"] == form), None)
+                m = next((m for m in mods if m.form == form), None)
             else:
-                m = next((m for m in free if recs & {r for _, r in m["funcs"]}), None) or \
-                    next((m for m in free if m["seg"] is None and not m["funcs"]), None)
+                m = next((m for m in free if recs & {r for _, r in m.funcs}), None) or \
+                    next((m for m in free if m.seg is None and not m.funcs), None)
             if m is not None:
-                m["seg"] = seg
+                m.seg = seg
                 if m in free:
                     free.remove(m)
         for m in mods:  # forms whose code names no control (`Me.Text1` resolves by the form)
-            if m["seg"] and m["form"]:
-                self.sym.seg_form.setdefault(m["seg"], m["form"])
+            if m.seg and m.form:
+                self.sym.seg_form.setdefault(m.seg, m.form)
         return mods
 
     def global_desc(self, base: int, s: int) -> int:

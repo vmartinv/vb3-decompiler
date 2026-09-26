@@ -1,6 +1,6 @@
 """
 Shared vocabulary of the decompiler: type codes and names, variable and
-procedure records (Var, ProcInfo), and small p-code helpers (handler
+procedure records (Var, ProcInfo), modules (Module), and small p-code helpers (handler
 families, statement columns, label numbers).
 """
 from __future__ import annotations
@@ -93,6 +93,41 @@ class ProcInfo:
     params: list = field(default_factory=list)  # (slot, text)
     ret_slot: int | None = None
     callees: list = field(default_factory=list)  # called records, in text order
+
+
+@dataclass(eq=False)
+class Module:
+    """A form or code module, filled in by the passes in order."""
+    # layout (module_list)
+    kind: str  # "bas" | "frm"
+    image: int  # its data image chunk in RT_RCDATA 2
+    form: str | None = None  # the form's name (forms)
+    seg: int | None = None  # its code segment (None: no code)
+    start: int = 0  # first slot after the image header
+    explicit: bool = False  # Option Explicit
+    defint: bool = False  # a DefType table (the samples' only one: DefInt A-Z)
+    funcs: list = field(default_factory=list)  # (slot, record) of the procedures it holds slots for
+    decl_start: int = 0  # first declarations slot (after funcs)
+    # analyze
+    infos: list = field(default_factory=list)  # ProcInfo per procedure, layout order
+    vars: dict = field(default_factory=dict)  # slot -> Var
+    refs: dict = field(default_factory=dict)  # record slot -> (first procedure, count)
+    udt: dict = field(default_factory=dict)  # slot -> Type (global offset)
+    first_owned: int = 0  # first slot owned by procedures (declarations end before it)
+    call_slots: dict = field(default_factory=dict)  # slot -> first procedure (calls into other modules)
+    # declarations
+    items: list = field(default_factory=list)  # (kind, slot, text, ...) declarations
+    types: list = field(default_factory=list)  # Types declared here
+    static_arrays: list = field(default_factory=list)  # (slot, decl, procedure) Static arrays
+    decl_offs: list = field(default_factory=list)  # Declare records' +24 (DECLARE_PARAMS)
+    # naming
+    names: dict = field(default_factory=dict)  # slot -> name
+    # emit (and its caches)
+    lines: list = field(default_factory=list)  # source text
+    nv_pick: int = 0  # which unused-Variant split to take on the re-emit
+    nv_delta: int = 0  # items too many (+) or too few (-) on the first emit
+    tail_owner: int | None = None  # procedure owning the trailing zero slots (tail_owner())
+    ends: list | None = None  # each procedure's slot end (proc_end())
 
 
 def var_access(name: str) -> tuple[str, str, bool] | None:

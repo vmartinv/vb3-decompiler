@@ -18,6 +18,7 @@ from .model import (
     STMT_SAME_LINE,
     SUFFIX,
     TYPE_NAME,
+    Module,
     ProcInfo,
     label_number,
     mod_name,
@@ -31,14 +32,14 @@ from .symbols import CLASS_BY_KIND
 
 
 class EmitMixin:
-    def emit_module(self, m: dict) -> list[str]:
-        self.cur_base = m["image"]
+    def emit_module(self, m: Module) -> list[str]:
+        self.cur_base = m.image
         out = []
-        types = {td.g: td for td in m.get("types", [])}
+        types = {td.g: td for td in m.types}
         pending = sorted(types)
         gtypes = self.gimg.types
         decl_lines = self.declare_lines(m)
-        for it in m["items"]:
+        for it in m.items:
             if it[0] == "global":
                 while pending and pending[0] < it[3]:
                     out += types[pending.pop(0)].lines(gtypes)
@@ -51,47 +52,47 @@ class EmitMixin:
                 continue
             elif it[0] == "newobj":
                 _, r, form, g, arr = it
-                glob = m["kind"] == "bas" and 6 <= g < self.globals_end
-                out.append(f"{'Global' if glob else 'Dim'} {m['names'][r]}{'()' if arr else ''} As New {form}")
+                glob = m.kind == "bas" and 6 <= g < self.globals_end
+                out.append(f"{'Global' if glob else 'Dim'} {m.names[r]}{'()' if arr else ''} As New {form}")
             elif it[0] == "const":
-                out.append(f"Const {m['names'].get(it[1], f'K{it[1]:X}')} = {it[2]}")
+                out.append(f"Const {m.names.get(it[1], f'K{it[1]:X}')} = {it[2]}")
             else:
-                out.append(f"Dim {m['names'].get(it[1], mod_name(it[1]))}{it[2] if it[2][0] in '( ' else ' ' + it[2]}")
+                out.append(f"Dim {m.names.get(it[1], mod_name(it[1]))}{it[2] if it[2][0] in '( ' else ' ' + it[2]}")
         for g in pending:
             out += types[g].lines(gtypes)
         # declarations record +46: where the module's Types start in the table that
         # Declare records' +24 also index (Types first: they come before the Declares)
         ends = [j for j, x in enumerate(out) if x == "End Type"]
-        if ends and decl_lines and word(self.table, decl_record(self.image, m["image"]) + DECL_TYPES_START) \
-                < min(m.get("decl_offs", [0])):
+        if ends and decl_lines and word(self.table, decl_record(self.image, m.image) + DECL_TYPES_START) \
+                < min(m.decl_offs or [0]):
             out = out[:ends[-1] + 1] + decl_lines + out[ends[-1] + 1:]
         else:
             out = decl_lines + out
         # declarations record (the word before the module's image + 4): +18 flags
         # (1 Option Base 1, 0x40 Option Explicit, 0x800 Option Compare; +20: 1 Text, 0 Binary)
-        rec = decl_record(self.image, m["image"])
+        rec = decl_record(self.image, m.image)
         flags = word(self.table, rec + DECL_FLAGS)
         head = ["Option Explicit"] if flags & OPTION_EXPLICIT else []
-        if m["defint"]:
+        if m.defint:
             head.append("DefInt A-Z")
         if flags & 0x0001:
             head.append("Option Base 1")
         if flags & 0x0800:
             head.append("Option Compare Text" if word(self.table, rec + DECL_COMPARE) else "Option Compare Binary")
         out = head + out
-        if out and m["infos"]:
+        if out and m.infos:
             out.append("")
         self.cur_mod = m
         for k, info in enumerate(self.text_order(m)):
-            out += ([""] if k else []) + self.emit_proc(info, m["form"], m["vars"], m["names"], m["image"])
+            out += ([""] if k else []) + self.emit_proc(info, m.form, m.vars, m.names, m.image)
         return out
 
-    def text_order(self, m: dict) -> list:
+    def text_order(self, m: Module) -> list:
         """Procedures in an order that allocates their records as the original
         text did: a record is allocated at the first mention of its name (a
         definition or a call), so the module's records must be mentioned in
         ascending order. Depth-first search, lowest record first."""
-        infos = m["infos"]
+        infos = m.infos
         own = sorted({i.proc.record for i in infos})
         mine = set(own)
         mentions = [[x for x in [i.proc.record] + i.callees if x in mine] for i in infos]
@@ -132,7 +133,7 @@ class EmitMixin:
                 decl = ["Index As Integer"] + decl
             # names by BP offset: ByRef parameters, 4 bytes each, the last one at +6
             bp_name = {6 + 4 * (len(decl) - 1 - j): d.split()[0] for j, d in enumerate(decl)}
-            k = self.cur_mod["infos"].index(info)
+            k = self.cur_mod.infos.index(info)
             for s, v in vars_.items():
                 if v.procs and v.procs[0] == k and v.scope in ("LOC", "REF") and self.value(base, s) in bp_name:
                     names[s] = bp_name[self.value(base, s)]

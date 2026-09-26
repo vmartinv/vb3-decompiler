@@ -6,6 +6,7 @@ import re
 
 import pytest
 
+from vb3decompiler.model import Module
 from vb3decompiler.naming import NamingMixin, sort_name
 
 IDENT = re.compile(r"[A-Za-z][A-Za-z0-9_]*")
@@ -68,14 +69,14 @@ def test_prettify():
         "    ReDim v24(3) As Integer",
         "End Sub",
     ]
-    mod = dict(kind="frm", lines=list(lines), names={0x1A: "m1A", 0x1C: "m1C", 0x20: "v20", 0x22: "v22", 0x24: "v24"})
+    mod = Module("frm", 0, lines=list(lines), names={0x1A: "m1A", 0x1C: "m1C", 0x20: "v20", 0x22: "v22", 0x24: "v24"})
     n = _Names()
     n.prettify([mod])
-    out = mod["lines"]
+    out = mod.lines
     assert out[0] == "Dim mInt1 As Integer" and out[1] == "Dim mStr1 As String"
     assert out[4] == "    Dim int1 As Integer, str1 As String"
     assert out[5] == "    int1 = 1: str1 = \"v20 m1A\"  ' v22 in a comment"  # strings and comments untouched
     assert out[6] == "    mInt1 = int1"
     assert out[7] == "    ReDim v24(3) As Integer"  # the `As` column is compiled: kept
-    assert mod["names"][0x20] == "int1" and mod["names"][0x24] == "v24"
+    assert mod.names[0x20] == "int1" and mod.names[0x24] == "v24"
     assert n.generated("int1") and n.generated("v24")

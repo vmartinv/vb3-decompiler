@@ -8,7 +8,7 @@ from __future__ import annotations
 import re
 
 from .dataimage import MOD_SIZE, word
-from .model import LABEL, LABEL_WIDE, TYPE_NAME, ProcInfo, Var
+from .model import LABEL, LABEL_WIDE, TYPE_NAME, Module, ProcInfo, Var
 from .records import PROC_FLAGS, PROC_FRAME, PROC_NUMBERED, PROC_STATIC
 
 
@@ -49,7 +49,7 @@ class LocalsMixin:
         control/global reference or an undeclared variable gets its slot at
         its first appearance. Returns statement index -> lines before it."""
         m = self.cur_mod
-        k = m["infos"].index(info)
+        k = m.infos.index(info)
         skip = set(info.params) | ({info.ret_slot} if info.ret_slot is not None else set())
         items = []  # (slot, kind, name, decl)
         frame = sorted((s for s, v in vars_.items() if v.procs and v.procs[0] == k and v.scope in ("LOC", "REF")
@@ -59,14 +59,14 @@ class LocalsMixin:
         size, prev = {}, -22
         for s, o in offs:
             size[s], prev = prev - o, o
-        objtypes = self.sym.objvar_types.get(m["seg"], {}) if m["seg"] else {}
+        objtypes = self.sym.objvar_types.get(m.seg, {}) if m.seg else {}
         for s in frame:
             v = vars_[s]
             if objtypes.get(s) or v.obj:
                 t = objtypes.get(s) or v.obj
                 decl = ("()" if v.array else "") + (f" As New {t}" if t in self.sym.tables else f" As {t}")
             elif v.udt:
-                td = self.gimg.types.get(m["udt"].get(s)) or next(
+                td = self.gimg.types.get(m.udt.get(s)) or next(
                     (t for t in self.gimg.types.values() if 0 <= size.get(s, 0) - t.size <= 2), None)
                 decl = f"As {td.name}" if td else "As Variant"
             else:
@@ -75,12 +75,12 @@ class LocalsMixin:
                 decl = ("()" if v.array else "") + f" As {TYPE_NAME[t]}"
             # a leading line label: the procedure's first line (a Dim before it would
             # take a statement marker), so Variants are left undeclared
-            implicit = decl == " As Variant" and not m.get("defint") and info.insns \
+            implicit = decl == " As Variant" and not m.defint and info.insns \
                 and info.insns[0].op in (LABEL, LABEL_WIDE)
             items.append((s, "fixed" if implicit else "dim", names[s], decl, v))
-        sarr = {a[0] for a in m.get("static_arrays", [])}
+        sarr = {a[0] for a in m.static_arrays}
         for s, v in vars_.items():
-            if v.scope == "MOD" and v.procs and v.procs[0] == k and s >= m["first_owned"] and s not in sarr \
+            if v.scope == "MOD" and v.procs and v.procs[0] == k and s >= m.first_owned and s not in sarr \
                     and (v.procs == [k] or not names[s].startswith(("s", "K"))):
                 lit = None if v.stored or v.array else self.inline_const(base, s, v.type(), 16)
                 if not names[s].startswith(("K", "s")):
@@ -90,17 +90,17 @@ class LocalsMixin:
                 else:
                     dims = f"({self.array_dims(base, s)[0]})" if v.array else ""
                     items.append((s, "static", names[s], dims + f" As {TYPE_NAME[v.type()]}", v))
-            elif v.scope == "GLB" and v.procs and v.procs[0] == k and s >= m["first_owned"]:
+            elif v.scope == "GLB" and v.procs and v.procs[0] == k and s >= m.first_owned:
                 items.append((s, "fixed", names[s], None, v))
         first = self.text_order(m)[0] is info
-        for s, decl, kk in m.get("static_arrays", []):
+        for s, decl, kk in m.static_arrays:
             if kk == k or (kk is None and first):
                 names.setdefault(s, f"s{s:X}")
                 items.append((s, "static", names[s], decl, Var(s, "MOD", array=True)))
-        for s, (kk, n) in m["refs"].items():
+        for s, (kk, n) in m.refs.items():
             if kk == k:
                 items.append((s, "fixed", n, None, None))
-        for s, kk in m.get("call_slots", {}).items():  # external functions: slot at the call
+        for s, kk in m.call_slots.items():  # external functions: slot at the call
             if kk == k and (n := self.proc_name.get(self.value(base, s) & 0xFFF8)):
                 items.append((s, "fixed", n, None, None))
         items.sort(key=lambda it: (it[0], it[1]))
@@ -111,7 +111,7 @@ class LocalsMixin:
             if it[1] == "dim" and it[3].endswith("As Variant"):
                 known.add(it[0] + 2)  # a local Variant takes 4 bytes of slots
         for x, v in vars_.items():  # constants' copies / statics: inline, sized by type
-            if v.scope == "MOD" and v.procs and v.procs[0] == k and x >= m["first_owned"]:
+            if v.scope == "MOD" and v.procs and v.procs[0] == k and x >= m.first_owned:
                 n = self.array_dims(base, x)[1] if v.array else MOD_SIZE.get(v.copy_type or v.type(), 2)
                 known.update(range(x, x + n, 2))
         for x, v in vars_.items():  # a local array takes 6 bytes of slots
@@ -124,7 +124,7 @@ class LocalsMixin:
                 known.add(x + 2)
         mine = sorted(known)
         if mine:
-            later = [x for kk2, other in enumerate(m["infos"]) if kk2 > k
+            later = [x for kk2, other in enumerate(m.infos) if kk2 > k
                      for x in [min((ss for ss, vv in vars_.items() if vv.procs and vv.procs[0] == kk2), default=None)]
                      if x is not None]
             hi = min([x for x in later if x > mine[-1]] + [mine[-1] + 2])
@@ -136,12 +136,12 @@ class LocalsMixin:
             frame_known = sorted(x for x in known if x in vars_ and vars_[x].scope in ("LOC", "REF")
                                  and (self.value(base, x) < 0 or self.value(base, x) % 2 == 1)) or [1 << 30]
             owned_k = [x for x, v in vars_.items() if v.procs and v.procs[0] == k] + \
-                      [r - 2 for r, (kk2, _) in m["refs"].items() if kk2 == k] + \
-                      [x for x, kk2 in m.get("call_slots", {}).items() if kk2 == k]
+                      [r - 2 for r, (kk2, _) in m.refs.items() if kk2 == k] + \
+                      [x for x, kk2 in m.call_slots.items() if kk2 == k]
             hi = min(hi, max(owned_k + [0]))  # up to the procedure's last slot
-            records = [r for r, (kk2, _) in m["refs"].items()] + \
+            records = [r for r, (kk2, _) in m.refs.items()] + \
                       [x2 for x2, v2 in vars_.items() if v2.obj or v2.glob is not None]
-            calls_here = set(m.get("call_slots", {}))  # external function slots: `0, record`
+            calls_here = set(m.call_slots)  # external function slots: `0, record`
             if frame_known == [1 << 30] and owned_k:
                 # no used locals: unused ones are the zeros between the previous
                 # procedure's slots and this one's first (String fillers: no frame)
@@ -174,7 +174,7 @@ class LocalsMixin:
             fs1 = {"I": 2, "L": 4, "S": 4, "D": 8, "C": 8, "V": 16}.get(v1.type() if v1 and v1.votes else "V", 2)
             # Strings and Variants share one numbering (1, 3, ...): a first local numbered
             # above 1 means numbered locals were declared before it
-            evidence = prev_end == m["first_owned"] or (first_bp < 0 and -22 - first_bp - fs1 >= 16) or \
+            evidence = prev_end == m.first_owned or (first_bp < 0 and -22 - first_bp - fs1 >= 16) or \
                 (first_bp > 1 and first_bp % 2 == 1)
             if evidence and prev_end < x and all(self.value(base, z) == 0 and z not in known
                                                  for z in range(prev_end, x, 2)):
@@ -262,10 +262,10 @@ class LocalsMixin:
         # locals of a procedure that owns no slots (String fillers: no frame); they go
         # in the procedure right before it
         def own(kk: int) -> list:
-            return [x for x, v in vars_.items() if v.procs and v.procs[0] == kk and x >= m["first_owned"]] + \
-                   [r - 2 for r, (k2, _) in m["refs"].items() if k2 == kk] + \
-                   [x for x, k2 in m.get("call_slots", {}).items() if k2 == kk]
-        nxt_info = m["infos"][k + 1] if k + 1 < len(m["infos"]) else None
+            return [x for x, v in vars_.items() if v.procs and v.procs[0] == kk and x >= m.first_owned] + \
+                   [r - 2 for r, (k2, _) in m.refs.items() if k2 == kk] + \
+                   [x for x, k2 in m.call_slots.items() if k2 == kk]
+        nxt_info = m.infos[k + 1] if k + 1 < len(m.infos) else None
         # only when the next procedure starts with its first parameter: zeros before
         # it can't be its own locals (they follow its parameters)
         first_ok = nxt_info is not None and own(k + 1) and nxt_info.argwords and \
@@ -276,7 +276,7 @@ class LocalsMixin:
                 for z in range(end, start, 2):
                     items.append((z, "static", f"f{z:X}", " As Integer", Var(z, "MOD")))
         if k == self.tail_owner(m):  # zeros after every procedure's slots: unused locals too
-            end, n = self.prev_end(m, len(m["infos"])), word(self.image, base)
+            end, n = self.prev_end(m, len(m.infos)), word(self.image, base)
             end = max([end] + [it[0] + 2 for it in items])  # (not the ones declared already)
             if end < n - 1 and all(self.value(base, z) == 0 for z in range(end, n - 1, 2)):
                 known_k = [x for x, v in vars_.items() if v.procs and v.procs[0] == k and v.scope in ("LOC", "REF")]
@@ -326,12 +326,12 @@ class LocalsMixin:
             # past the first use (same statement as a preceding control
             # reference), the variable was declared implicitly there
             pos = 0 if last == (-1, 0) else (last[0] if last[1] < 0 else last[0] + 1)
-            implicit_type = "Integer" if m["defint"] else "Variant"
+            implicit_type = "Integer" if m.defint else "Variant"
             # in a Static Sub/Function every local is static: those may be implicit too
             dimlike = kind == "dim" or (
                 kind == "static" and self.table[info.proc.record + PROC_FLAGS] & PROC_STATIC and v is not None)
             if key is not None and key[0] < pos and dimlike and not v.array and not v.udt \
-                    and key[:2] > last and not m["explicit"] and (decl.strip() == f"As {implicit_type}" or key[2]):
+                    and key[:2] > last and not m.explicit and (decl.strip() == f"As {implicit_type}" or key[2]):
                 last = key[:2]
                 continue
             if key is not None and key[0] < pos:
@@ -342,36 +342,36 @@ class LocalsMixin:
             last = (pos, -1)
         return dims
 
-    def item_count(self, m: dict) -> int:
+    def item_count(self, m: Module) -> int:
         """Slot-holding items of the emitted module (variables, control/form
         references, external function slots, parameters used or not,
         fillers): the declarations record +12 is the image end + 2 each."""
         unused_p = 0
-        for info in m["infos"]:
+        for info in m.infos:
             ev = self.events.get(info.proc.record)
             if ev:
                 ctl, _, e = ev.rpartition("_")
-                cls = self.sym.form_class.get(m["form"], "Form") if ctl in ("Form", "MDIForm") else \
-                    self.sym.classes.get((m["form"], ctl), "")
+                cls = self.sym.form_class.get(m.form, "Form") if ctl in ("Form", "MDIForm") else \
+                    self.sym.classes.get((m.form, ctl), "")
                 types = self.rt.event_types.get((cls, e), self.rt.master_event_types.get(e, ()))
                 n = len(types) + (info.argwords > 2 * len(types))
             else:
                 n = info.argwords // 2
-            unused_p += max(0, n - len([x for x in info.params if x in m["vars"]]))
-        fill = sum(len(re.findall(r"\b[fs][0-9A-F]+(?:\(.*?\))? As", ln)) for ln in m["lines"])
-        mi = sum(1 for it in m["items"] if len(it) == 4 and it[3] == "filler")
-        return len(m["vars"]) + len(m["refs"]) + len(m.get("call_slots", {})) + unused_p + fill + mi
+            unused_p += max(0, n - len([x for x in info.params if x in m.vars]))
+        fill = sum(len(re.findall(r"\b[fs][0-9A-F]+(?:\(.*?\))? As", ln)) for ln in m.lines)
+        mi = sum(1 for it in m.items if len(it) == 4 and it[3] == "filler")
+        return len(m.vars) + len(m.refs) + len(m.call_slots) + unused_p + fill + mi
 
-    def tail_owner(self, m: dict) -> int:
+    def tail_owner(self, m: Module) -> int:
         """The procedure owning the zeros after every procedure's slots: the
         one whose record (+0 frame, +10 numbered count) says it has locals
         its known ones don't account for; else the last one."""
-        if "tail_owner" in m:
-            return m["tail_owner"]
+        if m.tail_owner is not None:
+            return m.tail_owner
         size = {"I": 2, "L": 4, "S": 4, "D": 8, "C": 8, "V": 16, "T": 0}
-        base, vars_ = m["image"], m["vars"]
-        owner = len(m["infos"]) - 1
-        for k, info in enumerate(m["infos"]):
+        base, vars_ = m.image, m.vars
+        owner = len(m.infos) - 1
+        for k, info in enumerate(m.infos):
             own = [q for q, v in vars_.items() if v.procs and v.procs[0] == k and v.scope in ("LOC", "REF")]
             frame = sum(size.get(info.ret if q == info.ret_slot else (vars_[q].type() if vars_[q].votes else "V"), 2)
                         for q in own if self.value(base, q) < 0)
@@ -380,10 +380,10 @@ class LocalsMixin:
                     or word(self.table, info.proc.record + PROC_NUMBERED) > num:
                 if not any(self.value(base, q) == 0 for q in own):  # (its own gaps don't explain it)
                     owner = k
-        m["tail_owner"] = owner
+        m.tail_owner = owner
         return owner
 
-    def solve_runs(self, m: dict, k: int, info: ProcInfo, base: int, known, x: int, hi: int,
+    def solve_runs(self, m: Module, k: int, info: ProcInfo, base: int, known, x: int, hi: int,
                    records: list, calls_here: set) -> dict:
         """Types for every run of unused locals (zero slots) of a procedure,
         solved together: each run's slot count is known, its frame bytes
@@ -391,7 +391,7 @@ class LocalsMixin:
         numbered local) only sometimes; the record gives the totals (+0: 22 +
         frame, +10: numbered). Run start -> types; also fills
         self.run_solution for the zeros after the last procedure."""
-        vars_ = m["vars"]
+        vars_ = m.vars
         self.run_solution = getattr(self, "run_solution", {})
         size = {"I": 2, "L": 4, "S": 4, "D": 8, "C": 8, "V": 16, "T": 0}
         # runs: [start, slots, frame group, numbering group]; a group is the runs before
@@ -420,7 +420,7 @@ class LocalsMixin:
             runs.append([z, (y - z) // 2, nk, ns_])
             z = y
         if k == self.tail_owner(m):  # the zeros after every procedure's slots
-            end, n = self.prev_end(m, len(m["infos"])), word(self.image, base)
+            end, n = self.prev_end(m, len(m.infos)), word(self.image, base)
             if end < n - 1 and all(self.value(base, q) == 0 for q in range(end, n - 1, 2)):
                 runs.append([end, len(range(end, n - 1, 2)), None, None])
         if not runs:
@@ -483,7 +483,7 @@ class LocalsMixin:
             return {}
         # the declarations record's item count fixes the Variants: each takes 2 slots as 1 item
         base_nv = sum(o[0] for o in sols[0])
-        want = base_nv + m.get("nv_delta", 0)
+        want = base_nv + m.nv_delta
         sol = next((x2 for x2 in sols if sum(o[0] for o in x2) == want), sols[0])
         out = {}
         for r, (nv, ns, nn, f) in zip(runs, sol):
@@ -520,7 +520,7 @@ class LocalsMixin:
         opts = [nv for nv in range(min(numbered, slots // 2, frame // 16), -1, -1) if ok(nv)]
         if not opts:
             return None
-        nv = opts[min(self.cur_mod.get("nv_pick", 0), len(opts) - 1)]
+        nv = opts[min(self.cur_mod.nv_pick, len(opts) - 1)]
         ns, nn, f = numbered - nv, slots - 2 * nv - (numbered - nv), frame - 16 * nv
         out = ["Variant"] * nv + ["String"] * ns
         for r in range(nn, 0, -1):
@@ -529,47 +529,47 @@ class LocalsMixin:
             f -= z
         return out
 
-    def param_slot_bytes(self, m: dict, info: ProcInfo) -> int:
+    def param_slot_bytes(self, m: Module, info: ProcInfo) -> int:
         """Slot bytes of a procedure's parameters and return value: 2 each,
         4 for object (Control/Form) and Variant ones."""
         n = 2 if info.function else 0
         ev = self.events.get(info.proc.record)
         if ev:
             ctl, _, e = ev.rpartition("_")
-            cls = self.sym.form_class.get(m["form"], "Form") if ctl in ("Form", "MDIForm") else \
-                self.sym.classes.get((m["form"], ctl), "")
+            cls = self.sym.form_class.get(m.form, "Form") if ctl in ("Form", "MDIForm") else \
+                self.sym.classes.get((m.form, ctl), "")
             types = self.rt.event_types.get((cls, e), self.rt.master_event_types.get(e, ()))
             n += sum(4 if t == 8 else 2 for t in types)
             if info.argwords > 2 * len(types):
                 n += 2  # Index
             return n
         count = info.argwords // 2
-        known = [m["vars"][x] for x in info.params if x in m["vars"]]
+        known = [m.vars[x] for x in info.params if x in m.vars]
         return n + 2 * count + sum(2 for v in known if v.obj or (v.votes and v.type() == "V"))
 
-    def prev_end(self, m: dict, k: int) -> int:
+    def prev_end(self, m: Module, k: int) -> int:
         """End of the slots allocated by the procedures before k (text order),
         each one's range starting with its parameters (2 slot bytes per ByRef
         parameter, used or not) and its return value."""
-        if "ends" not in m:
-            base, vars_, ends, end = m["image"], m["vars"], [], m["first_owned"]
-            for kk, info in enumerate(m["infos"]):
+        if m.ends is None:
+            base, vars_, ends, end = m.image, m.vars, [], m.first_owned
+            for kk, info in enumerate(m.infos):
                 e = end + self.param_slot_bytes(m, info)
                 for x, v in vars_.items():
-                    if v.procs and v.procs[0] == kk and x >= m["first_owned"]:
+                    if v.procs and v.procs[0] == kk and x >= m.first_owned:
                         if v.scope == "MOD":
                             n = self.array_dims(base, x)[1] if v.array else MOD_SIZE.get(v.copy_type or v.type(), 2)
                         else:
                             n = 4 if (v.votes and v.type() == "V") or (
                                 x + 2 not in vars_ and self.value(base, x + 2, False) % 2 == 1) else 2
                         e = max(e, x + n)
-                for r, (k2, _) in m["refs"].items():
+                for r, (k2, _) in m.refs.items():
                     if k2 == kk:
                         e = max(e, r + (2 if word(self.image, base + r) >> 8 == 0x80 else 4))
-                for x, k2 in m.get("call_slots", {}).items():
+                for x, k2 in m.call_slots.items():
                     if k2 == kk:
                         e = max(e, x + 2)
                 ends.append(e)
                 end = e
-            m["ends"] = ends
-        return m["ends"][k - 1] if k > 0 else m["first_owned"]
+            m.ends = ends
+        return m.ends[k - 1] if k > 0 else m.first_owned

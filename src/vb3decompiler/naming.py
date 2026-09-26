@@ -9,7 +9,7 @@ import re
 import struct
 
 from .dataimage import word
-from .model import Var, mod_name
+from .model import Module, Var, mod_name
 from .opcodes import NAMES
 from .records import PROC_POOL_NAME
 from .runtime import decode
@@ -111,18 +111,18 @@ def sort_name(lo: str, hi: str | None, kind: str, taken: set[str]) -> str:
 
 
 class NamingMixin:
-    def name_module(self, m: dict) -> None:
-        vars_, refs, infos = m["vars"], m["refs"], m["infos"]
+    def name_module(self, m: Module) -> None:
+        vars_, refs, infos = m.vars, m.refs, m.infos
         names: dict[int, str] = {}
-        for it in m["items"]:
+        for it in m.items:
             if it[0] in ("dim", "const"):
                 names[it[1]] = f"K{it[1]:X}" if it[0] == "const" else mod_name(it[1])
             elif it[0] == "newobj":
-                names[it[1]] = f"G{it[3]:X}" if m["kind"] == "bas" else mod_name(it[1])
+                names[it[1]] = f"G{it[3]:X}" if m.kind == "bas" else mod_name(it[1])
                 self.global_name[it[3]] = names[it[1]]
         gconst = {}  # (type, literal) -> Global Const names (each copy slot needs its own)
         for mm in self.all_mods:
-            for it in mm["items"]:
+            for it in mm.items:
                 if it[0] == "global" and it[2]:
                     gconst.setdefault((it[4], it[2]), []).append(it[5])
         used_g: set = set()
@@ -133,9 +133,9 @@ class NamingMixin:
                 names[s] = self.global_name[v.glob]
                 continue
             lit, gname = None, None
-            if v.scope == "MOD" and s >= m["first_owned"] and not v.stored and not v.array:
+            if v.scope == "MOD" and s >= m.first_owned and not v.stored and not v.array:
                 for t in ([v.type()] if v.votes else []) + ["L", "I"]:  # untyped: shared Long/String handler
-                    lit = self.inline_const(m["image"], s, t, 16, zero=True)
+                    lit = self.inline_const(m.image, s, t, 16, zero=True)
                     free = [g for g in gconst.get((t, lit), []) if g not in used_g] if lit else []
                     if free:
                         gname = free[0]
@@ -143,7 +143,7 @@ class NamingMixin:
                         v.copy_type = t
                         break
                 if not gname:
-                    lit = self.inline_const(m["image"], s, v.type(), 16)
+                    lit = self.inline_const(m.image, s, v.type(), 16)
             if gname:
                 # a Global Const used here: a slot with a copy of its value, at first use
                 names[s] = gname
@@ -152,7 +152,7 @@ class NamingMixin:
             elif lit:
                 names[s] = f"K{s:X}"  # Const inside a procedure
             elif v.scope == "GLB":
-                names[s] = self.global_name.get(self.value(m["image"], s, False), f"g{s:X}")
+                names[s] = self.global_name.get(self.value(m.image, s, False), f"g{s:X}")
             elif s not in names:
                 pre = "s" if v.scope == "MOD" else "p" if v.scope == "REF" else "v"
                 names[s] = f"{pre}{s:X}"
@@ -167,7 +167,7 @@ class NamingMixin:
                 info.name = "Main"
                 self.proc_name[info.proc.record] = "Main"
         self.fit_names(m)
-        base = m["image"]
+        base = m.image
         owned_all = {s for s, v in vars_.items() if v.scope in ("LOC", "REF")} | {r - 2 for r in refs} | set(refs)
         for k, info in enumerate(infos):
             top = 6 + 2 * info.argwords  # parameters lie in [6, top)
@@ -179,7 +179,7 @@ class NamingMixin:
             if ps or info.argwords:
                 lo = min(ps) if ps else (min(mine) if mine else None)
                 if lo is not None:
-                    while lo - 2 >= m["first_owned"] and lo - 2 not in owned_all and is_param(lo - 2):
+                    while lo - 2 >= m.first_owned and lo - 2 not in owned_all and is_param(lo - 2):
                         lo -= 2
                     hi = max(ps) if ps else lo - 2
                     s2 = hi + 2
@@ -199,23 +199,23 @@ class NamingMixin:
             info.params = ps
         for info in infos:
             self.proc_name[info.proc.record] = info.name
-        for _, r in m["funcs"]:
+        for _, r in m.funcs:
             if r not in self.by_record:
                 self.proc_name[r] = self.declare_name(r)
         for p in self.procs:  # calls to Declare Subs (operand: the record)
-            for i in decode(self.rt, self.segs[p.segment - 1].data, p)[0] if p.segment == m["seg"] else []:
+            for i in decode(self.rt, self.segs[p.segment - 1].data, p)[0] if p.segment == m.seg else []:
                 if NAMES.get(i.op) == "CALL" and len(i.operand) >= 4:
                     r = struct.unpack_from("<H", i.operand, 2)[0] & 0xFFF8
                     if r not in self.by_record and self.is_declare(r):
                         self.proc_name[r] = self.declare_name(r)
-        m["names"] = names
+        m.names = names
 
-    def fit_names(self, m: dict) -> None:
+    def fit_names(self, m: Module) -> None:
         """Names for general procedures (not stored) that keep both orders
         the compiler derives from names: code layout (procedures sorted by
         name, case-insensitive) and Function/Declare slots (sorted too):
         see sort_name."""
-        infos = m["infos"]
+        infos = m.infos
         bounds = lambda k: self.name_bounds(m, k)
 
         taken = {n.lower() for n in self.proc_name.values()} | {x.name.lower() for x in infos if x.name}
@@ -240,11 +240,11 @@ class NamingMixin:
             if info.name and info.proc.record not in self.events:
                 self.pool_names.setdefault(word(self.table, info.proc.record + PROC_POOL_NAME), info.name)
 
-    def name_bounds(self, m: dict, k: int) -> tuple[str, str | None]:
+    def name_bounds(self, m: Module, k: int) -> tuple[str, str | None]:
         """(lo, hi): the names procedure k of module m must sort between (code
         layout and Function/Declare slots are both sorted by name)."""
-        infos = m["infos"]
-        slot_order = [r for _, r in m["funcs"]]
+        infos = m.infos
+        slot_order = [r for _, r in m.funcs]
         fixed = {r: self.declare_name(r) for r in slot_order if r not in self.by_record}
         los = [x.name for x in infos[:k] if x.name]
         his = [x.name for x in infos[k + 1:] if x.name]
@@ -255,28 +255,28 @@ class NamingMixin:
             his += [fixed[x] for x in slot_order[j + 1:] if x in fixed]
         return max(los, key=str.lower, default=""), min(his, key=str.lower, default=None)
 
-    def fit_frees(self, m: dict) -> None:
+    def fit_frees(self, m: Module) -> None:
         """Pad local names so that each procedure frees its object/Type locals
         in the original order. The epilogue walks the IDE's local symbol
         table: 8 buckets in order, each in declaration order; the bucket is
         (name-table offset >> 1) & 7, and offsets follow from the lengths
         and first-appearance order of all earlier names (nametable.py)."""
         from .nametable import FIRST, identifiers
-        base, vars_, names = m["image"], m["vars"], m["names"]
+        base, vars_, names = m.image, m.vars, m.names
         from .nametable import BUILTINS, KEYWORDS
         taken = KEYWORDS | BUILTINS | self.project_names()
         for info in self.text_order(m):
             frees = [struct.unpack_from("<h", i.operand)[0] for i in info.insns if NAMES.get(i.op) == "OBJ_FREE"]
             if len(frees) < 2:
                 continue
-            k = m["infos"].index(info)
+            k = m.infos.index(info)
             local = {s for s, v in vars_.items() if v.procs and v.procs[0] == k and v.scope == "LOC"
                      and s not in info.params and s != info.ret_slot and s in names and self.generated(names[s])}
             bp = {self.value(base, s): names[s].lower() for s in local}
             if not all(f in bp for f in frees):
                 continue
             target = [bp[f] for f in frees]
-            ids = list(identifiers("\r\n".join(m["lines"])).items())
+            ids = list(identifiers("\r\n".join(m.lines)).items())
             pos = {low: j for j, (low, _) in enumerate(ids)}
             if not all(t in pos for t in target):
                 continue
@@ -325,17 +325,17 @@ class NamingMixin:
         """A name the decompiler made up (free to resize)."""
         return bool(re.fullmatch(r"[vmgfsKGL][0-9A-Fa-f]+", name)) or name.lower() in getattr(self, "pretty", ())
 
-    def prettify(self, mods: list[dict]) -> None:
+    def prettify(self, mods: list[Module]) -> None:
         """Readable names for the slot-numbered ones the passes use (`v1C`,
         `m2A`, `G6`, `T10`, ...): kind + type + a counter, e.g. `int1`,
         `mStr2`, `gVar1`, `Type1`. Names on a `ReDim ... As` line keep their
         length (the `As` column is compiled), so those stay."""
-        words = {w.lower() for mm in mods for ln in mm["lines"] for w in re.findall(r"[A-Za-z_]\w*", code_part(ln))}
+        words = {w.lower() for mm in mods for ln in mm.lines for w in re.findall(r"[A-Za-z_]\w*", code_part(ln))}
         taken = set(words)
-        keep = {w.lower() for mm in mods for ln in mm["lines"] if re.search(r"\bReDim\b.*\bAs\b", ln)
+        keep = {w.lower() for mm in mods for ln in mm.lines if re.search(r"\bReDim\b.*\bAs\b", ln)
                 for w in re.findall(r"[A-Za-z_]\w*", code_part(ln))}
         self.pretty = set()
-        udts = {mt.group(1).lower() for mm in mods for ln in mm["lines"] if (mt := re.match(r"Type\s+(\w+)", ln))}
+        udts = {mt.group(1).lower() for mm in mods for ln in mm.lines if (mt := re.match(r"Type\s+(\w+)", ln))}
 
         def fresh(base: str, counters: dict, scope_taken: set) -> str:
             while True:
@@ -363,13 +363,13 @@ class NamingMixin:
             pat = re.compile(r"(?<![\w.])(" + "|".join(map(re.escape, mapping)) + r")\b|(?<=\.)(F[0-9A-F]+)\b")
             sub = lambda mt: mapping.get(mt.group(0), mt.group(0))
             for mm, a, b in targets:
-                mm["lines"][a:b] = [on_code(ln, lambda t: pat.sub(sub, t)) for ln in mm["lines"][a:b]]
+                mm.lines[a:b] = [on_code(ln, lambda t: pat.sub(sub, t)) for ln in mm.lines[a:b]]
 
         # project-wide: Globals, Global Consts, Types and fields (declared in .bas modules)
         gmap, counters, seen = {}, {}, set()
         for mm in mods:
             in_type = False
-            for ln in mm["lines"]:
+            for ln in mm.lines:
                 c = code_part(ln)
                 if mt := re.match(r"Type\s+(T[0-9A-F]+)\b", c):
                     in_type, fcount = True, {}
@@ -385,21 +385,21 @@ class NamingMixin:
                 if mt := re.match(r"Global\s+(Const\s+)?(.*)", c):
                     for n in re.findall(r"(?:^|,)\s*([Gg][0-9A-F]+)\b", mt.group(2)):
                         if n not in gmap and n.lower() not in keep:
-                            t, arr = kind_of(n, mm["lines"])
+                            t, arr = kind_of(n, mm.lines)
                             base = "GCONST" if mt.group(1) else "g" + ("Arr" if arr else "") + t
                             gmap[n] = fresh(base, counters, seen)
-        rename_all(gmap, [(mm, 0, len(mm["lines"])) for mm in mods])
+        rename_all(gmap, [(mm, 0, len(mm.lines)) for mm in mods])
         for g, n in list(self.global_name.items()):
             self.global_name[g] = gmap.get(n, n)
         for mm in mods:
-            for sl, n in list(mm["names"].items()):
-                mm["names"][sl] = gmap.get(n, n)
+            for sl, n in list(mm.names.items()):
+                mm.names[sl] = gmap.get(n, n)
         # per module: module variables and Consts; per procedure: locals, parameters, Statics
         for mm in mods:
             mmap, counters, seen = {}, {}, set()
-            procs = proc_ranges(mm["lines"])
-            head = mm["lines"][:procs[0][0]] if procs else mm["lines"]
-            code = "\n".join(map(code_part, mm["lines"]))
+            procs = proc_ranges(mm.lines)
+            head = mm.lines[:procs[0][0]] if procs else mm.lines
+            code = "\n".join(map(code_part, mm.lines))
             for n in dict.fromkeys(re.findall(r"\b(m[0-9A-F]+|m0E|K[0-9A-F]+)\b", code)):
                 if n.lower() in keep:
                     continue
@@ -408,11 +408,11 @@ class NamingMixin:
                 else:
                     t, arr = kind_of(n, head)
                     mmap[n] = fresh("m" + ("Arr" if arr else "") + t, counters, seen)
-            rename_all(mmap, [(mm, 0, len(mm["lines"]))])
+            rename_all(mmap, [(mm, 0, len(mm.lines))])
             lmap_all = dict(mmap)
             for a, b in procs:
                 lmap, counters, seen = {}, {}, set()
-                body = mm["lines"][a:b]
+                body = mm.lines[a:b]
                 for n in dict.fromkeys(re.findall(r"\b([vpsf][0-9A-F]+)\b", "\n".join(map(code_part, body)))):
                     if n.lower() in keep:
                         continue
@@ -426,19 +426,19 @@ class NamingMixin:
                         lmap[n] = fresh(base + ("Arr" if arr else "") + t, counters, seen)
                 rename_all(lmap, [(mm, a, b)])
                 lmap_all.update(lmap)
-            for sl, n in list(mm["names"].items()):
-                mm["names"][sl] = lmap_all.get(n, n)
+            for sl, n in list(mm.names.items()):
+                mm.names[sl] = lmap_all.get(n, n)
 
-    def rename(self, m: dict, slot: int, new: str) -> None:
-        old = m["names"][slot]
-        m["names"][slot] = new
+    def rename(self, m: Module, slot: int, new: str) -> None:
+        old = m.names[slot]
+        m.names[slot] = new
         pat = re.compile(rf"(?<![\w.]){re.escape(old)}\b", re.I)
-        m["lines"] = [pat.sub(new, ln) for ln in m["lines"]]
+        m.lines = [pat.sub(new, ln) for ln in m.lines]
 
-    def fit_columns(self, m: dict) -> None:
+    def fit_columns(self, m: Module) -> None:
         """Rename arrays whose `ReDim ... As` lands in the wrong column to a
         name of the length that puts it right."""
-        by_name = {n.lower(): x for x, n in m["names"].items()}
+        by_name = {n.lower(): x for x, n in m.names.items()}
         for target, extra in self.col_fixes:
             # the variables in `a(i, j)`, the array first; each keeps at least 1 character
             words = list(dict.fromkeys(w for w in re.findall(r"[A-Za-z]\w*", target) if w.lower() in by_name))
@@ -451,7 +451,7 @@ class NamingMixin:
                     break
             if extra:
                 continue
-            taken = {n.lower() for mm in self.all_mods for n in mm.get("names", {}).values()} | \
+            taken = {n.lower() for mm in self.all_mods for n in mm.names.values()} | \
                 {n.lower() for n in self.proc_name.values() if n}
             for w, size in sizes.items():
                 if size == len(w):
@@ -459,6 +459,6 @@ class NamingMixin:
                 new = next(n for c in "abcdefghijklmnopqrstuvwxyz" for k in range(10 ** (size - 1))
                            if (n := c + (str(k).zfill(size - 1) if size > 1 else "")) not in taken)
                 taken.add(new)
-                m["names"][by_name[w.lower()]] = new
+                m.names[by_name[w.lower()]] = new
                 by_name[new] = by_name[w.lower()]
         self.col_fixes = []

@@ -13,6 +13,7 @@ from .model import (
     RET_TYPE,
     SUFFIX,
     TYPE_OF_SUFFIX,
+    Module,
     ProcInfo,
     Var,
     lt_hint,
@@ -26,8 +27,8 @@ from .symbols import CLASS_BY_KIND, is_objarr
 
 
 class AnalyzeMixin:
-    def analyze_module(self, m: dict) -> None:
-        seg, base = m["seg"], m["image"]
+    def analyze_module(self, m: Module) -> None:
+        seg, base = m.seg, m.image
         procs = [p for p in self.procs if p.segment == seg] if seg else []  # layout order
         infos = []
         for p in procs:
@@ -77,7 +78,7 @@ class AnalyzeMixin:
                     last_udt = None
                 if n == "ARRAY_REF" and i.operand:  # a whole array (LBound, Erase, argument `a()`)
                     slot = struct.unpack_from("<H", i.operand, len(i.operand) - 2)[0]
-                    if slot not in vars_ and (self.is_global_slot(base, slot) or slot in {x for x, _ in m["funcs"]}):
+                    if slot not in vars_ and (self.is_global_slot(base, slot) or slot in {x for x, _ in m.funcs}):
                         continue  # a global array (through this module's slot) or a function slot
                     bp = self.value(base, slot)  # a descriptor (module/Static) or a BP offset
                     where = "LOC" if -0x1000 < bp < 0 else "REF" if 0 < bp < 0x100 else "MOD"
@@ -161,7 +162,7 @@ class AnalyzeMixin:
         owned = {s for s, v in vars_.items() if v.scope in ("LOC", "REF")}
         # other slots procedures allocate at first use: calls to functions of other
         # modules, object variables, and (in forms) references to globals
-        func_slots = {x for x, _ in m["funcs"]}
+        func_slots = {x for x, _ in m.funcs}
         call_slots: dict[int, int] = {}  # slot -> first procedure (calls into other modules)
         for k, info in enumerate(infos):
             for i in info.insns:
@@ -171,19 +172,19 @@ class AnalyzeMixin:
                     if x not in func_slots:
                         owned.add(x)
                         call_slots.setdefault(x, k)
-                elif m["kind"] == "frm" and i.operand and (
+                elif m.kind == "frm" and i.operand and (
                         n in ("OBJVAR", "FORM", "CONTROL", "CTLARRAY", "CTLARRAY_GET", "CTLARRAY_SET")
                         or ((not n or n.endswith(".X")) and is_objarr(self.rt, i))):
                     # records start at the operand; a form declares no global objects
                     owned.add(struct.unpack_from("<H", i.operand, len(i.operand) - 2)[0] - 2)
-        if m["kind"] == "frm":
+        if m.kind == "frm":
             owned |= {s for s, v in vars_.items() if v.scope == "GLB"}
         # control/property operands point at their record, 2 bytes past a variable's slot
         owned |= {s - 2 for s, v in vars_.items() if getattr(v, "fixed", False) and v.scope != "MOD"
-                  and not (v.scope == "GLB" and m["kind"] == "bas")}  # a .bas's Global String * n: declared
+                  and not (v.scope == "GLB" and m.kind == "bas")}  # a .bas's Global String * n: declared
         owned |= {s - 2 for s, v in vars_.items() if v.obj and v.scope == "LOC"}  # local object: `kind, BP` record
         first_owned = min(owned | {r - 2 for r in refs} | {s for s, v in vars_.items() if v.scope == "GLB"
-                                               and s >= m["decl_start"] and not self.is_global_slot(base, s)},
+                                               and s >= m.decl_start and not self.is_global_slot(base, s)},
                           default=word(self.image, base) - 1 if not infos else 1 << 16)
         # unused leading parameters also hold 0: the first procedure's parameters
         # start before its first used one (ByRef: 4 argument bytes, 2 slot bytes each)
@@ -202,7 +203,7 @@ class AnalyzeMixin:
         first_owned = min(first_owned, word(self.image, base) - 1)  # nothing owned: the image's end
         # procedures (record order) before the first one owning a used slot: their
         # parameters, used or not, have slots (unused ByRef 2 bytes, Control 4: kind, 0)
-        m.update(vars=vars_, infos=infos)
+        m.vars, m.infos = vars_, infos
         pb = 0
         for k in sorted(range(len(infos)), key=lambda k: infos[k].proc.record):
             if any(v.procs and v.procs[0] == k for v in vars_.values()) or any(kk == k for kk, _ in refs.values()) \
@@ -210,41 +211,41 @@ class AnalyzeMixin:
                 break
             pb += self.param_slot_bytes(m, infos[k])
         top = first_owned + (first_owned & 1)  # (odd: the image's end - 1)
-        if pb and top - pb >= m["decl_start"] and all(
+        if pb and top - pb >= m.decl_start and all(
                 self.value(base, z, False) in (0, 1, 4) for z in range(top - pb, top, 2)):
             first_owned = top - pb
-        m.update(infos=infos, vars=vars_, refs=refs, udt=udt, first_owned=first_owned, call_slots=call_slots)
+        m.refs, m.udt, m.first_owned, m.call_slots = refs, udt, first_owned, call_slots
 
-    def collect_calls(self, mods: list[dict]) -> None:
+    def collect_calls(self, mods: list[Module]) -> None:
         """Argument types per called record (for Declare parameters)."""
         self.call_types: dict[int, list] = {}
         self.call_modules: dict[int, set] = {}
         self.call_texts: dict[int, list] = {}
         self.suffixed: set[int] = set()  # Functions whose name is written with its type suffix somewhere
         for m in mods:
-            self.cur_base = m["image"]
-            for info in m["infos"]:
+            self.cur_base = m.image
+            for info in m.infos:
                 for i in info.insns:
                     n, sfx = plain_handler(self.rt, i.op)
                     if sfx and n == "CALL_FN":
                         at = struct.unpack_from("<H", i.operand, 2)[0]
-                        self.suffixed.add(self.value(m["image"], at, False) & 0xFFF8)
+                        self.suffixed.add(self.value(m.image, at, False) & 0xFFF8)
                     elif sfx and info.function and (n or "").startswith("STORE") and \
                             struct.unpack_from("<H", i.operand, len(i.operand) - 2)[0] == info.ret_slot:
                         self.suffixed.add(info.proc.record)
                 calls, info.callees = [], []
                 self.col_fixes = []
-                self.statements(info, m["names"], calls)
+                self.statements(info, m.names, calls)
                 self.fit_columns(m)
-                by_name = {n.lower(): x for x, n in m["names"].items()}
+                by_name = {n.lower(): x for x, n in m.names.items()}
                 for name, operand, types, texts in calls:
                     for j, (t, tx) in enumerate(zip(types, texts)):
-                        v = m["vars"].get(by_name.get(tx.lower(), -1))
+                        v = m.vars.get(by_name.get(tx.lower(), -1))
                         if t == "&" and v is not None and v.votes:  # ByRef argument: the variable's type
                             types[j] = "&" + v.type()
                     (rec,) = struct.unpack_from("<H", operand, 2)
                     if name == "CALL_FN":
-                        rec = self.value(m["image"], rec, False)
+                        rec = self.value(m.image, rec, False)
                     if name != "CALL_FN":  # a Sub call statement allocates the record; a
                         info.callees.append(rec & 0xFFF8)  # function call in an expression doesn't
                     self.call_types.setdefault(rec & 0xFFF8, []).append(types)

@@ -16,6 +16,7 @@ from .emit import EmitMixin
 from .forms import form_text, forms
 from .layout import LayoutMixin
 from .localvars import LocalsMixin
+from .model import Module
 from .naming import NamingMixin
 from .ne import PROC_TABLE_SEGMENT, find_procs, form_names, parse_ne, rcdata, vbx_entries
 from .records import DECL_ITEMS_END, decl_record
@@ -24,8 +25,8 @@ from .symbols import Symbols, proc_names
 
 
 class Decompiler(LayoutMixin, AnalyzeMixin, DeclarationsMixin, NamingMixin, LocalsMixin, EmitMixin):
-    """One executable's decompilation. Modules are dicts (`module_list`)
-    that the passes fill in: vars/infos (analyze), items (declarations),
+    """One executable's decompilation. The modules (model.Module, from
+    `module_list`) are filled in by the passes: vars/infos (analyze), items (declarations),
     names (naming), lines (emit)."""
 
     def __init__(self, exe: Path, runtime: Path, vbx_dirs: list[Path]):
@@ -53,8 +54,8 @@ class Decompiler(LayoutMixin, AnalyzeMixin, DeclarationsMixin, NamingMixin, Loca
         self.pool: int | None = None
         self.call_types: dict[int, list] = {}
 
-    def run(self) -> list[dict]:
-        """Modules with their source lines (m['lines']). Passes, in order:
+    def run(self) -> list[Module]:
+        """Modules with their source lines (m.lines). Passes, in order:
         analyze each module's p-code; recover the module-level declarations;
         name variables and procedures; record calls (argument types for
         parameters); emit the text, re-emitted once when the unused locals'
@@ -68,18 +69,18 @@ class Decompiler(LayoutMixin, AnalyzeMixin, DeclarationsMixin, NamingMixin, Loca
             self.analyze_module(m)
         self.declarations(mods)
         self.all_mods = mods
-        self.decl_home = next((m for m in mods if m["kind"] == "bas"), mods[0])
+        self.decl_home = next((m for m in mods if m.kind == "bas"), mods[0])
         for m in mods:
             self.name_module(m)
         self.collect_calls(mods)
-        self.slotted = {r for m in mods for _, r in m["funcs"]}
+        self.slotted = {r for m in mods for _, r in m.funcs}
         for m in mods:
-            m["lines"] = self.emit_module(m)
-            items_end = word(self.table, decl_record(self.image, m["image"]) + DECL_ITEMS_END)
-            want = (items_end - word(self.image, m["image"])) // 2
+            m.lines = self.emit_module(m)
+            items_end = word(self.table, decl_record(self.image, m.image) + DECL_ITEMS_END)
+            want = (items_end - word(self.image, m.image)) // 2
             if d := self.item_count(m) - want:  # unused Variants (2 slots, 1 item) vs other locals
-                m["nv_pick"], m["nv_delta"] = max(0, -d), d
-                m["lines"] = self.emit_module(m)
+                m.nv_pick, m.nv_delta = max(0, -d), d
+                m.lines = self.emit_module(m)
         self.prettify(mods)
         for m in mods:  # (object locals' free order depends on name lengths)
             self.fit_frees(m)
@@ -91,8 +92,8 @@ def write_project(d: Decompiler, out: Path, layout_from: Path | None, name: str)
     """Writes the module files and a .mak named after the executable; returns the .mak."""
     out.mkdir(parents=True, exist_ok=True)
     mods = d.run()
-    code = {m["form"]: m["lines"] for m in mods if m["form"]}
-    modules = [m["lines"] for m in mods if not m["form"]]
+    code = {m.form: m.lines for m in mods if m.form}
+    modules = [m.lines for m in mods if not m.form]
     originals = {f.name.upper(): f for f in layout_from.iterdir()} if layout_from else {}
     files = []
     decoded = [] if layout_from else forms(d.exe, d.rt)
