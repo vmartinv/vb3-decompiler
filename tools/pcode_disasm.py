@@ -37,7 +37,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 # the tools import these through this module (`import pcode_disasm as P`)
 from vb3decompiler.ne import PROC_TABLE_SEGMENT, Proc, find_procs, form_names, parse_ne, rcdata  # noqa: E402,F401
 from vb3decompiler.opcodes import NAMES  # noqa: E402,F401
-from vb3decompiler.runtime import EVENT_TYPES, MASTER_EVENT_TYPES, Runtime, decode, fmt  # noqa: E402,F401
+from vb3decompiler.runtime import Runtime, decode, fmt  # noqa: E402,F401
 from vb3decompiler.symbols import Symbols, proc_names  # noqa: E402,F401
 
 

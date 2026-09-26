@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from .ne import form_names, rcdata
-from .runtime import PROP_STD, PROP_TYPES, Runtime
+from .runtime import Runtime
 
 # Record class byte -> standard class.
 CLASS_IDS = {
@@ -43,7 +43,7 @@ class FormDecoder:
         self.plists = rt.property_lists()
 
     def props(self, cls: str, b: bytes, pos: int, form: bool, prior: list = ()) -> tuple[list, int]:
-        names, types = self.plists.get(cls, []), PROP_TYPES.get(cls, [])
+        names, types = self.plists.get(cls, []), self.rt.prop_types.get(cls, [])
         out: list = []
         while b[pos] != 0xFF:
             pid = b[pos]
@@ -53,7 +53,7 @@ class FormDecoder:
             t = types[pid] if pid < len(types) else None
             if t is not None and t & 0x80:  # flag bit over the data type (e.g. Label.Alignment 0x86)
                 t &= 0x7F
-            std = PROP_STD.get(cls, [])
+            std = self.rt.prop_std.get(cls, [])
             if name == "Left" and (names[pid + 1:pid + 4] == ["Top", "Width", "Height"]
                                    or pid < len(std) and std[pid] and cls != "Timer"):
                 size = 4 if form else 2  # Left, Top, Width, Height as one record

@@ -47,7 +47,7 @@ def block(cls: str, props: str = "") -> str:
 
 
 def handler(ev: str, cls: str) -> str:
-    types = P.EVENT_TYPES.get((cls, ev), P.MASTER_EVENT_TYPES.get(ev, ()))
+    types = rt.event_types.get((cls, ev), rt.master_event_types.get(ev, ()))
     names = EVENT_PARAMS.get(ev, "").split() or [f"P{j + 1}" for j in range(len(types))]
     params = ", ".join(f"{n} As {EVENT_TYPE.get(t, 'Integer')}" for n, t in zip(names, types))
     return f"Sub C1_{ev} ({params})\n    Debug.Print 1\nEnd Sub\n\n"

@@ -59,11 +59,12 @@ def _cstr(d: bytes, o: int) -> str | None:
     return t.decode("latin-1") if 0 < len(t) < 40 and t.isascii() and t[:1].isalpha() else None
 
 
-def parse_models(ds: bytes, mprops: list, mevents: list, min_ptr: int) -> dict[str, tuple[list, list]]:
+def parse_models(rt: Runtime, ds: bytes, mprops: list, mevents: list, min_ptr: int) -> dict[str, tuple[list, list]]:
     """Control class MODELs in a data segment (VBRUN300's or a VBX's):
     ... default name, class name, parent class, property list, event list.
     List entries: 0xFFxx = standard property/event ~w (master tables),
-    else a PROPINFO/EVENTINFO pointer whose first word is the name; 0 ends."""
+    else a PROPINFO/EVENTINFO pointer whose first word is the name; 0 ends.
+    Fills rt's event/property type tables."""
     w, name = (lambda o: _word(ds, o)), (lambda o: _cstr(ds, o))
 
     def entries(lst: int, master: list) -> list:
@@ -88,33 +89,33 @@ def parse_models(ds: bytes, mprops: list, mevents: list, min_ptr: int) -> dict[s
             # a VB1 model (usVersion 1.00): VB adds the mouse events after its own
             for e in ("MouseDown", "MouseMove", "MouseUp"):
                 evs.append(e)
-                if e in MASTER_EVENT_TYPES:
-                    EVENT_TYPES.setdefault((cls, e), MASTER_EVENT_TYPES[e])
+                if e in rt.master_event_types:
+                    rt.event_types.setdefault((cls, e), rt.master_event_types[e])
         q = el
         while el and w(q) and (q - el) // 2 < len(evs):  # EVENTINFO: name, cParms, cwParms, npParmTypes
             v, k = w(q), (q - el) // 2
             if v >= 0xFF80:
-                types = MASTER_EVENT_TYPES.get(mevents[0xFFFF - v] if 0xFFFF - v < len(mevents) else None)
+                types = rt.master_event_types.get(mevents[0xFFFF - v] if 0xFFFF - v < len(mevents) else None)
             else:
                 types = tuple(w(w(v + 6) + 2 * j) for j in range(min(w(v + 2), 16)))
             if types is not None and evs[k]:
-                EVENT_TYPES.setdefault((cls, evs[k]), types)
+                rt.event_types.setdefault((cls, evs[k]), types)
             q += 2
         # A misaligned read of another MODEL can yield this class name with no
         # events (e.g. DirListBox's parent "ListBox"); prefer one with events.
         if cls not in found or (not found[cls][1] and evs):
             found[cls] = (props, evs)
-            MODEL_FLAGS[cls] = int.from_bytes(ds[r - 24:r - 20], "little")  # MODEL.fl
-            MODEL_VERSION[cls] = int.from_bytes(ds[r - 26:r - 24], "little")  # MODEL.usVersion
+            rt.model_flags[cls] = int.from_bytes(ds[r - 24:r - 20], "little")  # MODEL.fl
+            rt.model_version[cls] = int.from_bytes(ds[r - 26:r - 24], "little")  # MODEL.usVersion
             q, types, std = pl, [], []
             while w(q) and len(types) < len(props):  # PROPINFO: name, fl (low byte = DT_ data type)
                 v = w(q)
-                types.append((MASTER_PROP_TYPES[0xFFFF - v] if 0xFFFF - v < len(MASTER_PROP_TYPES) else 0)
+                types.append((rt.master_prop_types[0xFFFF - v] if 0xFFFF - v < len(rt.master_prop_types) else 0)
                              if v >= 0xFF80 else ds[v + 2] if v + 2 < len(ds) else 0)
                 std.append(v >= 0xFF80)
                 q += 2
-            PROP_TYPES[cls] = types
-            PROP_STD[cls] = std
+            rt.prop_types[cls] = types
+            rt.prop_std[cls] = std
     return found
 
 
@@ -136,6 +137,14 @@ class Runtime:
         self.solved: dict[int, set] = {}  # op -> lengths found by constraint
         self.vbx_dirs: list[Path] = []  # where to find VBX files (custom controls)
         self._vbx_loaded: set[str] = set()
+        # control class MODELs (parse_models) and the master tables (_masters)
+        self.event_types: dict[tuple[str, str], tuple[int, ...]] = {}  # (class, event) -> parameter types
+        self.prop_types: dict[str, list[int]] = {}  # class -> PROPINFO data type per property-list entry
+        self.prop_std: dict[str, list[bool]] = {}  # class -> property-list entry is a standard (master) property
+        self.model_flags: dict[str, int] = {}  # class -> MODEL.fl
+        self.model_version: dict[str, int] = {}  # class -> MODEL.usVersion
+        self.master_prop_types: list[int] = []  # standard property -> data type
+        self.master_event_types: dict[str, tuple[int, ...]] = {}  # standard event -> parameter types
 
     def plausible(self, op: int) -> bool:
         """Could `op` be a handler address? (Handlers start at 0x60 or above,
@@ -305,7 +314,7 @@ class Runtime:
                     k = m
                     while w(k) > 0x400 or (w(k) and name(w(w(k))) is None and k < m + 200):
                         props.append(name(w(w(k))))
-                        MASTER_PROP_TYPES.append(self.data[w(k) + 2] if w(k) + 2 < len(self.data) else 0)
+                        self.master_prop_types.append(self.data[w(k) + 2] if w(k) + 2 < len(self.data) else 0)
                         k += 2
                 if not events and name(w(w(m))) == "Click" and name(w(w(m + 2))) == "DblClick" \
                         and name(w(w(m + 4))) == "DragDrop":
@@ -313,14 +322,15 @@ class Runtime:
                     while name(w(w(k))):
                         events.append(name(w(w(k))))
                         v = w(k)  # EVENTINFO: name, cParms, cwParms, npParmTypes
-                        MASTER_EVENT_TYPES[events[-1]] = tuple(w(w(v + 6) + 2 * j) for j in range(min(w(v + 2), 16)))
+                        self.master_event_types[events[-1]] = tuple(w(w(v + 6) + 2 * j)
+                                                                     for j in range(min(w(v + 2), 16)))
                         k += 2
             self._mst = (props, events)
         return self._mst
 
     def _models(self) -> dict[str, tuple[list, list]]:
         if not hasattr(self, "_mdl"):
-            self._mdl = parse_models(self.data, *self._masters(), min_ptr=0x1000)
+            self._mdl = parse_models(self, self.data, *self._masters(), min_ptr=0x1000)
         return self._mdl
 
     def load_vbx(self, path: Path) -> list[str]:
@@ -330,7 +340,7 @@ class Runtime:
         (ne,) = struct.unpack_from("<H", raw, 0x3C)
         (auto,) = struct.unpack_from("<H", raw, ne + 0x0E)
         segs = parse_ne(path)
-        found = parse_models(segs[auto - 1].data, *self._masters(), min_ptr=2)
+        found = parse_models(self, segs[auto - 1].data, *self._masters(), min_ptr=2)
         for cls, v in found.items():
             self._models().setdefault(cls, v)
         return list(found)
@@ -360,29 +370,6 @@ class Runtime:
         self.operand_len(op)
         return op not in _MANUAL and any(
             isinstance(x, tuple) and x[0] == "jump" for x in self._explore(op))
-
-
-KINDS: dict[str, int] = {}  # control name -> slot kind byte (last resolved)
-CLASSES: dict[tuple[str, str], str] = {}  # (form, control) -> class, as resolved
-SEG_FORM: dict[int, str] = {}  # code segment -> its form, as resolved
-RECORD_FORM: dict[int, str] = {}  # procedure record -> form (from event tables)
-OBJVAR_TYPES: dict[int, dict[int, str]] = {}  # code segment -> {slot: declared class}
-SEG_IMAGE: dict[int, int] = {}  # code segment -> offset of its data image chunk in RT_RCDATA 2
-EVENT_TYPES: dict[tuple[str, str], tuple[int, ...]] = {}
-PROP_TYPES: dict[str, list[int]] = {}  # class -> PROPINFO data type per property-list entry
-MASTER_PROP_TYPES: list[int] = []
-MODEL_FLAGS: dict[str, int] = {}
-MODEL_VERSION: dict[str, int] = {}
-PROP_STD: dict[str, list[bool]] = {}  # class -> property-list entry is a standard (master) property
-MASTER_EVENT_TYPES: dict[str, tuple[int, ...]] = {}  # standard event -> parameter types
-MEPROPS: dict[int, dict[int, int]] = {}  # code segment -> {PGET_ME slot: property index}
-FORM_CLASS: dict[str, str] = {}  # form -> Form | MDIForm (from its own event table)
-
-
-def reset_state() -> None:
-    """Forget what was resolved for the previous executable."""
-    for d in (KINDS, CLASSES, SEG_FORM, RECORD_FORM, OBJVAR_TYPES, SEG_IMAGE, MEPROPS, FORM_CLASS):
-        d.clear()
 
 
 @dataclass

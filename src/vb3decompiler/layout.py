@@ -21,7 +21,6 @@ from .records import (
     RECORD_SIZE,
     decl_record,
 )
-from .runtime import RECORD_FORM, SEG_IMAGE
 from .symbols import CLASS_BY_KIND
 
 
@@ -125,17 +124,17 @@ class LayoutMixin:
         segs = sorted({p.segment for p in self.procs})
         free = [m for m in mods if m["kind"] == "bas"]
         # a module's procedure records follow its declarations record in the table
-        starts = sorted((word(self.image, m["image"] - 2) + 4, k) for k, m in enumerate(mods))
+        starts = sorted((decl_record(self.image, m["image"]), k) for k, m in enumerate(mods))
         for seg in segs:
             recs = {p.record for p in self.procs if p.segment == seg}
             own = {max((k for r0, k in starts if r0 < r), default=None) for r in recs}
             if len(own) == 1 and None not in own and mods[k := own.pop()]["seg"] is None:
                 mods[k]["seg"] = seg
-                SEG_IMAGE[seg] = mods[k]["image"]
                 if mods[k] in free:
                     free.remove(mods[k])
                 continue
-            form = self.sym.seg_form.get(seg) or next((RECORD_FORM[r] for r in recs if r in RECORD_FORM), None)
+            rf = self.sym.record_form
+            form = self.sym.seg_form.get(seg) or next((rf[r] for r in recs if r in rf), None)
             if form:
                 m = next((m for m in mods if m["form"] == form), None)
             else:
@@ -143,7 +142,6 @@ class LayoutMixin:
                     next((m for m in free if m["seg"] is None and not m["funcs"]), None)
             if m is not None:
                 m["seg"] = seg
-                SEG_IMAGE[seg] = m["image"]
                 if m in free:
                     free.remove(m)
         for m in mods:  # forms whose code names no control (`Me.Text1` resolves by the form)

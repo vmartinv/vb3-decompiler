@@ -10,7 +10,6 @@ import re
 from .dataimage import MOD_SIZE, word
 from .model import LABEL, LABEL_WIDE, TYPE_NAME, ProcInfo, Var
 from .records import PROC_FLAGS, PROC_FRAME, PROC_NUMBERED, PROC_STATIC
-from .runtime import EVENT_TYPES, MASTER_EVENT_TYPES
 
 
 class LocalsMixin:
@@ -354,7 +353,7 @@ class LocalsMixin:
                 ctl, _, e = ev.rpartition("_")
                 cls = self.sym.form_class.get(m["form"], "Form") if ctl in ("Form", "MDIForm") else \
                     self.sym.classes.get((m["form"], ctl), "")
-                types = EVENT_TYPES.get((cls, e), MASTER_EVENT_TYPES.get(e, ()))
+                types = self.rt.event_types.get((cls, e), self.rt.master_event_types.get(e, ()))
                 n = len(types) + (info.argwords > 2 * len(types))
             else:
                 n = info.argwords // 2
@@ -539,7 +538,7 @@ class LocalsMixin:
             ctl, _, e = ev.rpartition("_")
             cls = self.sym.form_class.get(m["form"], "Form") if ctl in ("Form", "MDIForm") else \
                 self.sym.classes.get((m["form"], ctl), "")
-            types = EVENT_TYPES.get((cls, e), MASTER_EVENT_TYPES.get(e, ()))
+            types = self.rt.event_types.get((cls, e), self.rt.master_event_types.get(e, ()))
             n += sum(4 if t == 8 else 2 for t in types)
             if info.argwords > 2 * len(types):
                 n += 2  # Index

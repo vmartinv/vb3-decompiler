@@ -27,7 +27,6 @@ from .model import (
 from .ne import vbx_entries
 from .opcodes import NAMES
 from .records import DECL_COMPARE, DECL_FLAGS, DECL_TYPES_START, OPTION_EXPLICIT, PROC_FLAGS, PROC_STATIC, decl_record
-from .runtime import EVENT_TYPES, MASTER_EVENT_TYPES
 from .symbols import CLASS_BY_KIND
 
 
@@ -126,7 +125,7 @@ class EmitMixin:
             ctl, _, ev = info.name.rpartition("_")
             cls = self.sym.form_class.get(form, "Form") if ctl in ("Form", "MDIForm") else \
                 self.sym.classes.get((form, ctl), "")
-            types = EVENT_TYPES.get((cls, ev), MASTER_EVENT_TYPES.get(ev, ()))
+            types = self.rt.event_types.get((cls, ev), self.rt.master_event_types.get(ev, ()))
             pnames = EVENT_PARAMS.get(ev, "").split() or [f"P{j + 1}" for j in range(len(types))]
             decl = [f"{pn} As {EVENT_TYPE.get(t, 'Integer')}" for pn, t in zip(pnames, types)]
             if info.argwords > 2 * len(types):  # control array element

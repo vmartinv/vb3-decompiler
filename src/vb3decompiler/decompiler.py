@@ -35,8 +35,8 @@ class Decompiler(LayoutMixin, AnalyzeMixin, DeclarationsMixin, NamingMixin, Loca
         self.segs = parse_ne(exe)
         self.res = rcdata(exe)
         self.sym = Symbols(rt, self.segs, self.res)
-        self.events = proc_names(self.segs, rt, self.res)
-        rt.event_lists()  # fills EVENT_TYPES
+        self.events = proc_names(self.segs, rt, self.res, self.sym.record_form, self.sym.form_class)
+        rt.event_lists()  # fills rt.event_types
         self.ids = {op: rt.opcode_id(op) or 0 for op in range(len(rt.code))}
         self.col_fixes: list[tuple[str, int]] = []  # (ReDim target, characters too many before a compiled column)
         self.table = self.segs[PROC_TABLE_SEGMENT - 1].data

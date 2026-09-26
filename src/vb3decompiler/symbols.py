@@ -11,18 +11,9 @@ import struct
 from .ne import Segment, find_procs, form_names, vbx_entries
 from .opcodes import NAMES
 from .runtime import (
-    CLASSES,
-    FORM_CLASS,
-    KINDS,
-    MEPROPS,
-    OBJVAR_TYPES,
-    RECORD_FORM,
-    SEG_FORM,
-    SEG_IMAGE,
     Insn,
     Runtime,
     decode,
-    reset_state,
 )
 
 # Class byte in a form blob's control record (confirmed values only).
@@ -115,7 +106,7 @@ def objvar_kind(kind: str, w0: int, w1: int, w2: int) -> int | None:
     return None
 
 
-def resolve_symbols(segs: list[Segment], rt: Runtime, res: dict[int, bytes]) -> dict[int, dict[int, str]]:
+def resolve_symbols(segs: list[Segment], rt: Runtime, res: dict[int, bytes], st: Symbols) -> dict[int, dict[int, str]]:
     """code segment -> {slot: name} for control and form references.
 
     RT_RCDATA 2 holds each module's initial data image as a chunk
@@ -125,7 +116,9 @@ def resolve_symbols(segs: list[Segment], rt: Runtime, res: dict[int, bytes]) -> 
     `u16 0x8000|NN, u16 global offset`, NN = base + the form's project
     index, base = the smallest NN in the global per-form run
     (`NN 80 00 00 00 00` x forms). Each segment's image is the first chunk
-    (after the previous segment's) where every referenced slot is valid."""
+    (after the previous segment's) where every referenced slot is valid.
+    Fills st's resolved tables (classes, objvar types, Me properties,
+    segment and record forms, form classes)."""
     forms = form_names(res)
     d = res.get(2, b"")
     form_base, global_at = None, None
@@ -188,27 +181,26 @@ def resolve_symbols(segs: list[Segment], rt: Runtime, res: dict[int, bytes]) -> 
                         or idx >= len(forms[fi]) or not forms[fi][idx]:
                     return None
                 out[slot] = forms[fi][idx]
-                KINDS[forms[fi][idx]] = w0 & 0xFF
-                CLASSES[(forms[fi][0], forms[fi][idx])] = CLASS_BY_KIND.get(w0 & 0xFF, "?")
+                st.resolved_classes[(forms[fi][0], forms[fi][idx])] = CLASS_BY_KIND.get(w0 & 0xFF, "?")
             else:
                 if w0 >> 8 != 0x80:
                     continue  # object variable (Dim x As Control/Form), not a form
                 k = (w0 & 0xFF) - form_base if form_base is not None else -1
                 out[slot] = forms[k][0] if 0 <= k < len(forms) \
                     else BUILTIN_OBJECTS.get(w0 & 0xFF, f"obj#{w0 & 0xFF:#x}")
-        OBJVAR_TYPES[seg] = types  # last evaluated candidate; the chosen one is re-evaluated
-        MEPROPS[seg] = mep
+        st.objvar_types[seg] = types  # last evaluated candidate; the chosen one is re-evaluated
+        st.meprops[seg] = mep
         return {**out, **{-k - 1: t for k, t in types.items()}} if out or types or mep else None
 
     # Segments are modules (no controls) then forms with code, in project
     # order; forms without code have no segment, so each segment's form is
     # the next one whose name table fits its control references.
-    proc_names(segs, rt, res)  # fills RECORD_FORM
+    proc_names(segs, rt, res, st.record_form, st.form_class)
     form_index = {t[0]: k for k, t in enumerate(forms)}
     seg_known = {}
     for p in find_procs(segs):
-        if p.record in RECORD_FORM:
-            seg_known[p.segment] = form_index.get(RECORD_FORM[p.record])
+        if p.record in st.record_form:
+            seg_known[p.segment] = form_index.get(st.record_form[p.record])
     result, ci, fi = {}, 0, 0
     for seg in code_segs:
         if seg in seg_known and seg_known[seg] is not None:
@@ -222,13 +214,12 @@ def resolve_symbols(segs: list[Segment], rt: Runtime, res: dict[int, bytes]) -> 
                       if (g := names_at(chunks[j], seg, f)) is not None]
             got = max(scored)[3:] if scored else None  # most names, then typed variables, earliest
             if got:
-                names_at(chunks[got[0]], seg, f)  # leave OBJVAR_TYPES for the chosen image
+                names_at(chunks[got[0]], seg, f)  # leave st.objvar_types for the chosen image
                 got = (got[0], {k: v for k, v in got[1].items() if k >= 0})
             if got:
                 ci, result[seg] = got[0] + 1, got[1]
-                SEG_IMAGE[seg] = chunks[got[0]]
                 if f >= 0:
-                    SEG_FORM[seg] = forms[f][0]
+                    st.seg_form[seg] = forms[f][0]
                     fi = f + 1
                 break
     return result
@@ -237,7 +228,8 @@ def resolve_symbols(segs: list[Segment], rt: Runtime, res: dict[int, bytes]) -> 
 _CTL_HEADER = re.compile(rb"[\x01\x03](..)\x00\x00(.)(.)(.)\xff", re.S)
 
 
-def proc_names(segs: list[Segment], rt: Runtime, res: dict[int, bytes]) -> dict[int, str]:
+def proc_names(segs: list[Segment], rt: Runtime, res: dict[int, bytes], record_form: dict[int, str] | None = None,
+               form_class: dict[str, str] | None = None) -> dict[int, str]:
     """Procedure record -> event procedure name (`control_Event`,
     `Form_Event`). Each form blob's control records end with an event table:
     `FF, u8 count (= the class's event count), count x u16` where a
@@ -246,7 +238,10 @@ def proc_names(segs: list[Segment], rt: Runtime, res: dict[int, bytes]) -> dict[
     length, u16 flags, u8 name index, ...`, class at +7, or +9 for a
     control-array element, flags & 0x8000); tables outside any control
     record are the form's own. Procedures not found here are general
-    Sub/Function procedures (their names aren't stored)."""
+    Sub/Function procedures (their names aren't stored). Fills record_form
+    (procedure record -> form) and form_class (form -> Form | MDIForm)."""
+    record_form = {} if record_form is None else record_form
+    form_class = {} if form_class is None else form_class
     records = {p.record for p in find_procs(segs)}
     rt.load_project_vbx(res)
     events = rt.event_lists()
@@ -283,14 +278,14 @@ def proc_names(segs: list[Segment], rt: Runtime, res: dict[int, bytes]) -> dict[
                     cls = d[at + 2:at + 2 + d[at + 1]].decode("latin-1")
             else:  # the form's own table: Form or MDIForm, by event count
                 ctl = cls = "MDIForm" if len(events.get("MDIForm", [])) == n != len(events.get("Form", [])) else "Form"
-                FORM_CLASS[names[0]] = cls
+                form_class[names[0]] = cls
             evs = events.get(cls, [])
             if len(evs) != n:  # unknown class (e.g. a VBX control): don't guess names
                 evs = []
             for k, e in enumerate(ents):
                 if e:
                     out.setdefault(e & ~1, f"{ctl}_{evs[k] if k < len(evs) else f'Event{k}'}")
-                    RECORD_FORM[e & ~1] = names[0]
+                    record_form[e & ~1] = names[0]
     return out
 
 
@@ -379,19 +374,21 @@ class Symbols:
     """Names for one executable's control/form references and properties."""
 
     def __init__(self, rt: Runtime, segs: list[Segment], res: dict[int, bytes]):
-        reset_state()
         self.rt = rt
-        self.controls = resolve_symbols(segs, rt, res)
+        # filled by resolve_symbols
+        self.resolved_classes: dict[tuple[str, str], str] = {}  # (form, control) -> class, as resolved
+        self.seg_form: dict[int, str] = {}  # code segment -> its form, as resolved
+        self.record_form: dict[int, str] = {}  # procedure record -> form (from event tables)
+        self.objvar_types: dict[int, dict[int, str]] = {}  # code segment -> {slot: declared class}
+        self.meprops: dict[int, dict[int, int]] = {}  # code segment -> {PGET_ME slot: property index}
+        self.form_class: dict[str, str] = {}  # form -> Form | MDIForm (from its own event table)
+        self.controls = resolve_symbols(segs, rt, res, self)
         self.tables = {t[0]: t for t in form_names(res)}
-        self.seg_form = dict(SEG_FORM)
         self.late = late_bound_names(res.get(1, b""), rt)
         self.ole = ole_names(res.get(3, b""))
         self.late_controls = late_bound_controls(res.get(1, b""), form_names(res))
-        self.objvar_types = {k: dict(v) for k, v in OBJVAR_TYPES.items()}
-        self.form_class = dict(FORM_CLASS)
-        self.meprops = {k: dict(v) for k, v in MEPROPS.items()}
         self.classes = dict(blob_classes(res))  # blob records first (authoritative)
-        for key, cls in CLASSES.items():
+        for key, cls in self.resolved_classes.items():
             if key[0] in self.tables:
                 self.classes.setdefault(key, cls)
 
