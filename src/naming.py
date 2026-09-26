@@ -85,6 +85,29 @@ def proc_ranges(lines: list[str]) -> list[tuple[int, int]]:
     return out
 
 
+def sort_name(lo: str, hi: str | None, kind: str, taken: set[str]) -> str:
+    """A general procedure's name: a key of letters and digits + its kind
+    (`aProc`, `b0Func`), sorting (case-insensitively) strictly between its
+    neighbours lo and hi, as code layout and Function slots require. The key
+    is the shortest prefix of lo or hi followed by one character (0-9, a-z,
+    in that order) that fits: `aProc` after nothing, `getsuFunc` between
+    `GetSubMenu` and `GetSystemMenu`, `a0Proc` before `A_Click`. An
+    identifier starts with a letter."""
+    low, high = lo.lower(), (hi or "").lower()
+    chars = "0123456789abcdefghijklmnopqrstuvwxyz"
+    for i in range(max(len(low), len(high)) + 1):
+        for prefix in dict.fromkeys((low[:i], high[:i])):  # a prefix of either neighbour
+            if len(prefix) < i:
+                continue
+            for c in chars if i else chars[10:]:  # (an identifier starts with a letter)
+                name = f"{prefix}{c}{kind}"
+                key = name.lower()
+                if key > low and (hi is None or key < high) and key not in taken and len(name) <= 40:
+                    return name
+    # the original had a name here, so this means hi is lo + "0..." (`X`, `X0`)
+    raise ValueError(f"no procedure name sorts between {lo!r} and {hi!r}")
+
+
 class NamingMixin:
     def name_module(self, m: dict) -> None:
         vars_, refs, infos = m["vars"], m["refs"], m["infos"]
@@ -188,15 +211,12 @@ class NamingMixin:
     def fit_names(self, m: dict) -> None:
         """Names for general procedures (not stored) that keep both orders
         the compiler derives from names: code layout (procedures sorted by
-        name, case-insensitive) and Function/Declare slots (sorted too).
-        Each run of unnamed procedures gets one prefix and counters."""
+        name, case-insensitive) and Function/Declare slots (sorted too):
+        see sort_name."""
         infos = m["infos"]
         bounds = lambda k: self.name_bounds(m, k)
 
         taken = {n.lower() for n in self.proc_name.values()} | {x.name.lower() for x in infos if x.name}
-
-        def fits(c: str, lo: str, hi: str | None) -> bool:
-            return c.lower() > lo.lower() and (hi is None or c.lower() < hi.lower()) and c.lower() not in taken
 
         self.pool_names = getattr(self, "pool_names", {})  # pool offset -> name (one entry per name)
         for k, info in enumerate(infos):  # a name another module already entered in the pool
@@ -206,41 +226,14 @@ class NamingMixin:
                 if shared.lower() > lo.lower() and (hi is None or shared.lower() < hi.lower()):
                     info.name = shared
                     self.proc_name[info.proc.record] = shared
-        k = 0
-        while k < len(infos):
-            if infos[k].name:
-                k += 1
-                continue
-            run = [k]
-            while run[-1] + 1 < len(infos) and not infos[run[-1] + 1].name:
-                run.append(run[-1] + 1)
-            base = next((x.name for x in reversed(infos[:k]) if x.name), "")
-            for prefix in ("Proc", "Sub", "Proc_", "Sub_", "ProcX", f"{base}_" if base else "A", f"{base}X"):
-                names = [f"{prefix}{n + 1:02d}" for n in range(len(run))]
-                ok = True
-                for kk, c in zip(run, names):
-                    infos[kk].name = c
-                    if not fits(c, *bounds(kk)):
-                        ok = False
-                for kk in run:
-                    infos[kk].name = "" if not ok else infos[kk].name
-                if ok:
-                    break
-            for kk in run:  # fallback: fit one by one
-                n = 0
-                while not infos[kk].name:
-                    n += 1
-                    lo, hi = bounds(kk)
-                    for c in (f"{lo}_{n:02d}", f"{lo}X{n:02d}", f"{lo}{n}"):
-                        if fits(c, lo, hi):
-                            infos[kk].name = c
-                            break
-                    if n > 999:
-                        infos[kk].name = f"Proc{infos[kk].proc.record:X}"
-            for kk in run:
-                self.proc_name[infos[kk].proc.record] = infos[kk].name
-                taken.add(infos[kk].name.lower())
-            k = run[-1] + 1
+        from nametable import BUILTINS, KEYWORDS
+        taken |= KEYWORDS | BUILTINS | {x.lower() for x in self.global_name.values()} | \
+            {n.lower() for f in self.forms for n in f if n}
+        for k, info in enumerate(infos):  # in layout order: each name fits between its neighbours
+            if not info.name:
+                info.name = sort_name(*bounds(k), "Func" if info.function else "Proc", taken)
+                self.proc_name[info.proc.record] = info.name
+                taken.add(info.name.lower())
         for info in infos:
             if info.name and info.proc.record not in self.events:
                 self.pool_names.setdefault(word(self.table, info.proc.record + 4), info.name)

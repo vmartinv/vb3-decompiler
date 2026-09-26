@@ -14,14 +14,11 @@ identical p-code and form resources. The decompiler lives in `src/`,
 split by pass (README.md).
 
 ## Remaining items
-- **Procedure names**: general procedures still get placeholder names
-  (`A01`, `Proc01`) because code layout and Function slots are sorted by
-  name, so each name must fall between its neighbours'. Names from usage
-  (e.g. what a Function returns, which events call a Sub) would read
-  better, within the same sort constraint.
-- **Variable names** are kind + type + counter (`int1`, `mStr2`,
-  `gVar1`, `Type1`); names from usage (loop counters, what a variable is
-  assigned from) are possible refinements.
+None required. Optional polish: variable names from usage (loop counters,
+what a variable is assigned from) instead of kind + type + counter
+(`int1`, `mStr2`); general procedures are named by sort key + kind
+(`aProc`, `getsuFunc`, `naming.sort_name`), since their names only need to
+keep the code layout's and Function slots' sort order.
 
 ## Verification
 Before committing any change: full `tests/battery.py --chunk 48` (all
