@@ -989,8 +989,8 @@ class Decompiler:
         if out and m["infos"]:
             out.append("")
         self.cur_mod = m
-        for info in self.text_order(m):
-            out += self.emit_proc(info, m["form"], m["vars"], m["names"], m["image"])
+        for k, info in enumerate(self.text_order(m)):
+            out += ([""] if k else []) + self.emit_proc(info, m["form"], m["vars"], m["names"], m["image"])
         return out
 
     def text_order(self, m: dict) -> list:
