@@ -1,5 +1,7 @@
 # vb3-decompiler
 
+[![CI](https://github.com/vmartinv/vb3-decompiler/actions/workflows/ci.yml/badge.svg)](https://github.com/vmartinv/vb3-decompiler/actions/workflows/ci.yml)
+
 Tools and findings for reverse-engineering Visual Basic 3.0 (1993)
 executables — both the NE resource format (forms, controls, pictures) and
 the p-code bytecode format (`VBRUN300.DLL`-interpreted, not native x86).
