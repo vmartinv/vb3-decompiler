@@ -458,9 +458,42 @@ class LocalsMixin:
         self.run_solution for the zeros after the last procedure."""
         vars_ = m.vars
         self.run_solution = getattr(self, "run_solution", {})
-        size = {"I": 2, "L": 4, "S": 4, "D": 8, "C": 8, "V": 16, "T": 0}
-        # runs: [start, slots, frame group, numbering group]; a group is the runs before
-        # the same next framed / numbered local, whose gap / number they share
+        runs, fgroups, ngroups = self.zero_runs(m, k, base, known, x, hi, records, calls_here)
+        if not runs:
+            return {}
+        own = [q for q, v in vars_.items() if v.procs and v.procs[0] == k and v.scope in ("LOC", "REF")
+               and self.value(base, q) < 0]
+        known_frame = sum(FRAME_SIZE.get(info.ret if q == info.ret_slot else
+                                         (vars_[q].type() if vars_[q].votes else "V"), 2) for q in own)
+        known_num = sum(1 for q in known if 0 < self.value(base, q) < 200 and self.value(base, q) % 2)
+        f_tot = word(self.table, info.proc.record + PROC_FRAME) - 22 - known_frame
+        n_tot = word(self.table, info.proc.record + PROC_NUMBERED) - known_num
+        if sum(r[1] for r in runs) > 24:  # too many to search: the per-run guesses
+            return {}
+        sols = run_solutions(runs, fgroups, ngroups, f_tot, n_tot)
+        if not sols:
+            return {}
+        # the declarations record's item count fixes the Variants: each takes 2 slots as 1 item
+        base_nv = sum(o[0] for o in sols[0])
+        want = base_nv + m.nv_delta
+        sol = next((x2 for x2 in sols if sum(o[0] for o in x2) == want), sols[0])
+        out = {}
+        for r, (nv, ns, nn, f) in zip(runs, sol):
+            ts = ["Variant"] * nv + ["String"] * ns
+            for q in range(nn, 0, -1):
+                zz = next(zz for zz in (8, 4, 2) if zz <= f and numerics_fit(q - 1, f - zz))
+                ts.append({8: "Double", 4: "Long", 2: "Integer"}[zz])
+                f -= zz
+            out[r[0]] = ts
+            self.run_solution[(base, k, r[0])] = ts
+        return out
+
+    def zero_runs(self, m: Module, k: int, base: int, known, x: int, hi: int, records: list,
+                  calls_here: set) -> tuple[list, dict, dict]:
+        """The runs of zero slots from x to hi: [start, slots, frame group,
+        numbering group]; a group is the runs before the same next framed /
+        numbered local, whose gap / number they share (group -> its total)."""
+        vars_ = m.vars
         runs, fgroups, ngroups = [], {}, {}
         z = x
         while z < hi:
@@ -476,7 +509,7 @@ class LocalsMixin:
                 prev_bp = min([self.value(base, q) for q in known if q < z and self.value(base, q) < 0] + [-22])
                 v2 = vars_.get(nk)
                 fgroups[nk] = max(0, prev_bp - self.value(base, nk)
-                                  - size.get(v2.type() if v2 is not None and v2.votes else "V", 2))
+                                  - FRAME_SIZE.get(v2.type() if v2 is not None and v2.votes else "V", 2))
             ns_ = min((q for q in known if q >= y and 0 < self.value(base, q) < 200 and self.value(base, q) % 2
                        and (q in vars_ or q - 2 in vars_)), default=None)
             if ns_ is not None and ns_ not in ngroups:
@@ -488,78 +521,7 @@ class LocalsMixin:
             end, n = self.prev_end(m, len(m.infos)), word(self.image, base)
             if end < n - 1 and all(self.value(base, q) == 0 for q in range(end, n - 1, 2)):
                 runs.append([end, len(range(end, n - 1, 2)), None, None])
-        if not runs:
-            return {}
-        own = [q for q, v in vars_.items() if v.procs and v.procs[0] == k and v.scope in ("LOC", "REF")
-               and self.value(base, q) < 0]
-        known_frame = sum(size.get(info.ret if q == info.ret_slot else (vars_[q].type() if vars_[q].votes else "V"), 2)
-                          for q in own)
-        known_num = sum(1 for q in known if 0 < self.value(base, q) < 200 and self.value(base, q) % 2)
-        f_tot = word(self.table, info.proc.record + PROC_FRAME) - 22 - known_frame
-        n_tot = word(self.table, info.proc.record + PROC_NUMBERED) - known_num
-
-        def can(n: int, f: int) -> bool:
-            return f == 0 if n == 0 else any(q <= f and can(n - 1, f - q) for q in (8, 4, 2))
-
-        def options(r):  # (nv, ns, nn, frame) per run, most Variants first
-            sl = r[1]
-            for nv in range(sl // 2, -1, -1):
-                for ns in range(sl - 2 * nv, -1, -1):
-                    nn = sl - 2 * nv - ns
-                    for fr in range(8 * nn, 2 * nn - 1, -2):
-                        if can(nn, fr):
-                            yield nv, ns, nn, fr
-
-        sols = []
-
-        def dfs(j: int, acc: list, fs: int, ns: int, fg: dict, ng: dict):
-            if len(sols) > 400:
-                return
-            if j == len(runs):
-                if fs == f_tot and ns == n_tot and fg == fgroups and ng == ngroups:
-                    sols.append(list(acc))
-                return
-            r = runs[j]
-            for o in options(r):
-                df, dn = 16 * o[0] + o[3], o[0] + o[1]
-                if fs + df > f_tot or ns + dn > n_tot:
-                    continue
-                fg2, ng2 = dict(fg), dict(ng)
-                if r[2] is not None:
-                    fg2[r[2]] = fg2.get(r[2], 0) + df
-                    if fg2[r[2]] > fgroups[r[2]]:
-                        continue
-                if r[3] is not None:
-                    ng2[r[3]] = ng2.get(r[3], 0) + dn
-                    if ng2[r[3]] > ngroups[r[3]]:
-                        continue
-                # a group is complete after its last run
-                if any(g is not None and g not in (x2[2] for x2 in runs[j + 1:]) and fg2.get(g, 0) != fgroups[g]
-                       for g in [r[2]]) or \
-                        any(g is not None and g not in (x2[3] for x2 in runs[j + 1:]) and ng2.get(g, 0) != ngroups[g]
-                            for g in [r[3]]):
-                    continue
-                dfs(j + 1, acc + [o], fs + df, ns + dn, fg2, ng2)
-
-        if sum(r[1] for r in runs) > 24:  # too many to search: the per-run guesses
-            return {}
-        dfs(0, [], 0, 0, {}, {})
-        if not sols:
-            return {}
-        # the declarations record's item count fixes the Variants: each takes 2 slots as 1 item
-        base_nv = sum(o[0] for o in sols[0])
-        want = base_nv + m.nv_delta
-        sol = next((x2 for x2 in sols if sum(o[0] for o in x2) == want), sols[0])
-        out = {}
-        for r, (nv, ns, nn, f) in zip(runs, sol):
-            ts = ["Variant"] * nv + ["String"] * ns
-            for q in range(nn, 0, -1):
-                zz = next(zz for zz in (8, 4, 2) if zz <= f and can(q - 1, f - zz))
-                ts.append({8: "Double", 4: "Long", 2: "Integer"}[zz])
-                f -= zz
-            out[r[0]] = ts
-            self.run_solution[(base, k, r[0])] = ts
-        return out
+        return runs, fgroups, ngroups
 
     def trailing_locals(self, info: ProcInfo, base: int, known, slots: int, prev_bp: int) -> list[str] | None:
         """Types of a procedure's last `slots` unused locals from its record:
@@ -638,3 +600,60 @@ class LocalsMixin:
                 end = e
             m.ends = ends
         return m.ends[k - 1] if k > 0 else m.first_owned
+
+
+FRAME_SIZE = {"I": 2, "L": 4, "S": 4, "D": 8, "C": 8, "V": 16, "T": 0}  # frame bytes per local type
+
+
+def numerics_fit(n: int, f: int) -> bool:
+    """n numeric locals (8, 4 or 2 bytes each) can fill exactly f frame bytes."""
+    return f == 0 if n == 0 else any(q <= f and numerics_fit(n - 1, f - q) for q in (8, 4, 2))
+
+
+def run_options(r: list):
+    """(Variants, Strings, numerics, their frame bytes) for a run, most Variants first."""
+    sl = r[1]
+    for nv in range(sl // 2, -1, -1):
+        for ns in range(sl - 2 * nv, -1, -1):
+            nn = sl - 2 * nv - ns
+            for fr in range(8 * nn, 2 * nn - 1, -2):
+                if numerics_fit(nn, fr):
+                    yield nv, ns, nn, fr
+
+
+def run_solutions(runs: list, fgroups: dict, ngroups: dict, f_tot: int, n_tot: int) -> list[list]:
+    """Every choice of run_options per run (up to ~400) that adds up to the
+    frame and numbered totals and to each group's total."""
+    sols = []
+
+    def dfs(j: int, acc: list, fs: int, ns: int, fg: dict, ng: dict):
+        if len(sols) > 400:
+            return
+        if j == len(runs):
+            if fs == f_tot and ns == n_tot and fg == fgroups and ng == ngroups:
+                sols.append(list(acc))
+            return
+        r = runs[j]
+        for o in run_options(r):
+            df, dn = 16 * o[0] + o[3], o[0] + o[1]
+            if fs + df > f_tot or ns + dn > n_tot:
+                continue
+            fg2, ng2 = dict(fg), dict(ng)
+            if r[2] is not None:
+                fg2[r[2]] = fg2.get(r[2], 0) + df
+                if fg2[r[2]] > fgroups[r[2]]:
+                    continue
+            if r[3] is not None:
+                ng2[r[3]] = ng2.get(r[3], 0) + dn
+                if ng2[r[3]] > ngroups[r[3]]:
+                    continue
+            # a group is complete after its last run
+            if any(g is not None and g not in (x2[2] for x2 in runs[j + 1:]) and fg2.get(g, 0) != fgroups[g]
+                   for g in [r[2]]) or \
+                    any(g is not None and g not in (x2[3] for x2 in runs[j + 1:]) and ng2.get(g, 0) != ngroups[g]
+                        for g in [r[3]]):
+                continue
+            dfs(j + 1, acc + [o], fs + df, ns + dn, fg2, ng2)
+
+    dfs(0, [], 0, 0, {}, {})
+    return sols
