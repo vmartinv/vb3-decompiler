@@ -1,7 +1,9 @@
 # vb3-decompiler
 
-Reusable VB3 reverse-engineering tools + findings. Companion to
-`~/qrace` (Quibble Race port), not yet published.
+Reusable VB3 reverse-engineering tools + findings: a decompiler for
+Visual Basic 3.0 executables. Public at
+https://github.com/vmartinv/vb3-decompiler. Companion to `~/qrace`
+(Quibble Race port).
 
 ## Rules
 
