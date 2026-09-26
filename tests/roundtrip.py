@@ -4,7 +4,7 @@ Round-trip check: decompile a compiled sample, recompile the result in the
 VB3 IDE (under Wine) and compare it with the original source recompiled
 the same way.
 
-  python3 tools/roundtrip.py [project.mak ...] [--runtime VBRUN300.DLL] [--vbx-dir DIR]
+  python3 tests/roundtrip.py [project.mak ...] [--runtime VBRUN300.DLL] [--vbx-dir DIR]
           [--no-compile] [-v]
 
 Defaults: every sample under work/root/vb/samples that has a compiled exe,
@@ -27,6 +27,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "tools"))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 import pcode_disasm as P  # noqa: E402
 from decompiler import Decompiler, write_project  # noqa: E402

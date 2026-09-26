@@ -16,13 +16,13 @@ Reusable VB3 reverse-engineering tools + findings. Companion to
   experiments (batch many cases into one generated project, compile, read
   the result) over long manual analysis; runs may take as long as needed.
   Keep tool output small (filter/summarize before printing).
-- Validate with **feature batteries** (`batteries/<feature>.py`, run by
-  `tools/battery.py`): one battery per language feature, sweeping its
+- Validate with **feature batteries** (`tests/batteries/<feature>.py`, run by
+  `tests/battery.py`): one battery per language feature, sweeping its
   whole range, round-tripped case by case. The VB3 samples are only a
-  sanity check (`tools/roundtrip.py`): they cover a narrow slice of the
+  sanity check (`tests/roundtrip.py`): they cover a narrow slice of the
   language. `battery.py --check` validates a new battery's source first.
-- Name unknown opcodes with **probes** (`probes/<name>.py`, run by
-  `tools/opprobe.py`): one statement per line, unknown ops reported per
+- Name unknown opcodes with **probes** (`tests/probes/<name>.py`, run by
+  `tests/opprobe.py`): one statement per line, unknown ops reported per
   statement; `--sem` proposes builtin entries.
 - Builds use `VB.EXE /MAKE` (~2 s, no GUI clicks). Its output differs
   from a GUI "Make EXE" build in one word of RT_RCDATA 1, so compare
@@ -35,9 +35,10 @@ Reusable VB3 reverse-engineering tools + findings. Companion to
   identity is not a goal. The one name-length effect that reaches p-code
   (object locals' free order) is handled in `src/naming.py`.
 - Code layout: the decompiler lives flat in `src/` (only the decompiler);
-  everything else (testing, analysis, the IDE) in `tools/`, whose scripts
-  add `src/` to `sys.path`. A tool must not share a module name with
-  `src/` (the script's own directory wins).
+  the regression tests in `tests/` (batteries, probes and their runners);
+  everything else (analysis, the IDE driver) in `tools/`. Scripts add
+  `src/` (and `tools/`) to `sys.path`; no module name may repeat across
+  the three (the script's own directory wins).
 - Before changing what the decompiler emits for some construct, get
   ground truth: hand-write two minimal `.frm`s that differ only in that
   construct and compile them directly with

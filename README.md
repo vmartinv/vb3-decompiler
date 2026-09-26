@@ -30,11 +30,14 @@ src/                     the decompiler (exe -> .mak/.frm/.bas/.frx)
   runtime.py             VBRUN300.DLL interpreter model, p-code decoder
   symbols.py             control/form/procedure/object names
   opcodes.py             handler names
-tools/                   everything else (analysis, testing, the IDE)
-  verify.py              decompile + rebuild with VB.EXE + compare p-code/forms
-  battery.py             feature batteries (batteries/*.py): generated cases, round-tripped
-  roundtrip.py           recompiles the decompiled samples in the IDE, compares
-  opprobe.py             opcode discovery probes (probes/*.py)
+tests/                   regression tests (all need the VB3 IDE, see Setup)
+  batteries/             one feature battery per language feature (generated cases)
+  probes/                opcode discovery probes
+  battery.py             runs batteries: compile, decompile, recompile, compare per case
+  roundtrip.py           the same for the VB3 sample projects
+  opprobe.py             runs a probe, reports unknown opcodes per statement
+  verify.py              decompile + rebuild one exe + compare p-code/forms
+tools/                   analysis tools and the IDE driver
   pcode_disasm.py        p-code disassembler (needs your VBRUN300.DLL + capstone)
   pcode_diff.py          instruction-level diff of two builds
   exediff.py             whole-exe diff by structure (record/segment/resource)
@@ -62,7 +65,7 @@ python3 src/vb3decompile.py some.exe out/
 
 # ... and check it by rebuilding with a real VB3 IDE (needs the Setup below):
 # same p-code and form resources as some.exe
-python3 tools/verify.py some.exe out/
+python3 tests/verify.py some.exe out/
 
 python3 tools/pcode_disasm.py some.exe --runtime VBRUN300.DLL --check
 python3 tools/pcode_disasm.py some.exe --runtime VBRUN300.DLL --out listing.lst

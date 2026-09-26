@@ -3,9 +3,9 @@
 Opcode discovery: compiles statements one per line and reports, per
 statement, the opcodes the disassembler doesn't name yet.
 
-  DISPLAY=:99 python3 tools/opprobe.py <probe> [-a]
+  DISPLAY=:99 python3 tests/opprobe.py <probe> [-a]
 
-A probe is `probes/<name>.py` defining `header` (module-level lines) and
+A probe is `tests/probes/<name>.py` defining `header` (module-level lines) and
 `lines`, a list of (label, statement); a statement may span lines (a
 whole construct). Each is compiled as its own Sub. Output: per unknown
 opcode, the labels it appeared in (a single consistent label names it). -a prints every statement's op sequence;
@@ -20,6 +20,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "tools"))
 import battery as B  # noqa: E402
 import pcode_disasm as P  # noqa: E402
 from roundtrip import compile_mak  # noqa: E402
@@ -41,7 +42,7 @@ def main():
     a = ap.parse_args()
     g: dict = {}
     g["REPO"] = REPO  # probes may load battery lists
-    exec(compile((REPO / "probes" / f"{a.probe}.py").read_text(), a.probe, "exec"), g)
+    exec(compile((REPO / "tests" / "probes" / f"{a.probe}.py").read_text(), a.probe, "exec"), g)
     header, lines = g.get("header", ""), g["lines"]
     code = header + "\n" + "".join(
         f"\nSub P{j:04d} ()\n" + "".join(f"    {re.sub(r'\bL(\d)\b', rf'L\1x{j}', ln)}\n" for ln in st.split("\n"))

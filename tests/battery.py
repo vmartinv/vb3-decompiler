@@ -2,9 +2,9 @@
 """
 Feature test batteries: generated projects round-tripped case by case.
 
-  DISPLAY=:99 python3 tools/battery.py [battery ...] [--chunk N] [-k CASE]
+  DISPLAY=:99 python3 tests/battery.py [battery ...] [--chunk N] [-k CASE]
 
-A battery is `batteries/<name>.py` defining `cases`, a list of dicts:
+A battery is `tests/batteries/<name>.py` defining `cases`, a list of dicts:
 
   name      short label (reported)
   code      module code (a form's code by default)
@@ -47,13 +47,14 @@ import traceback
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "tools"))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 import pcode_disasm as P  # noqa: E402
 from decompiler import Decompiler, write_project  # noqa: E402
 from roundtrip import compile_mak, procs_code  # noqa: E402
 
 REPO = Path(__file__).resolve().parent.parent
-BATTERIES = REPO / "batteries"
+BATTERIES = REPO / "tests" / "batteries"
 WORK = REPO / "work" / "battery"
 RUNTIME = REPO / "work" / "ide" / "VBRUN300.DLL"
 

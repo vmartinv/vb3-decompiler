@@ -25,8 +25,8 @@ split by pass (README.md).
    (`naming.py`, `fit_frees`) are kept.
 
 ## Verification
-Before committing any change: full `tools/battery.py --chunk 48` (all
-batteries) and full `tools/roundtrip.py` (all samples), looking for
+Before committing any change: full `tests/battery.py --chunk 48` (all
+batteries) and full `tests/roundtrip.py` (all samples), looking for
 CODE/FORM/CRASH/DECOFAIL and any procedure or form mismatch. Zero p-code
 regressions is non-negotiable. For a pure refactor, also diff the
 decompiled text of every battery/sample exe before and after.

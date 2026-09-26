@@ -4,7 +4,7 @@ Decompiles one executable, rebuilds the result with the real IDE
 (`VB.EXE /MAKE` under Wine) and checks that the rebuild has the same p-code
 and form resources.
 
-  python3 tools/verify.py some.exe outdir/ [--runtime VBRUN300.DLL] [--vbx-dir DIR]
+  python3 tests/verify.py some.exe outdir/ [--runtime VBRUN300.DLL] [--vbx-dir DIR]
 
 Keep outdir's path short (e.g. under work/): built from a long directory
 path, the IDE compiles some form properties differently (seen with a
@@ -19,6 +19,7 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "tools"))
 from decompiler import Decompiler, write_project  # noqa: E402
 from roundtrip import compare, compile_mak  # noqa: E402
 from runtime import Runtime  # noqa: E402

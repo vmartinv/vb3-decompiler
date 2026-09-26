@@ -212,7 +212,7 @@ tests), 0 differ, 0 unsupported.
 
 ## Source recovery
 
-`src/vb3decompile.py` rebuilds the project from the exe; `tools/roundtrip.py`
+`src/vb3decompile.py` rebuilds the project from the exe; `tests/roundtrip.py`
 recompiles it in the IDE next to the original source and compares p-code
 per procedure (`tools/pcode_diff.py` shows instruction diffs). **All 483
 procedures of the 22 samples recompile p-code-identical**, with identical
