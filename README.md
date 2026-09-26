@@ -20,8 +20,9 @@ src/vb3decompiler/       the decompiler package (exe -> .mak/.frm/.bas/.frx)
   naming.py              names (procedure sort order, object-local free order)
   localvars.py           local declarations, unused locals/parameters
   emit.py                source text: headers, procedures, statements
-  lift.py                p-code statements -> BASIC expressions/statements
-  model.py               shared types and helpers
+  lift.py                p-code statements -> BASIC (Lifter: a rule table per handler)
+  model.py               shared types (Module, Var, ProcInfo) and helpers
+  records.py             procedure-table record field offsets
   forms.py               form/control resources -> .frm text (+ .frx)
   dataimage.py           global/module data images (Types, globals)
   nametable.py           model of the IDE's per-module name table
@@ -37,8 +38,10 @@ tests/                   pytest: unit tests + regression tests through the VB3 I
   roundtrip.py           the same for the VB3 sample projects
   opprobe.py             runs a probe, reports unknown opcodes per statement
   verify.py              decompile + rebuild one exe + compare p-code/forms
+.github/workflows/ci.yml ruff + unit tests
 tools/                   analysis tools and the IDE driver
   pcode_disasm.py        p-code disassembler (needs your VBRUN300.DLL + capstone)
+  snapshot.py            decompiles every battery/sample exe; diffs two snapshots (refactors)
   pcode_diff.py          instruction-level diff of two builds
   exediff.py             whole-exe diff by structure (record/segment/resource)
   formdump.py            prints decoded form layouts

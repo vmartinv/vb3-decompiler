@@ -21,6 +21,12 @@ https://github.com/vmartinv/vb3-decompiler.
   `DISPLAY=:99 pytest -m ide` every battery case and sample through the
   IDE (`-k <battery>` / `-k <sample>` to narrow). Add unit tests
   (`tests/test_*.py`) for pure logic such as naming or table models.
+  `ruff check .` must pass (config in `pyproject.toml`); CI
+  (`.github/workflows/ci.yml`) runs it and the unit tests.
+- A refactor (no intended output change) is checked with
+  `tools/snapshot.py`: decompile every battery/sample exe before and
+  after (`--freeze DIR` first when builds may run meanwhile, then
+  `--work DIR`) and `--diff` the two snapshots: no differences.
 - Validate with **feature batteries** (`tests/batteries/<feature>.py`, run by
   `tests/battery.py`): one battery per language feature, sweeping its
   whole range, round-tripped case by case. The VB3 samples are only a
@@ -46,7 +52,10 @@ https://github.com/vmartinv/vb3-decompiler.
   everything else (analysis, the IDE driver) in `tools/`. Scripts add
   `src/` (and `tools/`) to `sys.path` and import `vb3decompiler.*`, so
   they run without installing; tests/ and tools/ module names must not
-  repeat (the script's own directory wins).
+  repeat (the script's own directory wins). Table/record field offsets
+  are named in `records.py`, never raw; per-module state is a
+  `model.Module`, per-exe state lives on `Runtime`/`Symbols` (no module
+  globals).
 - Before changing what the decompiler emits for some construct, get
   ground truth: hand-write two minimal `.frm`s that differ only in that
   construct and compile them directly with
