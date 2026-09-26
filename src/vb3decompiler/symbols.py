@@ -121,76 +121,13 @@ def resolve_symbols(segs: list[Segment], rt: Runtime, res: dict[int, bytes], st:
     segment and record forms, form classes)."""
     forms = form_names(res)
     d = res.get(2, b"")
-    form_base, global_at = None, None
-    for m in re.finditer(rb"(?:[\x00-\xff]\x80\x00\x00\x00\x00)+", d):
-        nn = [m.group(0)[i] for i in range(0, len(m.group(0)), 6)]
-        if global_at is None and any(x >= 0x40 for x in nn):
-            global_at = m.start()  # global object table: lives in the global data block
-        for k in range(len(nn) - len(forms) + 1):
-            w = nn[k:k + len(forms)]
-            if forms and min(w) >= 0x40 and sorted(w) == list(range(min(w), min(w) + len(forms))):
-                form_base = min(w)
-                break
-        if form_base is not None:
-            break
-    if form_base is None:
-        # Global object numbers: forms follow 0x46 + one per VBX file and one
-        # per VBX control class (both listed in the project directory, RT_RCDATA 1).
-        form_base = 0x46 + len(vbx_entries(res.get(1, b"")))
-    chunks = [m.start() for m in re.finditer(rb"(?=..\x00\x00\x1e\x00)", d, re.S)]
-    # The global data block (holding the global object table) is no module's image.
-    chunks = [c for c in chunks
-              if global_at is None or not c <= global_at < c + 2 + struct.unpack_from("<H", d, c)[0]]
+    form_base, global_at = _form_base(d, forms, res)
+    chunks = _image_chunks(d, global_at)
     refs = _slot_refs(segs, rt)
     code_segs = sorted({p.segment for p in find_procs(segs)})
 
     def names_at(base: int, seg: int, fi: int) -> dict[int, str] | None:
-        out, types, mep = {}, {}, {}
-        for slot, kind in refs[seg].items():
-            if base + slot + 6 > len(d):
-                return None
-            w0, w1, w2 = struct.unpack_from("<HHH", d, base + slot)
-            if kind in ("objvar", "objarr") and w0 >> 8 == 0x80 and form_base is not None:
-                # `As New frmX` / form-typed: `0x8000|NN, frame or global offset`
-                k = (w0 & 0xFF) - form_base
-                if 0 <= k < len(forms):
-                    types[slot] = forms[k][0]
-                elif kind == "objarr" and (w0 & 0xFF) in BUILTIN_OBJECTS:
-                    types[slot] = BUILTIN_OBJECTS[w0 & 0xFF]
-                continue
-            if kind == "objarr":
-                continue
-            if kind == "meprop":  # PGET_ME/PSET_ME: form property `u16 0x40xx, u16 0xC0nn`,
-                if w0 >> 8 == 0x40 and w1 >> 8 == 0xC0:  # or a control (its default property)
-                    mep[slot] = w1 & 0xFF
-                    continue
-                kind = "control"
-            tk = objvar_kind(kind, w0, w1, w2)
-            if tk is not None:
-                types[slot] = {1: "Form", 4: "Control"}.get(tk) or CLASS_BY_KIND[tk]
-                continue
-            if kind == "objvar":
-                continue  # untyped (As Control/Form generic) or not in this image
-            # the form's object property (ActiveForm, Controls)
-            if kind == "control" and w0 >> 8 in (0x40, 0x60) and w1 >> 8 == 0xC0:
-                mep[slot] = w1 & 0xFF
-                continue
-            if kind == "control":
-                idx = w1 & 0x7FFF
-                if not (w1 & 0x8000 and w2 == 0 and w0 >> 8 == 0x40) or fi < 0 \
-                        or idx >= len(forms[fi]) or not forms[fi][idx]:
-                    return None
-                out[slot] = forms[fi][idx]
-                st.resolved_classes[(forms[fi][0], forms[fi][idx])] = CLASS_BY_KIND.get(w0 & 0xFF, "?")
-            else:
-                if w0 >> 8 != 0x80:
-                    continue  # object variable (Dim x As Control/Form), not a form
-                k = (w0 & 0xFF) - form_base if form_base is not None else -1
-                out[slot] = forms[k][0] if 0 <= k < len(forms) \
-                    else BUILTIN_OBJECTS.get(w0 & 0xFF, f"obj#{w0 & 0xFF:#x}")
-        st.objvar_types[seg] = types  # last evaluated candidate; the chosen one is re-evaluated
-        st.meprops[seg] = mep
-        return {**out, **{-k - 1: t for k, t in types.items()}} if out or types or mep else None
+        return _names_at(d, refs[seg], forms, form_base, st, base, seg, fi)
 
     # Segments are modules (no controls) then forms with code, in project
     # order; forms without code have no segment, so each segment's form is
@@ -223,6 +160,89 @@ def resolve_symbols(segs: list[Segment], rt: Runtime, res: dict[int, bytes], st:
                     fi = f + 1
                 break
     return result
+
+
+def _form_base(d: bytes, forms: list, res: dict[int, bytes]) -> tuple[int, int | None]:
+    """The form numbers' base NN, and where the global object table is."""
+    form_base, global_at = None, None
+    for m in re.finditer(rb"(?:[\x00-\xff]\x80\x00\x00\x00\x00)+", d):
+        nn = [m.group(0)[i] for i in range(0, len(m.group(0)), 6)]
+        if global_at is None and any(x >= 0x40 for x in nn):
+            global_at = m.start()  # global object table: lives in the global data block
+        for k in range(len(nn) - len(forms) + 1):
+            w = nn[k:k + len(forms)]
+            if forms and min(w) >= 0x40 and sorted(w) == list(range(min(w), min(w) + len(forms))):
+                form_base = min(w)
+                break
+        if form_base is not None:
+            break
+    if form_base is None:
+        # Global object numbers: forms follow 0x46 + one per VBX file and one
+        # per VBX control class (both listed in the project directory, RT_RCDATA 1).
+        form_base = 0x46 + len(vbx_entries(res.get(1, b"")))
+    return form_base, global_at
+
+
+def _image_chunks(d: bytes, global_at: int | None) -> list[int]:
+    """The module image chunks in RT_RCDATA 2."""
+    chunks = [m.start() for m in re.finditer(rb"(?=..\x00\x00\x1e\x00)", d, re.S)]
+    # The global data block (holding the global object table) is no module's image.
+    chunks = [c for c in chunks
+              if global_at is None or not c <= global_at < c + 2 + struct.unpack_from("<H", d, c)[0]]
+    return chunks
+
+
+def _names_at(d: bytes, refs: dict[int, str], forms: list, form_base: int | None, st: Symbols, base: int,
+              seg: int, fi: int) -> dict[int, str] | None:
+    """The names of a segment's references (refs: slot -> kind) if its image
+    is the chunk at base and its form forms[fi] (-1: a module), else None;
+    typed object variables at -slot - 1. Records what it resolved in st."""
+    out, types, mep = {}, {}, {}
+    for slot, kind in refs.items():
+        if base + slot + 6 > len(d):
+            return None
+        w0, w1, w2 = struct.unpack_from("<HHH", d, base + slot)
+        if kind in ("objvar", "objarr") and w0 >> 8 == 0x80 and form_base is not None:
+            # `As New frmX` / form-typed: `0x8000|NN, frame or global offset`
+            k = (w0 & 0xFF) - form_base
+            if 0 <= k < len(forms):
+                types[slot] = forms[k][0]
+            elif kind == "objarr" and (w0 & 0xFF) in BUILTIN_OBJECTS:
+                types[slot] = BUILTIN_OBJECTS[w0 & 0xFF]
+            continue
+        if kind == "objarr":
+            continue
+        if kind == "meprop":  # PGET_ME/PSET_ME: form property `u16 0x40xx, u16 0xC0nn`,
+            if w0 >> 8 == 0x40 and w1 >> 8 == 0xC0:  # or a control (its default property)
+                mep[slot] = w1 & 0xFF
+                continue
+            kind = "control"
+        tk = objvar_kind(kind, w0, w1, w2)
+        if tk is not None:
+            types[slot] = {1: "Form", 4: "Control"}.get(tk) or CLASS_BY_KIND[tk]
+            continue
+        if kind == "objvar":
+            continue  # untyped (As Control/Form generic) or not in this image
+        # the form's object property (ActiveForm, Controls)
+        if kind == "control" and w0 >> 8 in (0x40, 0x60) and w1 >> 8 == 0xC0:
+            mep[slot] = w1 & 0xFF
+            continue
+        if kind == "control":
+            idx = w1 & 0x7FFF
+            if not (w1 & 0x8000 and w2 == 0 and w0 >> 8 == 0x40) or fi < 0 \
+                    or idx >= len(forms[fi]) or not forms[fi][idx]:
+                return None
+            out[slot] = forms[fi][idx]
+            st.resolved_classes[(forms[fi][0], forms[fi][idx])] = CLASS_BY_KIND.get(w0 & 0xFF, "?")
+        else:
+            if w0 >> 8 != 0x80:
+                continue  # object variable (Dim x As Control/Form), not a form
+            k = (w0 & 0xFF) - form_base if form_base is not None else -1
+            out[slot] = forms[k][0] if 0 <= k < len(forms) \
+                else BUILTIN_OBJECTS.get(w0 & 0xFF, f"obj#{w0 & 0xFF:#x}")
+    st.objvar_types[seg] = types  # last evaluated candidate; the chosen one is re-evaluated
+    st.meprops[seg] = mep
+    return {**out, **{-k - 1: t for k, t in types.items()}} if out or types or mep else None
 
 
 _CTL_HEADER = re.compile(rb"[\x01\x03](..)\x00\x00(.)(.)(.)\xff", re.S)
