@@ -1,9 +1,9 @@
 """
 Decompiled-text snapshots, to check a refactor changes no output.
 
-  python3 tests/snapshot.py OUT            decompile every battery/sample exe into OUT/<key>/
-  python3 tests/snapshot.py --diff A B     compare two snapshots (exit 1 on any difference)
-  python3 tests/snapshot.py --freeze DIR   copy the exes' directories to DIR, to snapshot
+  python3 tools/snapshot.py OUT            decompile every battery/sample exe into OUT/<key>/
+  python3 tools/snapshot.py --diff A B     compare two snapshots (exit 1 on any difference)
+  python3 tools/snapshot.py --freeze DIR   copy the exes' directories to DIR, to snapshot
                                            with --work DIR while builds under work/ go on
 
 The exes are the original builds under work/: battery projects

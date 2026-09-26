@@ -58,151 +58,171 @@ class DeclarationsMixin:
     def declarations(self, mods: list[Module]) -> None:
         """Header items per module, in slot (= text) order: Global, Dim, Const,
         and Types placed by global offset."""
-        gl = self.gimg
-        uses: dict[int, dict] = {}  # global offset -> {votes, stored}
+        uses = self.global_uses(mods)
+        self.global_name = {}
+        for m in mods:
+            m.items = self.fit_entries(m, self.module_items(m, uses))
+        self.type_globals(mods, uses)
+        declared = set()  # a Global is declared once: other modules' slots for it are references
+        for m in mods:
+            if m.kind == "bas":
+                m.items = [it for it in m.items if it[0] != "global" or it[3] not in declared]
+                declared |= {it[3] for it in m.items if it[0] == "global"}
+        self.string_constants(mods)
+        self.place_types(mods)
+
+    @staticmethod
+    def new_use() -> dict:
+        return dict(votes={}, stored=False, array=False, mods=set())
+
+    def global_uses(self, mods: list[Module]) -> dict[int, dict]:
+        """Global offset -> its uses over all modules: type votes, stored,
+        array, Type, the modules using it."""
+        uses: dict[int, dict] = {}
         for m in mods:
             for s, v in m.vars.items():
                 if v.scope == "GLB":
                     g = self.value(m.image, s, False)
-                    u = uses.setdefault(g, dict(votes={}, stored=False, array=False, mods=set()))
+                    u = uses.setdefault(g, self.new_use())
                     u["mods"].add(id(m))
                     for t, c in v.votes.items():
                         u["votes"][t] = u["votes"].get(t, 0) + c
                     u["stored"] |= v.stored
                     u["array"] |= v.array
                     u["udt"] = u.get("udt") or v.udt_type
-        self.global_name = {}
-        for m in mods:
-            items, s = [], m.decl_start
-            end = m.first_owned
-            img_end = word(self.image, m.image)
-            known = sorted(x for x in m.vars if x >= s)
-            while s < end:
-                v = m.vars.get(s)
-                nxt = next((x for x in known if x > s), end)
-                if nxt == end == img_end - 1:  # `first_owned`'s "nothing owned" fallback is one
-                    nxt = img_end              # less than the image end (kept odd for `top`, below)
-                g = self.value(m.image, s, False)
-                if v is None and (a := self.array_at(m.image, s + 2)) and a[2] in (8, 9):
-                    s += 2  # a String * n array's length / an object array's kind
-                    continue
-                if (a := self.array_at(m.image, s)) and (v is None or v.array) and s not in m.udt:
-                    dims, size = self.array_dims(m.image, s)
-                    if a[1]:  # Static: a procedure's (the first one's if unused)
-                        m.static_arrays.append(
-                            (s, f"({dims}) As {a[0]}", v.procs[0] if v is not None and v.procs else None))
-                    else:
-                        items.append(("dim", s, f"({dims}) As {a[0]}"))
-                    s += size
-                    continue
-                if v is None and getattr(m.vars.get(s + 2), "fixed", False):  # a String * n's length
-                    s += 2
-                    continue
-                # the length of a Global String * n (the global's slot follows)
-                if v is None and m.kind == "bas" and f"F{g}" in uses.get(
-                        self.value(m.image, s + 2, False), {}).get("votes", {}):
-                    s += 2
-                    continue
-                if v is None and g in gl.types:  # reference to a Type (first `As T` in the module)
-                    items.append(("typeref", s, None))
-                    s += 2
-                    continue
-                if v is not None and v.scope == "MOD":
-                    t = v.type()
-                    if v.udt and s not in m.udt:
-                        td = next((t for t in gl.types.values() if 0 <= nxt - s - t.size <= 4), None)
-                        if td:
-                            m.udt[s] = td.g
-                    if s in m.udt and v.array:  # array of a Type
-                        dims, size = self.array_dims(m.image, s)
-                        td = gl.types.get(v.udt_type or m.udt[s])
-                        decl = f"({dims}) As {td.name if td else 'Variant'}"
-                        if word(self.image, m.image + s + 6) >> 8 == 0xC2 and v.procs:  # Static (flags 0xC200)
-                            m.static_arrays.append((s, decl, v.procs[0]))
-                        else:
-                            items.append(("dim", s, decl))
-                        s += size
-                        continue
-                    if s in m.udt:
-                        td = gl.types.get(m.udt[s])
-                        items.append(("dim", s, f"As {td.name}" if td else "As Variant"))
-                        step = (td.size + 1) // 2 * 2 if td else 16
-                        s = nxt if step <= nxt - s <= step + 4 else s + step + 2
-                        continue
-                    w1 = word(self.image, m.image + s + 4)
-                    if not v.stored and not v.array and not v.votes.keys() - {"T", "L"} and nxt - s == 4 \
-                            and w1 >= 0x100:  # a String constant: descriptor, text assigned below
-                        items.append(("const", s, "\0str"))
-                        s += 4
-                        continue
-                    if not v.stored and not v.array and (lit := self.inline_const(m.image, s, t, nxt - s)):
-                        items.append(("const", s, lit))
-                    elif v.array:
-                        dims, size = self.array_dims(m.image, s)
-                        tn = gl.types[v.udt_type].name if v.udt_type in gl.types else TYPE_NAME[t]
-                        items.append(("dim", s, f"({dims}) As {tn}"))
-                        s += size
-                        continue
-                    else:
-                        items.append(("dim", s, f" As {TYPE_NAME[t]}"))
-                    s += MOD_SIZE[t] if t in MOD_SIZE else max(nxt - s, 2)
-                    continue
-                kind, g2 = self.value(m.image, s, False), self.value(m.image, s + 2, False)
-                newobj = self.sym.objvar_types.get(m.seg, {}) if m.seg else {}
-                r = next((x for x in range(s + 2, s + 8, 2) if newobj.get(x) in self.sym.tables), None)
-                if r is None and newobj.get(s) in self.sym.tables:
-                    r = s
-                if r is not None:  # `x() As New frmX`: (class ref,) record `0x80NN, global offset`
-                    g2 = word(self.image, m.image + r + 2)
-                    arr = r in m.vars and m.vars[r].array
-                    items.append(("newobj", r, newobj[r], g2, arr))
-                    s = r + 6
-                    continue
-                prev_g = max((it[3] for it in items if it[0] == "global"), default=None)
-                fbase = 0x46 + len(vbx_entries(self.res.get(1, b"")))  # form numbers (object kind of `As frmX`)
-                formk = {fbase + j: f[0] for j, f in enumerate(self.forms)}
-                if v is None and (kind in CLASS_BY_KIND or kind in OBJ_KINDS or kind in formk) \
-                        and 6 <= g2 < self.globals_end and not any(gl.raw(g2, 4)) \
-                        and (prev_g is None or kind <= prev_g or kind in OBJ_KINDS or kind in formk):
-                    cls = OBJ_KINDS.get(kind) or formk.get(kind) or CLASS_BY_KIND[kind]
-                    items.append(("global", s, None, g2, cls))  # `Global x As <class>`: kind, global offset
-                    s += 4 + self.global_desc(m.image, s + 4)
-                    continue
-                if m.kind == "bas" and (v is not None and v.scope == "GLB") or (
-                        m.kind == "bas" and v is None and self.is_global_slot(m.image, s)
-                                                          and self.value(m.image, s, False) not in
-                                                          {x[3] for x in items if x[0] == "global"}):
-                    g = self.value(m.image, s, False)
-                    items.append(("global", s, None, g))
-                    s += 2 + self.global_desc(m.image, s + 2)
-                    continue
-                # unused: a constant (nonzero) or a variable filling the gap, 2 bytes
-                # at a time so that a following declaration isn't swallowed
-                val = self.image[m.image + s + 2:m.image + s + 4]
-                if any(val):
-                    items.append(("const", s, const_literal("I", val)))
+        return uses
+
+    def module_items(self, m: Module, uses: dict[int, dict]) -> list:
+        """The module's declaration items from its image, decl_start up to
+        first_owned: (kind, slot, text-or-literal, ...)."""
+        gl = self.gimg
+        items, s = [], m.decl_start
+        end = m.first_owned
+        img_end = word(self.image, m.image)
+        known = sorted(x for x in m.vars if x >= s)
+        while s < end:
+            v = m.vars.get(s)
+            nxt = next((x for x in known if x > s), end)
+            if nxt == end == img_end - 1:  # `first_owned`'s "nothing owned" fallback is one
+                nxt = img_end              # less than the image end (kept odd for `top`, below)
+            g = self.value(m.image, s, False)
+            if v is None and (a := self.array_at(m.image, s + 2)) and a[2] in (8, 9):
+                s += 2  # a String * n array's length / an object array's kind
+                continue
+            if (a := self.array_at(m.image, s)) and (v is None or v.array) and s not in m.udt:
+                dims, size = self.array_dims(m.image, s)
+                if a[1]:  # Static: a procedure's (the first one's if unused)
+                    m.static_arrays.append(
+                        (s, f"({dims}) As {a[0]}", v.procs[0] if v is not None and v.procs else None))
                 else:
-                    items.append(("dim", s, "As Integer", "filler"))
+                    items.append(("dim", s, f"({dims}) As {a[0]}"))
+                s += size
+                continue
+            if v is None and getattr(m.vars.get(s + 2), "fixed", False):  # a String * n's length
                 s += 2
-            if all(len(it) == 4 and it[3] == "filler" for it in items):
-                items = []  # only zeros before the procedures: not declarations
-                fv = m.vars.get(m.first_owned)
-                if items is not None and fv is not None and fv.scope in ("LOC", "REF"):
-                    m.first_owned = m.decl_start  # leading unused locals of the first procedure
-                elif fv is None and m.infos and m.first_owned >= word(self.image, m.image) - 1:
-                    m.first_owned = m.decl_start  # nothing used at all: the procedures' unused locals
-            m.items = self.fit_entries(m, items)
-        # global declarations: sizes/types from the global image and the uses
+                continue
+            # the length of a Global String * n (the global's slot follows)
+            if v is None and m.kind == "bas" and f"F{g}" in uses.get(
+                    self.value(m.image, s + 2, False), {}).get("votes", {}):
+                s += 2
+                continue
+            if v is None and g in gl.types:  # reference to a Type (first `As T` in the module)
+                items.append(("typeref", s, None))
+                s += 2
+                continue
+            if v is not None and v.scope == "MOD":
+                s = self.module_var_item(m, s, v, nxt, items)
+                continue
+            kind, g2 = self.value(m.image, s, False), self.value(m.image, s + 2, False)
+            newobj = self.sym.objvar_types.get(m.seg, {}) if m.seg else {}
+            r = next((x for x in range(s + 2, s + 8, 2) if newobj.get(x) in self.sym.tables), None)
+            if r is None and newobj.get(s) in self.sym.tables:
+                r = s
+            if r is not None:  # `x() As New frmX`: (class ref,) record `0x80NN, global offset`
+                g2 = word(self.image, m.image + r + 2)
+                arr = r in m.vars and m.vars[r].array
+                items.append(("newobj", r, newobj[r], g2, arr))
+                s = r + 6
+                continue
+            prev_g = max((it[3] for it in items if it[0] == "global"), default=None)
+            fbase = 0x46 + len(vbx_entries(self.res.get(1, b"")))  # form numbers (object kind of `As frmX`)
+            formk = {fbase + j: f[0] for j, f in enumerate(self.forms)}
+            if v is None and (kind in CLASS_BY_KIND or kind in OBJ_KINDS or kind in formk) \
+                    and 6 <= g2 < self.globals_end and not any(gl.raw(g2, 4)) \
+                    and (prev_g is None or kind <= prev_g or kind in OBJ_KINDS or kind in formk):
+                cls = OBJ_KINDS.get(kind) or formk.get(kind) or CLASS_BY_KIND[kind]
+                items.append(("global", s, None, g2, cls))  # `Global x As <class>`: kind, global offset
+                s += 4 + self.global_desc(m.image, s + 4)
+                continue
+            if m.kind == "bas" and (v is not None and v.scope == "GLB") or (
+                    m.kind == "bas" and v is None and self.is_global_slot(m.image, s)
+                                                      and self.value(m.image, s, False) not in
+                                                      {x[3] for x in items if x[0] == "global"}):
+                g = self.value(m.image, s, False)
+                items.append(("global", s, None, g))
+                s += 2 + self.global_desc(m.image, s + 2)
+                continue
+            # unused: a constant (nonzero) or a variable filling the gap, 2 bytes
+            # at a time so that a following declaration isn't swallowed
+            val = self.image[m.image + s + 2:m.image + s + 4]
+            if any(val):
+                items.append(("const", s, const_literal("I", val)))
+            else:
+                items.append(("dim", s, "As Integer", "filler"))
+            s += 2
+        if all(len(it) == 4 and it[3] == "filler" for it in items):
+            items = []  # only zeros before the procedures: not declarations
+            fv = m.vars.get(m.first_owned)
+            if fv is not None and fv.scope in ("LOC", "REF"):
+                m.first_owned = m.decl_start  # leading unused locals of the first procedure
+            elif fv is None and m.infos and m.first_owned >= word(self.image, m.image) - 1:
+                m.first_owned = m.decl_start  # nothing used at all: the procedures' unused locals
+        return items
+
+    def module_var_item(self, m: Module, s: int, v, nxt: int, items: list) -> int:
+        """A module-level variable or constant at slot s (the next known slot:
+        nxt): appends its item; returns the slot after it."""
+        gl = self.gimg
+        t = v.type()
+        if v.udt and s not in m.udt:
+            td = next((t for t in gl.types.values() if 0 <= nxt - s - t.size <= 4), None)
+            if td:
+                m.udt[s] = td.g
+        if s in m.udt and v.array:  # array of a Type
+            dims, size = self.array_dims(m.image, s)
+            td = gl.types.get(v.udt_type or m.udt[s])
+            decl = f"({dims}) As {td.name if td else 'Variant'}"
+            if word(self.image, m.image + s + 6) >> 8 == 0xC2 and v.procs:  # Static (flags 0xC200)
+                m.static_arrays.append((s, decl, v.procs[0]))
+            else:
+                items.append(("dim", s, decl))
+            return s + size
+        if s in m.udt:
+            td = gl.types.get(m.udt[s])
+            items.append(("dim", s, f"As {td.name}" if td else "As Variant"))
+            step = (td.size + 1) // 2 * 2 if td else 16
+            return nxt if step <= nxt - s <= step + 4 else s + step + 2
+        w1 = word(self.image, m.image + s + 4)
+        if not v.stored and not v.array and not v.votes.keys() - {"T", "L"} and nxt - s == 4 \
+                and w1 >= 0x100:  # a String constant: descriptor, text assigned below
+            items.append(("const", s, "\0str"))
+            return s + 4
+        if not v.stored and not v.array and (lit := self.inline_const(m.image, s, t, nxt - s)):
+            items.append(("const", s, lit))
+        elif v.array:
+            dims, size = self.array_dims(m.image, s)
+            tn = gl.types[v.udt_type].name if v.udt_type in gl.types else TYPE_NAME[t]
+            items.append(("dim", s, f"({dims}) As {tn}"))
+            return s + size
+        else:
+            items.append(("dim", s, f" As {TYPE_NAME[t]}"))
+        return s + (MOD_SIZE[t] if t in MOD_SIZE else max(nxt - s, 2))
+
+    def type_globals(self, mods: list[Module], uses: dict[int, dict]) -> None:
+        """Global declarations: sizes/types from the global image and the uses;
+        names G<offset>."""
+        gl = self.gimg
         gs = sorted({it[3] for m in mods for it in m.items if it[0] == "global"})
-        # String constants: a descriptor in the global image; the texts are records
-        # `u16 size, u16 length, text, 0` in RT_RCDATA 2 before the global image,
-        # in declaration order
-        head = self.image[:gl.base or 0]
-        texts = []  # records `u16 2 + padded length, u16 length, text` (padded to even with a 0)
-        for x in re.finditer(rb"(?s)(?=(..)(..)([\x20-\x7e]+))", head):
-            size, n, t = struct.unpack("<H", x.group(1))[0], struct.unpack("<H", x.group(2))[0], x.group(3)
-            if n and size == 2 + n + (n & 1) and (len(t) == n if n & 1 else len(t) >= n):
-                texts.append(t[:n].decode("latin-1"))
         for m in mods:
             for k, it in enumerate(m.items):
                 if it[0] != "global":
@@ -216,7 +236,7 @@ class DeclarationsMixin:
                 for a, _ in gl.type_extent:
                     if g < a < nxt:
                         nxt = a
-                u = uses.get(g, dict(votes={}, stored=False, array=False, mods=set()))
+                u = uses.get(g, self.new_use())
                 size = nxt - g
                 t = max(u["votes"], key=u["votes"].get) if u["votes"] else \
                     {2: "I", 4: "L", 8: "D"}.get(size, "V")
@@ -237,11 +257,18 @@ class DeclarationsMixin:
                     lit = None
                 m.items[k] = ("global", it[1], lit, g, t, name, u["array"])
                 self.global_name[g] = name
-        declared = set()  # a Global is declared once: other modules' slots for it are references
-        for m in mods:
-            if m.kind == "bas":
-                m.items = [it for it in m.items if it[0] != "global" or it[3] not in declared]
-                declared |= {it[3] for it in m.items if it[0] == "global"}
+
+    def string_constants(self, mods: list[Module]) -> None:
+        """The texts of String constants (items marked "\\0str"): a descriptor
+        in the image; the texts are records `u16 size, u16 length, text, 0`
+        in RT_RCDATA 2 before the global image, in declaration order."""
+        gl = self.gimg
+        head = self.image[:gl.base or 0]
+        texts = []  # records `u16 2 + padded length, u16 length, text` (padded to even with a 0)
+        for x in re.finditer(rb"(?s)(?=(..)(..)([\x20-\x7e]+))", head):
+            size, n, t = struct.unpack("<H", x.group(1))[0], struct.unpack("<H", x.group(2))[0], x.group(3)
+            if n and size == 2 + n + (n & 1) and (len(t) == n if n & 1 else len(t) >= n):
+                texts.append(t[:n].decode("latin-1"))
         pending = [(mi, k) for mi, m in enumerate(mods) for k, it in enumerate(m.items)
                    if it[0] in ("const", "global") and len(it) > 2 and it[2] == "\0str"]
         # a descriptor is `handle, segment`; the constants' handles are 0x2A, 0x2C, ...
@@ -257,10 +284,13 @@ class DeclarationsMixin:
             text = ctexts[hs[(mi, k)]] if ctexts is not None else texts[j] if j < len(texts) else ""
             it = mods[mi].items[k]
             mods[mi].items[k] = it[:2] + ('"' + text + '"',) + it[3:]
-        # Types: declarations record +46 is 0xFFFF in a module without Types.
-        # Within those that have some: the module whose globals surround a Type,
-        # else distributed greedily by each candidate's declarations line count
-        # (rec+50), as many Types (in chain order) as fit before the next one.
+
+    def place_types(self, mods: list[Module]) -> None:
+        """Types: declarations record +46 is 0xFFFF in a module without Types.
+        Within those that have some: the module whose globals surround a Type,
+        else distributed greedily by each candidate's declarations line count
+        (rec+50), as many Types (in chain order) as fit before the next one."""
+        gl = self.gimg
         bas = [m for m in mods if m.kind == "bas"] or mods
         typed = [m for m in bas if word(self.table, decl_record(self.image, m.image) + DECL_TYPES_START) != 0xFFFF]
         unowned: list = []
