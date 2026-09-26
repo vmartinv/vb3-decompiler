@@ -297,7 +297,6 @@ class Decompiler:
         for m in mods:  # declarations record: word before the image + 4 (+18 flags: 0x40 Option Explicit;
             rec = word(self.image, m["image"] - 2) + 4  # +44: DefType table, 0xFFFF if none)
             m["explicit"] = bool(word(self.table, rec + 18) & 0x40)
-            m["tabs"] = bool(word(self.table, rec + 18) & 0x8000)  # the code contains tab characters
             m["defint"] = word(self.table, rec + 44) != 0xFFFF  # the samples' only DefType: DefInt A-Z
         decl_recs = sorted(word(self.image, m["image"] - 2) + 4 for m in mods)
 
@@ -975,45 +974,23 @@ class Decompiler:
             out = out[:ends[-1] + 1] + decl_lines + out[ends[-1] + 1:]
         else:
             out = decl_lines + out
-        # declarations record (the word before the module's image + 4):
-        # +18 flags (1 Option Base 1, 0x40 Option Explicit, 0x800 Option Compare, 0x8000 tabs), +50 line count
+        # declarations record (the word before the module's image + 4): +18 flags
+        # (1 Option Base 1, 0x40 Option Explicit, 0x800 Option Compare; +20: 1 Text, 0 Binary)
         rec = word(self.image, m["image"] - 2) + 4
-        flags, count = word(self.table, rec + 18), word(self.table, rec + 50)
-        if flags & 0x0800:  # an Option Compare statement; +20: 1 Text, 0 Binary
-            out.insert(0, "Option Compare Text" if word(self.table, rec + 20) else "Option Compare Binary")
+        flags = word(self.table, rec + 18)
+        head = ["Option Explicit"] if flags & 0x40 else []
+        if m["defint"]:
+            head.append("DefInt A-Z")
         if flags & 0x0001:
-            out.insert(0, "Option Base 1")
-        # +44 (DefType table offset): 4, + 2 after a comment line, + 4 after Option Explicit
-        dt = word(self.table, rec + 44)
-        opt_first = m["defint"] and (dt - 4) & 4
-        if flags & 0x40:
-            out.insert(0, "Option Explicit")
-        if m["defint"]:  # before Option Explicit unless +44 says after
-            out.insert(1 if opt_first else 0, "DefInt A-Z")
-        m["comment_first"] = not m["defint"] or bool((dt - 4) & 2)
-        j = 0  # more lines than the original: join declarations (`Dim a As X, b As Y`)
-        while count and len(out) > count and j + 1 < len(out):
-            kw = next((k for k in ("Global Const ", "Const ", "Global ", "Dim ") if out[j].startswith(k)), None)
-            if kw and out[j + 1].startswith(kw) and not out[j + 1].startswith(kw + "Const "):
-                out[j:j + 2] = [out[j] + ", " + out[j + 1][len(kw):]]
-            else:
-                j += 1
-        trailing = count > len(out)  # the file's trailing blank line counts toward the declarations (+50)
-        if count:  # a blank line before a procedure doesn't count
-            pad = ["'"] * max(0, count - len(out) - 1)
-            if not m["comment_first"]:  # DefInt (and Option Explicit) before any comment
-                k = out.index("DefInt A-Z") + 1
-                out = out[:k] + pad + out[k:] + ([""] if m["infos"] else [])
-            else:
-                out = pad + out + ([""] if m["infos"] else [])
+            head.append("Option Base 1")
+        if flags & 0x0800:
+            head.append("Option Compare Text" if word(self.table, rec + 20) else "Option Compare Binary")
+        out = head + out
+        if out and m["infos"]:
+            out.append("")
         self.cur_mod = m
         for info in self.text_order(m):
             out += self.emit_proc(info, m["form"], m["vars"], m["names"], m["image"])
-        if trailing:
-            out.append("")
-        if m["tabs"] and out and not any("\t" in s for s in out):
-            i = out.index("'") if "'" in out else 0  # flag 0x8000 needs a tab somewhere
-            out[i] = out[i] + ("\t" if out[i] == "'" else "\t'")
         return out
 
     def text_order(self, m: dict) -> list:
@@ -1068,7 +1045,6 @@ class Decompiler:
             want = (word(self.table, word(self.image, m["image"] - 2) + 4 + 12) - word(self.image, m["image"])) // 2
             if d := self.item_count(m) - want:  # unused Variants (2 slots, 1 item) vs other locals
                 m["nv_pick"], m["nv_delta"] = max(0, -d), d
-                m["fill_merge"] = max(0, d)  # too many: unused Statics pair up (Long)
                 m["lines"] = self.emit_module(m)
         for m in mods:  # (object locals' free order depends on name lengths)
             self.fit_frees(m)
@@ -1436,43 +1412,15 @@ class Decompiler:
         if self.table[info.proc.record + 14] & 0x80:  # record +14 bit 7: Static Sub/Function
             head = "Static " + head
         body = self.statements(info, names)
-        self.dim_alloc = []  # slot order: where each local is allocated (Dim or first use)
         dims = self.local_dims(info, vars_, names, base, body)
-        # record +50: the procedure's line count, including the comment block
-        # above it (comments aren't compiled): pad with empty comments
-        (count,) = struct.unpack_from("<H", self.table, info.proc.record + 50)
-        ndims = sum(len(x) for x in dims.values())
-        dropped: list = []  # more lines than the original: implicit Variants, keeping the slot order
-        while count and len(body) + ndims + 2 > count:
-            for a in reversed(self.dim_alloc):
-                if a.get("drop") and a not in dropped:
-                    seq = [(b["key"] if b in dropped or b is a else b["alloc"]) for b in self.dim_alloc]
-                    if all(x < y for x, y in zip(seq, seq[1:])):
-                        dropped.append(a)
-                        if a["rely"]:
-                            self.cur_mod["implicit_int"] = True
-                        dims[a["pos"]].remove(a["line"])
-                        ndims -= 1
-                        break
-            else:
-                break
-        for x in dims.values():  # then join Dims (`Dim a As X, b As Y`)
-            j = 0
-            while count and len(body) + ndims + 2 > count and j + 1 < len(x):
-                kw = x[j].split()[0]
-                if x[j + 1].split()[0] == kw and kw in ("Dim", "Static"):
-                    x[j:j + 2] = [x[j] + ", " + x[j + 1][len(kw) + 1:]]
-                    ndims -= 1
-                else:
-                    j += 1
-        lines = ["'"] * max(0, count - len(body) - ndims - 2) + [head]
+        lines = [head]
         for k, (col, text) in enumerate(body + [(0, None)]):
             lines += ["    " + d for d in dims.get(k, [])]
             if text is None:
                 break
             if info.function:
                 text = re.sub(r"\bExit Sub\b", "Exit Function", text)
-            lines.append(("\t" * (col // 8) + " " * (col % 8) if self.cur_mod.get("tabs") else " " * col) + text)
+            lines.append(" " * col + text)
         lines += [f"End {kind}"]
         return lines
 
@@ -1750,15 +1698,8 @@ class Decompiler:
                         items.append((z, "dim", f"f{z:X}", f" As {t}", Var(z, "LOC")))
                         z += 4 if t == "Variant" else 2
                 else:
-                    z = end
-                    while z < n - 1:
-                        if m.get("fill_merge") and z + 2 < n - 1:  # 4 bytes, one item
-                            m["fill_merge"] -= 1
-                            items.append((z, "static", f"f{z:X}", " As Long", Var(z, "MOD")))
-                            z += 4
-                            continue
+                    for z in range(end, n - 1, 2):
                         items.append((z, "static", f"f{z:X}", " As Integer", Var(z, "MOD")))
-                        z += 2
         items.sort(key=lambda it: (it[0], it[1]))
 
         texts = [re.sub(r'"[^"]*"', lambda x: " " * len(x.group(0)), t or "") for _, t in body]
@@ -1788,7 +1729,6 @@ class Decompiler:
             if kind == "fixed":
                 if key is not None and key[:2] > last:
                     last = key[:2]
-                    self.dim_alloc.append(dict(alloc=(*key[:2], 0)))
                 continue
             # declare at the earliest point after the previous item; if that is
             # past the first use (same statement as a preceding control
@@ -1800,20 +1740,12 @@ class Decompiler:
             if key is not None and key[0] < pos and dimlike and not v.array and not v.udt \
                     and key[:2] > last and not m["explicit"] and (decl.strip() == f"As {implicit_type}" or key[2]):
                 last = key[:2]
-                self.dim_alloc.append(dict(alloc=(*key[:2], 0)))
-                if m["defint"] and not key[2]:
-                    m["implicit_int"] = True  # typed by DefInt: the letters must cover it
                 continue
             if key is not None and key[0] < pos:
                 pos = key[0]  # conflicting order: at least keep it compilable
             word_ = {"static": "Static", "const": "Const"}.get(kind, "Dim")
             dims.setdefault(pos, []).append(f"{word_} {name}{decl if decl[0] in '( ' else ' ' + decl}")
             # could be implicit instead: allocated at its first use
-            self.dim_alloc.append(dict(alloc=(pos, -1, j), pos=pos, line=dims[pos][-1], key=key and (*key[:2], 0),
-                                       drop=key is not None and key[0] >= pos and dimlike and not v.array
-                                       and not v.udt and not m["explicit"]
-                                       and (decl.strip() == f"As {implicit_type}" or key[2]),
-                                       rely=m["defint"] and not (key and key[2])))
             last = (pos, -1)
         return dims
 
