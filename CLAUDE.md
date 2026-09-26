@@ -18,6 +18,10 @@ https://github.com/vmartinv/vb3-decompiler. Companion to `~/qrace`
   experiments (batch many cases into one generated project, compile, read
   the result) over long manual analysis; runs may take as long as needed.
   Keep tool output small (filter/summarize before printing).
+- Tests run under pytest: `pytest` runs the unit tests (seconds, no IDE),
+  `DISPLAY=:99 pytest -m ide` every battery case and sample through the
+  IDE (`-k <battery>` / `-k <sample>` to narrow). Add unit tests
+  (`tests/test_*.py`) for pure logic such as naming or table models.
 - Validate with **feature batteries** (`tests/batteries/<feature>.py`, run by
   `tests/battery.py`): one battery per language feature, sweeping its
   whole range, round-tripped case by case. The VB3 samples are only a

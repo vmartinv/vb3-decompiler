@@ -119,6 +119,12 @@ def run(mak: Path, runtime: Path, vbx_dirs: list[Path], do_compile: bool, verbos
     return res
 
 
+def sample_maks() -> list[Path]:
+    """The VB3 sample projects that come with a compiled exe."""
+    return sorted((m for m in (REPO / "work/root/vb/samples").rglob("*")
+                   if m.suffix.lower() == ".mak" and find_exe(m)), key=lambda m: m.stem.lower())
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("mak", type=Path, nargs="*")
@@ -130,8 +136,7 @@ def main():
                     help="copy form descriptions from the original .frm files instead of decoding them")
     args = ap.parse_args()
     args.vbx_dir = args.vbx_dir or [REPO / "work/ide"]
-    args.mak = args.mak or sorted((m for m in (REPO / "work/root/vb/samples").rglob("*")
-                                   if m.suffix.lower() == ".mak" and find_exe(m)), key=lambda m: m.stem.lower())
+    args.mak = args.mak or sample_maks()
     tot = [0, 0, 0, 0]
     for mak in args.mak:
         r = run(mak, args.runtime, args.vbx_dir, not args.no_compile, args.v, args.source_layout)

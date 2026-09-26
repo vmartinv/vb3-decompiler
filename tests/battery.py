@@ -255,6 +255,33 @@ def load(name: str) -> list[dict]:
     return g["cases"]
 
 
+def battery_names() -> list[str]:
+    return sorted(p.stem for p in BATTERIES.glob("*.py"))
+
+
+def run_battery(name: str, cases: list[dict], sel: list[int], chunk_size: int = 48, check: bool = False,
+                exe: bool = False) -> Runner:
+    """Runs the selected cases, packed into projects of up to chunk_size
+    modules (solo/nostart cases in a project of their own); results in
+    the returned Runner's `result` (and `detail`), by case index."""
+    r = Runner(name, cases, chunk_size, exe)
+    step = r.check if check else r.run
+    chunk: list[int] = []
+    size = 0
+    for i in sel:
+        n = len(modules(cases[i]))
+        if cases[i].get("solo") or cases[i].get("nostart"):  # a project of its own
+            step([i])
+            continue
+        if chunk and size + n > chunk_size:
+            step(chunk)
+            chunk, size = [], 0
+        chunk.append(i)
+        size += n
+    step(chunk)
+    return r
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("battery", nargs="*")
@@ -263,24 +290,10 @@ def main():
     ap.add_argument("--check", action="store_true", help="only compile the cases (validate the battery)")
     ap.add_argument("--exe", action="store_true", help="also require whole-exe identity (EXE: differing places)")
     a = ap.parse_args()
-    names = a.battery or sorted(p.stem for p in BATTERIES.glob("*.py"))
-    for name in names:
+    for name in a.battery or battery_names():
         cases = load(name)
         sel = [i for i, c in enumerate(cases) if not a.k or a.k in c["name"]]
-        r = Runner(name, cases, a.chunk, a.exe)
-        chunk: list[int] = []
-        size = 0
-        for i in sel:
-            n = len(modules(cases[i]))
-            if cases[i].get("solo") or cases[i].get("nostart"):  # a project of its own
-                (r.check if a.check else r.run)([i])
-                continue
-            if chunk and size + n > a.chunk:
-                (r.check if a.check else r.run)(chunk)
-                chunk, size = [], 0
-            chunk.append(i)
-            size += n
-        (r.check if a.check else r.run)(chunk)
+        r = run_battery(name, cases, sel, a.chunk, a.check, a.exe)
         tally: dict[str, int] = {}
         for i in sel:
             tally[r.result.get(i, "?")] = tally.get(r.result.get(i, "?"), 0) + 1

@@ -30,7 +30,8 @@ src/                     the decompiler (exe -> .mak/.frm/.bas/.frx)
   runtime.py             VBRUN300.DLL interpreter model, p-code decoder
   symbols.py             control/form/procedure/object names
   opcodes.py             handler names
-tests/                   regression tests (all need the VB3 IDE, see Setup)
+tests/                   pytest: unit tests + regression tests through the VB3 IDE
+  test_*.py              `pytest` (unit, fast); `pytest -m ide` (batteries, samples)
   batteries/             one feature battery per language feature (generated cases)
   probes/                opcode discovery probes
   battery.py             runs batteries: compile, decompile, recompile, compare per case
@@ -56,8 +57,9 @@ tools/                   analysis tools and the IDE driver
     compile_project.py   compiles .mak projects with `VB.EXE /MAKE`
 ```
 
-All Python, standard library only except `capstone` (p-code decoding) and
-`vb3ide/kwaj_extract.py` (needs `libmspack`, see Setup). No build step.
+All Python, standard library only except `capstone` (p-code decoding),
+`pytest` (tests) and `vb3ide/kwaj_extract.py` (needs `libmspack`, see Setup).
+No build step.
 
 ```sh
 # reconstruct a project from a compiled exe
@@ -66,6 +68,11 @@ python3 src/vb3decompile.py some.exe out/
 # ... and check it by rebuilding with a real VB3 IDE (needs the Setup below):
 # same p-code and form resources as some.exe
 python3 tests/verify.py some.exe out/
+
+# tests: unit tests (no IDE needed), then every battery case and sample
+# through the real IDE (see Setup; slow: ~1.5 h, packed into IDE builds)
+pytest
+DISPLAY=:99 pytest -m ide [-k deftype]
 
 python3 tools/pcode_disasm.py some.exe --runtime VBRUN300.DLL --check
 python3 tools/pcode_disasm.py some.exe --runtime VBRUN300.DLL --out listing.lst
